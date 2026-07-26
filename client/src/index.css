@@ -1,0 +1,160 @@
+@import "@databricks/appkit-ui/styles.css";
+
+/* ============ Engagement Execution Console theme ============ */
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+a {
+  color: #ff3621;
+  text-decoration: none;
+}
+a:hover {
+  color: #ff6a52;
+  text-decoration: underline;
+}
+
+[data-theme='dark'] {
+  --bg: #0a0d10;
+  --bg2: #10151a;
+  --bg3: #171e25;
+  --line: #232c34;
+  --line2: #2f3b45;
+  --tx: #e7ebef;
+  --tx2: #95a3af;
+  --tx3: #5e6e7b;
+  --acc: #ff3621;
+  --accsoft: rgba(255, 54, 33, 0.12);
+  --ok: #37b57a;
+  --warn: #e8a13c;
+  --bad: #ff4d33;
+  --agent: #7a8ff5;
+  --agentsoft: rgba(122, 143, 245, 0.13);
+  --rowpad: 9px 12px;
+}
+
+[data-theme='light'] {
+  --bg: #f5f6f7;
+  --bg2: #ffffff;
+  --bg3: #eceff1;
+  --line: #dce2e7;
+  --line2: #c6cfd6;
+  --tx: #151c22;
+  --tx2: #57646e;
+  --tx3: #8b98a2;
+  --acc: #e22a16;
+  --accsoft: rgba(226, 42, 22, 0.09);
+  --ok: #1e8f5c;
+  --warn: #b57818;
+  --bad: #d42b14;
+  --agent: #4a63d8;
+  --agentsoft: rgba(74, 99, 216, 0.1);
+  --rowpad: 9px 12px;
+}
+
+.eec ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.eec ::-webkit-scrollbar-thumb {
+  background: var(--line2);
+  border-radius: 5px;
+}
+.eec ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes eec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes eec-fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes eec-slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.eec input,
+.eec select,
+.eec textarea,
+.eec button {
+  font-family: inherit;
+}
+.eec input:focus,
+.eec textarea:focus,
+.eec select:focus {
+  outline: 1px solid var(--acc);
+  outline-offset: -1px;
+}
+
+/* hover helpers (inline styles can't express :hover) */
+.hv-card:hover {
+  border-color: var(--line2) !important;
+  background: var(--bg3) !important;
+}
+.hv-border:hover {
+  border-color: var(--tx3) !important;
+}
+.hv-border-bg:hover {
+  border-color: var(--tx3) !important;
+  background: var(--bg3) !important;
+}
+.hv-bg:hover {
+  background: var(--bg3) !important;
+}
+.hv-tx2:hover {
+  color: var(--tx2) !important;
+}
+.hv-tx:hover {
+  color: var(--tx) !important;
+}
+.hv-bad:hover {
+  color: var(--bad) !important;
+}
+.hv-agent:hover {
+  border-color: var(--agent) !important;
+}
+.hv-bright:hover {
+  filter: brightness(1.12);
+}
+tr.hv-row:hover td {
+  background: var(--bg3);
+}
+
+.mono {
+  font-family: 'DM Mono', monospace;
+}
+
+.del-btn {
+  opacity: 0.35;
+  transition: opacity 0.12s ease;
+}
+.hv-card:hover .del-btn,
+.del-btn:focus-visible {
+  opacity: 1;
+}
