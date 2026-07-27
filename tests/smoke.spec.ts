@@ -53,14 +53,20 @@ test('smoke test - roadmap tab renders', async ({ page, request }) => {
   await expect(page.getByText('DERIVED FROM SOW', { exact: false })).toBeVisible();
 });
 
-test('smoke test - admin page shows staffing matrix', async ({ page }) => {
+test('smoke test - admin page shows staffing matrix', async ({ page, request }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'ADMIN' }).click();
 
   await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
   await expect(page.getByText('TEAM ASSIGNMENT', { exact: false })).toBeVisible();
   await expect(page.getByText('ADD TEAM MEMBER')).toBeVisible();
-  await expect(page.getByText('K. Boateng').first()).toBeVisible();
+
+  // Team members are live data — assert on whatever the API currently returns
+  // rather than a seeded name.
+  const admin = (await (await request.get('/api/admin')).json()) as { members: { name: string }[] };
+  if (admin.members.length > 0) {
+    await expect(page.getByText(admin.members[0].name).first()).toBeVisible();
+  }
 });
 
 // ── Lifecycle hooks ─────────────────────────────────────────────────────────

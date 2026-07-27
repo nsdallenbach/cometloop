@@ -15,6 +15,7 @@ export function TicketDrawer({
   onClose,
   onAccept,
   onDismiss,
+  onDelete,
   goSources,
 }: {
   theme: 'dark' | 'light';
@@ -26,9 +27,11 @@ export function TicketDrawer({
   onClose: () => void;
   onAccept: () => void;
   onDismiss: () => void;
+  onDelete: () => void;
   goSources: () => void;
 }) {
   const proposed = ticket.status === 'proposed';
+  const [delConfirm, setDelConfirm] = useState(false);
   const [loaded, setLoaded] = useState<{ key: string; list: TicketComment[] | null; error: boolean } | null>(null);
   const [dev, setDev] = useState<{ key: string; data: TicketDev | null } | null>(null);
   const [draft, setDraft] = useState('');
@@ -314,6 +317,35 @@ export function TicketDrawer({
               {posting ? '…' : 'Comment'}
             </button>
           </div>
+          {lead && (
+            <div style={{ marginTop: 22, paddingTop: 12, borderTop: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 10 }}>
+              {!delConfirm && (
+                <button
+                  onClick={() => setDelConfirm(true)}
+                  style={{ border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), letterSpacing: '.06em', cursor: 'pointer', padding: 0 }}
+                >
+                  DELETE TICKET
+                </button>
+              )}
+              {delConfirm && (
+                <>
+                  <span style={{ ...mono(400, 10), color: 'var(--bad)' }}>Delete {ticket.key} and its comments permanently?</span>
+                  <button
+                    onClick={onDelete}
+                    style={{ border: '1px solid var(--bad)', background: 'none', color: 'var(--bad)', borderRadius: 3, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => setDelConfirm(false)}
+                    style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
         {proposed && lead && (
           <div style={{ flex: 'none', display: 'flex', gap: 10, padding: '14px 18px', borderTop: '1px solid var(--line)', background: 'var(--agentsoft)' }}>

@@ -60,6 +60,7 @@ export function Workspace({
 }) {
   const [boardMode, setBoardMode] = useState<'kanban' | 'table'>('kanban');
   const [newTicket, setNewTicket] = useState(false);
+  const [assignPop, setAssignPop] = useState<{ key: string; x: number; y: number } | null>(null);
   const [bulk, setBulk] = useState<Record<string, boolean>>({});
   const [composer, setComposer] = useState<string | null>(null);
   const [pushed, setPushed] = useState<boolean | null>(null);
@@ -162,6 +163,13 @@ export function Workspace({
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
         <span
+          className="hv-border"
+          title={t.assignee === '—' ? 'Unassigned — click to assign' : `${t.assignee} — click to reassign`}
+          onClick={(e) => {
+            e.stopPropagation();
+            const r = e.currentTarget.getBoundingClientRect();
+            setAssignPop({ key: t.key, x: r.left, y: r.bottom + 4 });
+          }}
           style={{
             width: 20,
             height: 20,
@@ -172,6 +180,7 @@ export function Workspace({
             placeItems: 'center',
             ...mono(500, 9),
             color: 'var(--tx2)',
+            cursor: 'pointer',
           }}
         >
           {initials(t.assignee)}
@@ -504,17 +513,45 @@ export function Workspace({
                           </select>
                         </td>
                         <td style={{ ...tdBase, whiteSpace: 'nowrap' }}>
-                          <select
-                            value={t.assignee}
-                            onChange={(e) => setTicket(t.key, { assignee: e.target.value })}
-                            style={{ background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx2)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer', maxWidth: 130 }}
+                          <button
+                            className="hv-border"
+                            title={t.assignee === '—' ? 'Unassigned — click to assign' : `${t.assignee} — click to reassign`}
+                            onClick={(e) => {
+                              const r = e.currentTarget.getBoundingClientRect();
+                              setAssignPop({ key: t.key, x: r.left, y: r.bottom + 4 });
+                            }}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 7,
+                              border: '1px solid transparent',
+                              background: 'none',
+                              borderRadius: 3,
+                              padding: '2px 6px 2px 2px',
+                              cursor: 'pointer',
+                              maxWidth: 150,
+                            }}
                           >
-                            {[...new Set(['—', ...(detail?.team.map((m) => m.name) ?? []), t.assignee])].map((name) => (
-                              <option key={name} value={name}>
-                                {name}
-                              </option>
-                            ))}
-                          </select>
+                            <span
+                              style={{
+                                flex: 'none',
+                                width: 20,
+                                height: 20,
+                                borderRadius: '50%',
+                                background: 'var(--bg3)',
+                                border: '1px solid var(--line2)',
+                                display: 'grid',
+                                placeItems: 'center',
+                                ...mono(500, 9),
+                                color: 'var(--tx2)',
+                              }}
+                            >
+                              {initials(t.assignee)}
+                            </span>
+                            <span style={{ fontSize: 11.5, color: 'var(--tx2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {t.assignee}
+                            </span>
+                          </button>
                         </td>
                         <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>{t.est}</td>
                         <td style={{ ...tdBase, fontSize: 12, color: 'var(--tx2)', whiteSpace: 'nowrap' }}>{t.workstream}</td>
@@ -1042,6 +1079,83 @@ export function Workspace({
           </div>
         </div>
       )}
+
+      {assignPop &&
+        (() => {
+          const t = tickets.find((x) => x.key === assignPop.key);
+          if (!t) return null;
+          const names = [...new Set(['—', ...(detail?.team.map((m) => m.name) ?? []), t.assignee])];
+          return (
+            <>
+              <div onClick={() => setAssignPop(null)} style={{ position: 'fixed', inset: 0, zIndex: 44 }} />
+              <div
+                style={{
+                  position: 'fixed',
+                  left: Math.min(assignPop.x, window.innerWidth - 200),
+                  top: Math.min(assignPop.y, window.innerHeight - 260),
+                  width: 184,
+                  maxHeight: 244,
+                  overflowY: 'auto',
+                  background: 'var(--bg2)',
+                  border: '1px solid var(--line2)',
+                  borderRadius: 4,
+                  zIndex: 45,
+                  boxShadow: '0 8px 30px rgba(0,0,0,.4)',
+                  padding: 4,
+                  animation: 'eec-fadeUp .12s ease',
+                }}
+              >
+                <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', padding: '5px 8px 4px' }}>ASSIGN {t.key}</div>
+                {names.map((name) => (
+                  <button
+                    key={name}
+                    onClick={() => {
+                      setAssignPop(null);
+                      if (name === t.assignee) return;
+                      setTicket(t.key, { assignee: name });
+                      toast(name === '—' ? `${t.key} unassigned` : `${t.key} assigned to ${name}`);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      width: '100%',
+                      border: 'none',
+                      background: name === t.assignee ? 'var(--bg3)' : 'none',
+                      color: 'var(--tx)',
+                      borderRadius: 3,
+                      padding: '6px 8px',
+                      fontSize: 12,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <span
+                      style={{
+                        flex: 'none',
+                        width: 20,
+                        height: 20,
+                        borderRadius: '50%',
+                        background: 'var(--bg3)',
+                        border: '1px solid var(--line2)',
+                        display: 'grid',
+                        placeItems: 'center',
+                        ...mono(500, 9),
+                        color: 'var(--tx2)',
+                      }}
+                    >
+                      {initials(name)}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {name === '—' ? 'Unassigned' : name}
+                    </span>
+                    {name === t.assignee && <span style={{ color: 'var(--ok)', fontSize: 11 }}>✓</span>}
+                  </button>
+                ))}
+              </div>
+            </>
+          );
+        })()}
 
       {newTicket && (
         <NewTicketModal

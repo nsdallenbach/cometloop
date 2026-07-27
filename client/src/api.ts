@@ -177,6 +177,10 @@ export const api = {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },
 
+  deleteTicket(key: string) {
+    return http(`/api/tickets/${key}`, { method: 'DELETE' });
+  },
+
   bulkTickets(keys: string[], patch: { status?: TicketStatus; assignee?: string }) {
     return http('/api/tickets/bulk', { method: 'POST', ...json({ keys, patch }) });
   },

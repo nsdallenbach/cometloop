@@ -438,6 +438,17 @@ export default function App() {
             setDetailKey(null);
             showToast(`${detailTicket.key} dismissed`);
           }}
+          onDelete={() => {
+            const key = detailTicket.key;
+            api
+              .deleteTicket(key)
+              .then(() => {
+                setDetail((d) => (d ? { ...d, tickets: d.tickets.filter((t) => t.key !== key) } : d));
+                setDetailKey(null);
+                showToast(`${key} deleted`);
+              })
+              .catch((e: Error) => showToast(`Delete failed — ${e.message}`));
+          }}
           goSources={() => {
             setTab('sources');
             setDetailKey(null);

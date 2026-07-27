@@ -561,6 +561,32 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
     });
 
+    app.delete('/api/tickets/:key', async (req, res) => {
+      try {
+        const key = req.params.key;
+        const current = (await q('SELECT engagement_id, title FROM app.tickets WHERE key = $1', [key])).rows[0];
+        if (!current) {
+          res.status(404).json({ error: 'Ticket not found' });
+          return;
+        }
+        const engagementId = String(current.engagement_id);
+        if (!(await requireLead(req, res, engagementId))) return;
+        await q('DELETE FROM app.suggestions WHERE ticket = $1', [key]);
+        await q('UPDATE app.repo_prs SET ticket_key = NULL WHERE ticket_key = $1', [key]);
+        await q('UPDATE app.repo_commits SET ticket_key = NULL WHERE ticket_key = $1', [key]);
+        await q('DELETE FROM app.tickets WHERE key = $1', [key]);
+        await q(
+          `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
+           VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
+          [engagementId, `Deleted ticket ${key} — ${String(current.title)}`],
+        );
+        res.json({ ok: true });
+      } catch (err) {
+        console.error('delete ticket failed:', err);
+        res.status(500).json({ error: 'Failed to delete ticket' });
+      }
+    });
+
     app.post('/api/tickets/bulk', async (req, res) => {
       const parsed = BulkBody.safeParse(req.body);
       if (!parsed.success) {
