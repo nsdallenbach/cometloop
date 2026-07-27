@@ -59,6 +59,7 @@ export function Workspace({
   lead: boolean;
 }) {
   const [boardMode, setBoardMode] = useState<'kanban' | 'table'>('kanban');
+  const [newTicket, setNewTicket] = useState(false);
   const [bulk, setBulk] = useState<Record<string, boolean>>({});
   const [composer, setComposer] = useState<string | null>(null);
   const [pushed, setPushed] = useState<boolean | null>(null);
@@ -298,6 +299,22 @@ export function Workspace({
                 Table
               </button>
             </div>
+            <button
+              className="hv-border"
+              onClick={() => setNewTicket(true)}
+              style={{
+                border: '1px solid var(--line2)',
+                background: 'none',
+                color: 'var(--tx)',
+                borderRadius: 3,
+                padding: '5px 12px',
+                fontSize: 11.5,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              + New ticket
+            </button>
             <div style={{ flex: 1 }} />
             {bulkKeys.length > 0 && (
               <>
@@ -1025,7 +1042,172 @@ export function Workspace({
           </div>
         </div>
       )}
+
+      {newTicket && (
+        <NewTicketModal
+          engId={eng.id}
+          team={(detail?.team ?? []).map((m) => m.name)}
+          toast={toast}
+          onClose={() => setNewTicket(false)}
+          onCreated={(t) => {
+            setNewTicket(false);
+            setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
+            toast(`${t.key} created`);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** Modal for creating a ticket manually — lands in Backlog alongside agent-seeded work. */
+function NewTicketModal({
+  engId,
+  team,
+  toast,
+  onClose,
+  onCreated,
+}: {
+  engId: string;
+  team: string[];
+  toast: (msg: string) => void;
+  onClose: () => void;
+  onCreated: (t: Ticket) => void;
+}) {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [assignee, setAssignee] = useState('—');
+  const [est, setEst] = useState('');
+  const [workstream, setWorkstream] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  const inputStyle: React.CSSProperties = {
+    boxSizing: 'border-box',
+    width: '100%',
+    background: 'var(--bg)',
+    border: '1px solid var(--line2)',
+    borderRadius: 3,
+    color: 'var(--tx)',
+    padding: '7px 10px',
+    fontSize: 12.5,
+    fontFamily: 'inherit',
+  };
+  const labelStyle: React.CSSProperties = { ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 5 };
+
+  const create = () => {
+    if (!title.trim() || creating) return;
+    setCreating(true);
+    api
+      .createTicket(engId, {
+        title: title.trim(),
+        description: description.trim() || undefined,
+        assignee: assignee === '—' ? undefined : assignee,
+        est: est.trim() || undefined,
+        workstream: workstream.trim() || undefined,
+      })
+      .then(onCreated)
+      .catch((e: Error) => toast(`Create failed — ${e.message}`))
+      .finally(() => setCreating(false));
+  };
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 40 }} />
+      <div
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose();
+          else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
+        }}
+        style={{
+          position: 'fixed',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%,-50%)',
+          width: 460,
+          maxWidth: 'calc(100vw - 40px)',
+          background: 'var(--bg2)',
+          border: '1px solid var(--line)',
+          borderRadius: 4,
+          zIndex: 41,
+          boxShadow: '0 12px 40px rgba(0,0,0,.45)',
+          animation: 'eec-fadeUp .15s ease',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', padding: '13px 18px', borderBottom: '1px solid var(--line)' }}>
+          <span style={{ ...mono(500, 11), letterSpacing: '.1em', color: 'var(--tx2)' }}>NEW TICKET</span>
+          <button
+            className="hv-tx"
+            onClick={onClose}
+            style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 16, cursor: 'pointer', padding: '2px 6px' }}
+          >
+            ×
+          </button>
+        </div>
+        <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 13 }}>
+          <div>
+            <div style={labelStyle}>TITLE</div>
+            <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs to get done?" style={inputStyle} />
+          </div>
+          <div>
+            <div style={labelStyle}>DESCRIPTION</div>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              placeholder="Context, scope, links… (optional)"
+              style={{ ...inputStyle, lineHeight: 1.5, resize: 'vertical' }}
+            />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <div>
+              <div style={labelStyle}>ASSIGNEE</div>
+              <select value={assignee} onChange={(e) => setAssignee(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+                {[...new Set(['—', ...team])].map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <div style={labelStyle}>ESTIMATE</div>
+              <input value={est} onChange={(e) => setEst(e.target.value)} placeholder="e.g. 3d" style={inputStyle} />
+            </div>
+            <div>
+              <div style={labelStyle}>WORKSTREAM</div>
+              <input value={workstream} onChange={(e) => setWorkstream(e.target.value)} placeholder="Optional" style={inputStyle} />
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
+          <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LANDS IN BACKLOG · ⌘↵ TO CREATE</span>
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={onClose}
+            style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '7px 14px', fontSize: 12, cursor: 'pointer' }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={create}
+            disabled={!title.trim() || creating}
+            style={{
+              background: 'var(--acc)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 3,
+              padding: '7px 16px',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              opacity: !title.trim() || creating ? 0.45 : 1,
+            }}
+          >
+            {creating ? 'Creating…' : 'Create ticket'}
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 

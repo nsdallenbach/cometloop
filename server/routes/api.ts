@@ -330,6 +330,14 @@ const NewMemberBody = z.object({ name: z.string().min(1).max(80), role: z.string
 
 const CommentBody = z.object({ body: z.string().min(1).max(4000) });
 
+const CreateTicketBody = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().max(4000).optional(),
+  assignee: z.string().max(80).optional(),
+  est: z.string().max(16).optional(),
+  workstream: z.string().max(80).optional(),
+});
+
 function requestAuthor(req: express.Request): string {
   const h = req.headers['x-forwarded-preferred-username'] ?? req.headers['x-forwarded-email'];
   const v = Array.isArray(h) ? h[0] : h;
@@ -495,6 +503,61 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       } catch (err) {
         console.error('patch ticket failed:', err);
         res.status(500).json({ error: 'Failed to update ticket' });
+      }
+    });
+
+    app.post('/api/engagements/:id/tickets', async (req, res) => {
+      const parsed = CreateTicketBody.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'A ticket title is required' });
+        return;
+      }
+      try {
+        const engId = req.params.id;
+        const eng = (await q('SELECT client FROM app.engagements WHERE id = $1', [engId])).rows[0];
+        if (!eng) {
+          res.status(404).json({ error: 'Engagement not found' });
+          return;
+        }
+        // Continue the engagement's existing key sequence (e.g. NAC-118 after
+        // NAC-117); fall back to the client-derived prefix for a fresh board.
+        const existing = (await q('SELECT key FROM app.tickets WHERE engagement_id = $1 ORDER BY seq', [engId])).rows.map((r) =>
+          String(r.key),
+        );
+        const prefix =
+          existing[0]?.split('-')[0] ?? (String(eng.client).replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'ENG');
+        let next = 101;
+        for (const k of existing) {
+          const m = k.match(/-(\d+)$/);
+          if (m && Number(m[1]) >= next) next = Number(m[1]) + 1;
+        }
+        const key = `${prefix}-${next}`;
+        const { title, description, assignee, est, workstream } = parsed.data;
+        const author = requestAuthor(req);
+        const result = await q(
+          `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked)
+           VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,'[]',false) RETURNING *`,
+          [
+            key,
+            engId,
+            title.trim(),
+            assignee?.trim() || '—',
+            est?.trim() || '—',
+            workstream?.trim() ?? '',
+            JSON.stringify([{ type: 'MANUAL', label: `Created in console by ${author}` }]),
+            description?.trim() ?? '',
+          ],
+        );
+        const who = assignee?.trim();
+        await q(
+          `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
+           VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
+          [engId, `Created ticket ${key} — ${title.trim()}${who && who !== '—' ? `, assigned to ${who}` : ''}`],
+        );
+        res.status(201).json(result.rows[0]);
+      } catch (err) {
+        console.error('create ticket failed:', err);
+        res.status(500).json({ error: 'Failed to create ticket' });
       }
     });
 

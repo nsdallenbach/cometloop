@@ -166,6 +166,13 @@ export const api = {
     };
   },
 
+  async createTicket(
+    engId: string,
+    payload: { title: string; description?: string; assignee?: string; est?: string; workstream?: string },
+  ): Promise<Ticket> {
+    return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
+  },
+
   patchTicket(key: string, patch: { status?: TicketStatus; assignee?: string }) {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },
