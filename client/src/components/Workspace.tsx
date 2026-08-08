@@ -6,7 +6,6 @@ import type { Tab } from '../App';
 
 const COLS: [TicketStatus, string][] = [
   ['backlog', 'BACKLOG'],
-  ['progress', 'IN PROGRESS'],
   ['review', 'REVIEW'],
   ['done', 'DONE'],
 ];
@@ -71,8 +70,8 @@ export function Workspace({
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = useState<TicketStatus | 'agent' | null>(null);
   const drag = useRef<string | null>(null);
-  // Card being dragged out of / within the agent lane (queued tasks only).
-  const dragTask = useRef<{ id: number; ticketKey: string } | null>(null);
+  // Card being dragged out of / within the agent lane.
+  const dragTask = useRef<{ id: number; ticketKey: string; queued: boolean } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
@@ -264,6 +263,17 @@ export function Workspace({
       .catch((e: Error) => toast(`Queue failed — ${e.message}`));
   };
 
+  /** Drag to Review = the run is done; the ticket parks there for sign-off. */
+  const completeTask = (ticketKey: string) => {
+    api
+      .completeAgentTask(ticketKey)
+      .then(() => {
+        toast(`${ticketKey} marked done — ready for review`);
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Complete failed — ${e.message}`));
+  };
+
   const recallTask = (ticketKey: string, thenStatus?: TicketStatus) => {
     api
       .cancelAgentTask(ticketKey)
@@ -323,19 +333,19 @@ export function Workspace({
     return (
       <div
         key={`at-${at.id}`}
-        draggable={lead && !running}
-        onDragStart={() => (dragTask.current = { id: at.id, ticketKey: at.ticketKey })}
+        draggable={lead}
+        onDragStart={() => (dragTask.current = { id: at.id, ticketKey: at.ticketKey, queued: !running })}
         onDragEnd={() => {
           dragTask.current = null;
           setDragOverCol(null);
         }}
         onDragOver={(e) => {
-          if (dragTask.current && !running) e.preventDefault();
+          if (dragTask.current?.queued && !running) e.preventDefault();
         }}
         onDrop={(e) => {
           // Reorder: dropping a queued card on another queued card slots it above.
           const dt = dragTask.current;
-          if (!dt || running || dt.id === at.id) return;
+          if (!dt || !dt.queued || running || dt.id === at.id) return;
           e.preventDefault();
           e.stopPropagation();
           dragTask.current = null;
@@ -420,7 +430,7 @@ export function Workspace({
         if (dt) {
           // Dropped on lane background: send to the back of the queue.
           dragTask.current = null;
-          reorderQueue(dt.id, null);
+          if (dt.queued) reorderQueue(dt.id, null);
           return;
         }
         const key = drag.current;
@@ -594,23 +604,6 @@ export function Workspace({
             {bulkKeys.length > 0 && (
               <>
                 <span style={{ ...mono(500, 11), color: 'var(--tx)' }}>{bulkKeys.length} SELECTED</span>
-                <button
-                  onClick={() => {
-                    const prev = detail;
-                    setDetail((d) =>
-                      d ? { ...d, tickets: d.tickets.map((t) => (bulk[t.key] ? { ...t, status: 'progress' } : t)) } : d,
-                    );
-                    api.bulkTickets(bulkKeys, { status: 'progress' }).catch(() => {
-                      setDetail(prev);
-                      toast('Bulk save failed — changes rolled back');
-                    });
-                    setBulk({});
-                    toast(`${bulkKeys.length} tickets moved to In Progress`);
-                  }}
-                  style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx)', borderRadius: 3, padding: '4px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
-                >
-                  Move to In Progress
-                </button>
                 <select
                   value=""
                   onChange={(e) => {
@@ -687,12 +680,16 @@ export function Workspace({
                   No tickets on the board yet{proposedTickets.length > 0 ? ' — accept proposed tickets above to seed it.' : '.'}
                 </div>
               )}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,minmax(250px,1fr))', gap: 12, minWidth: 1300, height: '100%' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(250px,1fr))', gap: 12, minWidth: 1040, height: '100%' }}>
                 {COLS.map(([k, label]) => {
-                  const colTickets = tickets.filter((t) => t.status === k && !agentLaneKeys.has(t.key));
+                  // No In Progress lane: human-active tickets sit in Backlog
+                  // until they reach Review; agent-active ones sit in the lane.
+                  const colTickets = tickets.filter(
+                    (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key),
+                  );
                   return (
                     <Fragment key={k}>
-                    {k === 'progress' && agentLane}
+                    {k === 'review' && agentLane}
                     <div
                       onDragOver={(e) => {
                         e.preventDefault();
@@ -704,11 +701,16 @@ export function Workspace({
                         setDragOverCol(null);
                         const dt = dragTask.current;
                         if (dt) {
-                          // Queued card dragged back onto a status lane: recall it.
+                          // Agent card dragged onto a status lane: Review means
+                          // "the run is done"; anywhere else recalls the task.
                           dragTask.current = null;
                           if (!lead) return;
-                          const t = tickets.find((x) => x.key === dt.ticketKey);
-                          recallTask(dt.ticketKey, t && t.status !== k ? k : undefined);
+                          if (k === 'review') {
+                            completeTask(dt.ticketKey);
+                          } else {
+                            const t = tickets.find((x) => x.key === dt.ticketKey);
+                            recallTask(dt.ticketKey, t && t.status !== k && k !== 'backlog' ? k : undefined);
+                          }
                           return;
                         }
                         const key = drag.current;

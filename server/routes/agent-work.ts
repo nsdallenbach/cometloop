@@ -72,6 +72,44 @@ const CompleteBody = z.object({
   url: z.string().url().max(500).optional(),
 });
 
+/**
+ * Simulated runner (DEMO_MOCK_RUNNER=1): claims queued tasks ~10s after they
+ * are queued and flips them to working ~10s later, so the board's states can
+ * be exercised without a devbox. Simulated runs stay 'working' until a lead
+ * drags the card to Review (done) or out of the lane (cancelled). Disable the
+ * flag before pointing real runners at the queue.
+ */
+export function startMockRunner(q: Query): void {
+  const AGENT = 'sim-runner';
+  const tick = async () => {
+    try {
+      const claimed = (
+        await q(
+          `UPDATE app.agent_tasks
+           SET state = 'claimed', agent = $1, agent_identity = $1, claimed_at = NOW(), last_heartbeat = NOW(), updated_at = NOW()
+           WHERE state = 'queued' AND created_at < NOW() - INTERVAL '10 seconds' RETURNING ticket_key`,
+          [AGENT],
+        )
+      ).rows;
+      for (const t of claimed) {
+        await q(`UPDATE app.tickets SET status = 'progress', assignee = $2 WHERE key = $1`, [String(t.ticket_key), AGENT]);
+      }
+      await q(
+        `UPDATE app.agent_tasks
+         SET state = 'working', last_note = 'Simulated runner — working the ticket. Drag the card to Review to finish it.',
+             last_heartbeat = NOW(), updated_at = NOW()
+         WHERE state = 'claimed' AND agent = $1 AND claimed_at < NOW() - INTERVAL '10 seconds'`,
+        [AGENT],
+      );
+      await q(`UPDATE app.agent_tasks SET last_heartbeat = NOW() WHERE state = 'working' AND agent = $1`, [AGENT]);
+    } catch (err) {
+      console.warn('[mock-runner] tick failed:', (err as Error).message);
+    }
+  };
+  setInterval(() => void tick(), 5000).unref?.();
+  console.log('[agent] DEMO_MOCK_RUNNER active — queued tickets are claimed by sim-runner');
+}
+
 export function setupAgentRoutes(
   app: express.Application,
   q: Query,
@@ -145,6 +183,32 @@ export function setupAgentRoutes(
     } catch (err) {
       console.error('queue ticket failed:', err);
       res.status(500).json({ error: 'Failed to queue ticket' });
+    }
+  });
+
+  /** Lead marks the active run done from the board (drag the card to Review). */
+  app.post('/api/tickets/:key/queue/complete', async (req, res) => {
+    try {
+      const key = req.params.key;
+      const task = (
+        await q(`SELECT * FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])
+      ).rows[0];
+      if (!task) {
+        res.status(404).json({ error: 'No active agent task for this ticket' });
+        return;
+      }
+      const engagementId = String(task.engagement_id);
+      if (!(await requireLead(req, res, engagementId))) return;
+      await q(`UPDATE app.agent_tasks SET state = 'done', result = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
+        task.id,
+        'Marked done from the board.',
+      ]);
+      await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+      await feed(engagementId, 'YOU', `Marked agent work on ${key} done — moved to Review.`);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('queue complete failed:', err);
+      res.status(500).json({ error: 'Failed to complete agent task' });
     }
   });
 

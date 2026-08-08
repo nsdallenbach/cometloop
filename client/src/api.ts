@@ -363,6 +363,10 @@ export const api = {
     return http(`/api/tickets/${ticketKey}/queue`, { method: 'DELETE' });
   },
 
+  completeAgentTask(ticketKey: string) {
+    return http(`/api/tickets/${ticketKey}/queue/complete`, { method: 'POST', ...json({}) });
+  },
+
   reorderAgentQueue(engId: string, order: number[]) {
     return http(`/api/engagements/${engId}/agent-queue/order`, { method: 'PUT', ...json({ order }) });
   },

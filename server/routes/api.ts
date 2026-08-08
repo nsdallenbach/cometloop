@@ -4,7 +4,7 @@ import { extractSowText } from './extract-text';
 import { resolveIdentity, type Identity } from './roles';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
-import { AGENT_SCHEMA_SQL, setupAgentRoutes } from './agent-work';
+import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
 import { setupContextFileRoutes } from './context-files';
 import {
   SEED_ENGAGEMENTS,
@@ -1133,4 +1133,5 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   });
 
   startRepoPolling(q);
+  if (process.env.DEMO_MOCK_RUNNER === '1') startMockRunner(q);
 }
