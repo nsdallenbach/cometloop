@@ -115,7 +115,7 @@ export function TicketDrawer({
           top: 0,
           right: 0,
           bottom: 0,
-          width: 440,
+          width: 'min(620px, 94vw)',
           background: 'var(--bg2)',
           borderLeft: '1px solid var(--line)',
           zIndex: 41,
