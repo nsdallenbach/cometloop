@@ -43,6 +43,8 @@ export const AGENT_SCHEMA_SQL = [
    ON app.agent_tasks (ticket_key) WHERE state IN ('queued','claimed','working')`,
   // Latest progress note, denormalized so board cards can show it live.
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS last_note TEXT`,
+  // Runner-raised warning (reason text); NULL when nothing needs attention.
+  `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS flag TEXT`,
 ];
 
 const QueueBody = z.object({
@@ -63,6 +65,11 @@ const ClaimBody = z.object({
 const ProgressBody = z.object({
   agent: z.string().min(1).max(80),
   note: z.string().min(1).max(8000),
+});
+
+const FlagBody = z.object({
+  agent: z.string().min(1).max(80),
+  reason: z.string().min(1).max(2000),
 });
 
 const CompleteBody = z.object({
@@ -199,7 +206,7 @@ export function setupAgentRoutes(
       }
       const engagementId = String(task.engagement_id);
       if (!(await requireLead(req, res, engagementId))) return;
-      await q(`UPDATE app.agent_tasks SET state = 'done', result = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
+      await q(`UPDATE app.agent_tasks SET state = 'done', result = $2, flag = NULL, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
         task.id,
         'Marked done from the board.',
       ]);
@@ -435,6 +442,76 @@ export function setupAgentRoutes(
     }
   });
 
+  /**
+   * Raise a warning on the active task — stuck, erroring, needs input. Shows
+   * as yellow attention treatment on the board card without changing lanes
+   * (Review stays reserved for finished work awaiting human sign-off).
+   */
+  app.post('/api/agent/work/:id/flag', async (req, res) => {
+    const parsed = FlagBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'agent and reason are required' });
+      return;
+    }
+    try {
+      const task = (
+        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
+      ).rows[0];
+      if (!task) {
+        res.status(404).json({ error: 'No active task with this id' });
+        return;
+      }
+      const { agent, reason } = parsed.data;
+      if (String(task.agent) !== agent) {
+        res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
+        return;
+      }
+      const key = String(task.ticket_key);
+      await q(`UPDATE app.agent_tasks SET flag = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
+        task.id,
+        reason.trim(),
+      ]);
+      await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [key, agent, `⚠ Flagged: ${reason.trim()}`]);
+      await feed(String(task.engagement_id), 'AGENT', `⚠ ${agent} flagged ${key} — ${reason.trim().slice(0, 140)}`);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('flag failed:', err);
+      res.status(500).json({ error: 'Failed to flag task' });
+    }
+  });
+
+  /** Clear a previously raised flag (the runner recovered or got its answer). */
+  app.delete('/api/agent/work/:id/flag', async (req, res) => {
+    const parsed = z.object({ agent: z.string().min(1).max(80) }).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'agent is required' });
+      return;
+    }
+    try {
+      const task = (
+        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
+      ).rows[0];
+      if (!task) {
+        res.status(404).json({ error: 'No active task with this id' });
+        return;
+      }
+      if (String(task.agent) !== parsed.data.agent) {
+        res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
+        return;
+      }
+      await q(`UPDATE app.agent_tasks SET flag = NULL, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [task.id]);
+      await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
+        String(task.ticket_key),
+        parsed.data.agent,
+        'Flag cleared.',
+      ]);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('flag clear failed:', err);
+      res.status(500).json({ error: 'Failed to clear flag' });
+    }
+  });
+
   app.post('/api/agent/work/:id/complete', async (req, res) => {
     const parsed = CompleteBody.safeParse(req.body);
     if (!parsed.success) {
@@ -457,7 +534,7 @@ export function setupAgentRoutes(
       const key = String(task.ticket_key);
       const engagementId = String(task.engagement_id);
       await q(
-        `UPDATE app.agent_tasks SET state = $2, result = $3, result_url = $4, last_heartbeat = NOW(), updated_at = NOW()
+        `UPDATE app.agent_tasks SET state = $2, result = $3, result_url = $4, flag = NULL, last_heartbeat = NOW(), updated_at = NOW()
          WHERE id = $1`,
         [task.id, outcome, summary.trim(), url ?? null],
       );

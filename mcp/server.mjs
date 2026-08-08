@@ -217,6 +217,20 @@ tool(
 );
 
 tool(
+  'flag_agent_work',
+  'Raise a warning on your claimed task — stuck, erroring, or needs human input. Shows yellow attention treatment on the board card without changing lanes; also posts a ticket comment.',
+  { task_id: z.number().int(), agent: z.string(), reason: z.string().min(1).max(2000) },
+  async ({ task_id, agent, reason }) => call('POST', `/api/agent/work/${task_id}/flag`, { agent, reason }),
+);
+
+tool(
+  'clear_agent_flag',
+  'Clear a previously raised flag on your claimed task (you recovered or got the input you needed).',
+  { task_id: z.number().int(), agent: z.string() },
+  async ({ task_id, agent }) => call('DELETE', `/api/agent/work/${task_id}/flag`, { agent }),
+);
+
+tool(
   'get_git_credential',
   'Vend a short-lived (~1h) git clone/push token for a claimed task (GitHub App connections only).',
   { task_id: z.number().int(), agent: z.string() },

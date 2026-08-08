@@ -111,6 +111,7 @@ function mapAgentTask(r: Row): AgentTask {
     claimedAt: r.claimed_at == null ? null : s(r.claimed_at),
     lastHeartbeat: r.last_heartbeat == null ? null : s(r.last_heartbeat),
     lastNote: r.last_note == null ? null : s(r.last_note),
+    flag: r.flag == null ? null : s(r.flag),
     result: r.result == null ? null : s(r.result),
     resultUrl: r.result_url == null ? null : s(r.result_url),
     createdAt: s(r.created_at),
