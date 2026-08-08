@@ -314,11 +314,12 @@ export function Workspace({
   const agentCard = (at: AgentTask, qPos: number | null) => {
     const t = tickets.find((x) => x.key === at.ticketKey);
     const running = at.state !== 'queued';
-    // Warning state: a runner holds the task but hasn't heartbeat in 3 min.
-    const stale = running && at.lastHeartbeat != null && Date.now() - new Date(at.lastHeartbeat).getTime() > 3 * 60_000;
-    // Status dot: grey ring queued → green spinner running → yellow ⚠ stalled.
-    const statusDot = stale ? (
-      <span title="No heartbeat for over 3 minutes" style={{ ...mono(600, 11), color: 'var(--warn)', flex: 'none', lineHeight: 1 }}>⚠</span>
+    // Warning states: an explicit runner-raised flag, or a silent heartbeat.
+    const flagged = running && at.flag != null && at.flag !== '';
+    const stale = running && !flagged && at.lastHeartbeat != null && Date.now() - new Date(at.lastHeartbeat).getTime() > 3 * 60_000;
+    // Status dot: grey ring queued → green spinner running → yellow ⚠ warning.
+    const statusDot = flagged || stale ? (
+      <span title={flagged ? at.flag ?? '' : 'No heartbeat for over 3 minutes'} style={{ ...mono(600, 11), color: 'var(--warn)', flex: 'none', lineHeight: 1 }}>⚠</span>
     ) : (
       <span
         title={running ? 'Runner active' : 'Waiting for a runner'}
@@ -359,7 +360,7 @@ export function Workspace({
         onClick={() => openTicket(at.ticketKey)}
         className="hv-border"
         style={{
-          border: `1px ${running ? 'solid' : 'dashed'} var(--agent)`,
+          border: `1px ${running ? 'solid' : 'dashed'} ${flagged ? 'var(--warn)' : 'var(--agent)'}`,
           background: running ? 'var(--agentsoft)' : 'var(--bg2)',
           borderRadius: 3,
           padding: '9px 11px',
@@ -373,14 +374,15 @@ export function Workspace({
             <span
               style={{
                 ...mono(500, 9),
-                background: stale ? 'var(--warn)' : 'var(--agent)',
+                background: flagged || stale ? 'var(--warn)' : 'var(--agent)',
                 color: '#fff',
                 borderRadius: 2,
                 padding: '1px 5px',
-                animation: stale ? 'none' : 'eec-pulse 2.4s infinite',
+                animation: flagged || stale ? 'none' : 'eec-pulse 2.4s infinite',
               }}
             >
-              ◆ {(at.agent ?? 'AGENT').toUpperCase()} {stale ? 'STALLED' : at.state === 'working' ? 'WORKING' : 'CLAIMED'}
+              {flagged ? '⚠' : '◆'} {(at.agent ?? 'AGENT').toUpperCase()}{' '}
+              {flagged ? 'NEEDS ATTENTION' : stale ? 'STALLED' : at.state === 'working' ? 'WORKING' : 'CLAIMED'}
             </span>
           ) : (
             <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '1px 5px' }}>◇ #{qPos} IN QUEUE</span>
@@ -408,6 +410,11 @@ export function Workspace({
         {!running && at.instructions && (
           <div style={{ marginTop: 5, fontSize: 11, color: 'var(--tx3)', lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {at.instructions}
+          </div>
+        )}
+        {flagged && (
+          <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            ⚠ {at.flag}
           </div>
         )}
         {running && (

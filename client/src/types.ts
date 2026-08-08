@@ -110,6 +110,7 @@ export interface AgentTask {
   claimedAt: string | null;
   lastHeartbeat: string | null;
   lastNote: string | null;
+  flag: string | null;
   result: string | null;
   resultUrl: string | null;
   createdAt: string;

@@ -63,6 +63,8 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 | `GET` | `/api/agent/work/:id` | Re-fetch the work package for a claimed task |
 | `POST` | `/api/agent/work/:id/progress` | Heartbeat + progress note (becomes a ticket comment) |
 | `POST` | `/api/agent/work/:id/git-credential` | Short-lived clone/push token (GitHub App connections only) |
+| `POST` | `/api/agent/work/:id/flag` | Raise a warning (stuck/erroring/needs input) — yellow on the board, no lane change |
+| `DELETE` | `/api/agent/work/:id/flag` | Clear the warning after recovering |
 | `POST` | `/api/agent/work/:id/complete` | Finish with `done` or `failed` |
 | `GET` | `/api/engagements/:id/context-files` | List context files for an engagement |
 | `GET` | `/api/engagements/:id/context-files/:name` | Download one context file |

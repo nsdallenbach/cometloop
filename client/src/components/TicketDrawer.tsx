@@ -235,6 +235,9 @@ export function TicketDrawer({
                     {agentTask.instructions && (
                       <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>{agentTask.instructions}</div>
                     )}
+                    {agentTask.flag && ['claimed', 'working'].includes(agentTask.state) && (
+                      <div style={{ fontSize: 12, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.5 }}>⚠ {agentTask.flag}</div>
+                    )}
                     {agentTask.result && (agentTask.state === 'done' || agentTask.state === 'failed') && (
                       <div style={{ fontSize: 12, color: agentTask.state === 'done' ? 'var(--tx2)' : 'var(--bad)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
                         {agentTask.result}
