@@ -1,5 +1,8 @@
 import type {
   AdminData,
+  AgentTask,
+  AgentTaskState,
+  ContextFile,
   ContextSource,
   Engagement,
   EngagementDetail,
@@ -95,6 +98,25 @@ function mapSource(r: Row): ContextSource {
   };
 }
 
+function mapAgentTask(r: Row): AgentTask {
+  return {
+    id: n(r.id),
+    ticketKey: s(r.ticket_key),
+    engagementId: s(r.engagement_id),
+    state: (s(r.state) as AgentTaskState) || 'queued',
+    priority: n(r.priority),
+    instructions: s(r.instructions),
+    queuedBy: s(r.queued_by),
+    agent: r.agent == null ? null : s(r.agent),
+    claimedAt: r.claimed_at == null ? null : s(r.claimed_at),
+    lastHeartbeat: r.last_heartbeat == null ? null : s(r.last_heartbeat),
+    lastNote: r.last_note == null ? null : s(r.last_note),
+    result: r.result == null ? null : s(r.result),
+    resultUrl: r.result_url == null ? null : s(r.result_url),
+    createdAt: s(r.created_at),
+  };
+}
+
 function mapFeed(r: Row): FeedItem {
   return {
     id: n(r.id),
@@ -154,7 +176,7 @@ export const api = {
   },
 
   async detail(engId: string): Promise<EngagementDetail> {
-    const d = await http<{ tickets: Row[]; sources: Row[]; feed: Row[]; team: Row[]; suggestions: Row[] }>(
+    const d = await http<{ tickets: Row[]; sources: Row[]; feed: Row[]; team: Row[]; suggestions: Row[]; agentTasks?: Row[] }>(
       `/api/engagements/${engId}/detail`,
     );
     return {
@@ -163,6 +185,7 @@ export const api = {
       feed: d.feed.map(mapFeed),
       team: d.team.map(mapTeam),
       suggestions: d.suggestions.map(mapSuggestion),
+      agentTasks: (d.agentTasks ?? []).map(mapAgentTask),
     };
   },
 
@@ -316,6 +339,39 @@ export const api = {
   async ticketDev(key: string): Promise<TicketDev> {
     const d = await http<{ prs: Row[]; commits: Row[] }>(`/api/tickets/${key}/dev`);
     return { prs: d.prs.map(mapRepoPr), commits: d.commits.map(mapRepoCommit) };
+  },
+
+  // ---- agent work queue ----
+
+  async queueTicket(key: string, instructions?: string): Promise<AgentTask> {
+    return mapAgentTask(await http<Row>(`/api/tickets/${key}/queue`, { method: 'POST', ...json({ instructions }) }));
+  },
+
+  cancelAgentTask(ticketKey: string) {
+    return http(`/api/tickets/${ticketKey}/queue`, { method: 'DELETE' });
+  },
+
+  reorderAgentQueue(engId: string, order: number[]) {
+    return http(`/api/engagements/${engId}/agent-queue/order`, { method: 'PUT', ...json({ order }) });
+  },
+
+  // ---- context files ----
+
+  async contextFiles(engId: string): Promise<ContextFile[]> {
+    const d = await http<{ files: ContextFile[] }>(`/api/engagements/${engId}/context-files`);
+    return d.files;
+  },
+
+  uploadContextFile(engId: string, file: File): Promise<{ name: string; size: number }> {
+    return http(`/api/engagements/${engId}/context-files?filename=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+  },
+
+  deleteContextFile(engId: string, name: string) {
+    return http(`/api/engagements/${engId}/context-files/${encodeURIComponent(name)}`, { method: 'DELETE' });
   },
 };
 

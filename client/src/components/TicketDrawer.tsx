@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
-import type { Ticket, TicketComment, TicketDev } from '../types';
+import type { AgentTask, Ticket, TicketComment, TicketDev } from '../types';
 import { STATUS_LABEL, initials, mono } from '../util';
+
+const AGENT_STATE_LABEL: Record<AgentTask['state'], string> = {
+  queued: 'QUEUED — WAITING FOR A RUNNER',
+  claimed: 'CLAIMED',
+  working: 'WORKING',
+  done: 'COMPLETED',
+  failed: 'FAILED',
+  cancelled: 'CANCELLED',
+};
 
 const PR_STATE_COLOR: Record<string, string> = { open: 'var(--warn)', merged: 'var(--ok)', closed: 'var(--tx3)' };
 
@@ -10,6 +19,9 @@ export function TicketDrawer({
   ticket,
   team,
   lead,
+  agentTask,
+  onQueueAgent,
+  onCancelAgent,
   onAssign,
   toast,
   onClose,
@@ -22,6 +34,9 @@ export function TicketDrawer({
   ticket: Ticket;
   team: string[];
   lead: boolean;
+  agentTask: AgentTask | null;
+  onQueueAgent: (instructions: string) => void;
+  onCancelAgent: () => void;
   onAssign: (assignee: string) => void;
   toast: (msg: string) => void;
   onClose: () => void;
@@ -32,6 +47,10 @@ export function TicketDrawer({
 }) {
   const proposed = ticket.status === 'proposed';
   const [delConfirm, setDelConfirm] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [instructions, setInstructions] = useState('');
+  const agentActive = agentTask !== null && ['queued', 'claimed', 'working'].includes(agentTask.state);
+  const canQueue = lead && !agentActive && ['backlog', 'progress'].includes(ticket.status);
   const [loaded, setLoaded] = useState<{ key: string; list: TicketComment[] | null; error: boolean } | null>(null);
   const [dev, setDev] = useState<{ key: string; data: TicketDev | null } | null>(null);
   const [draft, setDraft] = useState('');
@@ -192,6 +211,102 @@ export function TicketDrawer({
               </div>
             ))}
           </div>
+          {(agentTask || canQueue) && (
+            <>
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>AGENT WORK</div>
+              <div style={{ border: `1px solid ${agentActive ? 'var(--agent)' : 'var(--line)'}`, borderRadius: 3, padding: '10px 12px', marginBottom: 18 }}>
+                {agentTask && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ ...mono(500, 9), color: 'var(--agent)', border: '1px solid var(--agent)', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
+                        ◆ {AGENT_STATE_LABEL[agentTask.state]}
+                      </span>
+                      {agentTask.agent && <span style={{ ...mono(400, 10), color: 'var(--tx2)' }}>{agentTask.agent}</span>}
+                      {agentActive && lead && (
+                        <button
+                          className="hv-bad"
+                          onClick={onCancelAgent}
+                          style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 9), cursor: 'pointer', letterSpacing: '.06em' }}
+                        >
+                          CANCEL
+                        </button>
+                      )}
+                    </div>
+                    {agentTask.instructions && (
+                      <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>{agentTask.instructions}</div>
+                    )}
+                    {agentTask.result && (agentTask.state === 'done' || agentTask.state === 'failed') && (
+                      <div style={{ fontSize: 12, color: agentTask.state === 'done' ? 'var(--tx2)' : 'var(--bad)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                        {agentTask.result}
+                      </div>
+                    )}
+                    {agentTask.resultUrl && (
+                      <a href={agentTask.resultUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--acc)', wordBreak: 'break-all' }}>
+                        {agentTask.resultUrl}
+                      </a>
+                    )}
+                  </div>
+                )}
+                {canQueue && !queueOpen && (
+                  <button
+                    onClick={() => setQueueOpen(true)}
+                    style={{
+                      marginTop: agentTask ? 10 : 0,
+                      border: '1px solid var(--agent)',
+                      background: 'var(--agentsoft)',
+                      color: 'var(--agent)',
+                      borderRadius: 3,
+                      padding: '6px 12px',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ◆ {agentTask ? 'Queue again for agent' : 'Queue for agent'}
+                  </button>
+                )}
+                {canQueue && queueOpen && (
+                  <div style={{ marginTop: agentTask ? 10 : 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <textarea
+                      value={instructions}
+                      onChange={(e) => setInstructions(e.target.value)}
+                      rows={3}
+                      placeholder="Optional instructions for the agent — constraints, branch naming, what done looks like…"
+                      style={{
+                        boxSizing: 'border-box',
+                        background: 'var(--bg)',
+                        border: '1px solid var(--line2)',
+                        borderRadius: 3,
+                        color: 'var(--tx)',
+                        padding: '8px 10px',
+                        fontSize: 12.5,
+                        lineHeight: 1.5,
+                        resize: 'vertical',
+                      }}
+                    />
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        onClick={() => {
+                          onQueueAgent(instructions.trim());
+                          setQueueOpen(false);
+                          setInstructions('');
+                        }}
+                        style={{ border: 'none', background: 'var(--agent)', color: '#fff', borderRadius: 3, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                      >
+                        Add to queue
+                      </button>
+                      <button
+                        onClick={() => setQueueOpen(false)}
+                        style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
           {devData && (devData.prs.length > 0 || devData.commits.length > 0) && (
             <>
               <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>DEVELOPMENT</div>

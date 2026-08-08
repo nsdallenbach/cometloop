@@ -3,6 +3,8 @@ import express, { Application } from 'express';
 import { extractSowText } from './extract-text';
 import { resolveIdentity, type Identity } from './roles';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
+import { AGENT_SCHEMA_SQL, setupAgentRoutes } from './agent-work';
+import { setupContextFileRoutes } from './context-files';
 import {
   SEED_ENGAGEMENTS,
   SEED_TICKETS,
@@ -22,6 +24,8 @@ interface AppKitServices {
   files(key: string): {
     upload(filePath: string, contents: Buffer, options?: { overwrite?: boolean }): Promise<void>;
     download(filePath: string): Promise<{ contents?: ReadableStream }>;
+    list(directoryPath?: string): Promise<{ name?: string; path?: string; is_directory?: boolean; file_size?: number; last_modified?: number }[]>;
+    delete(filePath: string): Promise<void>;
   };
   serving(alias: string): {
     invoke(body: unknown): Promise<unknown>;
@@ -127,7 +131,7 @@ const SCHEMA_SQL = [
 ];
 
 async function initSchema(appkit: AppKitServices) {
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL]) {
     await appkit.lakebase.query(sql);
   }
   const { rows } = await appkit.lakebase.query('SELECT 1 FROM app.engagements LIMIT 1');
@@ -439,7 +443,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             [id],
           )
         ).rows;
-        res.json({ tickets, sources, feed, team, suggestions });
+        const agentTasks = (await q('SELECT * FROM app.agent_tasks WHERE engagement_id = $1 ORDER BY id DESC LIMIT 50', [id])).rows;
+        res.json({ tickets, sources, feed, team, suggestions, agentTasks });
       } catch (err) {
         console.error('engagement detail failed:', err);
         res.status(500).json({ error: 'Failed to load engagement detail' });
@@ -1098,6 +1103,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     });
 
     setupRepoRoutes(app, q, requireLead);
+    setupAgentRoutes(app, q, appkit.files('files'), requireLead);
+    setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
 
     app.post('/api/tickets/:key/comments', async (req, res) => {
       const parsed = CommentBody.safeParse(req.body);

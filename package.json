@@ -1,5 +1,5 @@
 {
-  "name": "engagement-console",
+  "name": "delivery-console",
   "version": "1.0.0",
   "main": "dist/server.js",
   "type": "module",
@@ -30,7 +30,7 @@
   "keywords": [],
   "author": "",
   "license": "Unlicensed",
-  "description": "Engagement Execution Console - Datavail delivery execution: portfolio, board, roadmap, sources, team, status feed",
+  "description": "Delivery Console - Datavail delivery execution: portfolio, board, roadmap, sources, team, status feed",
   "dependencies": {
     "@databricks/appkit": "0.38.1",
     "@databricks/appkit-ui": "0.38.1",

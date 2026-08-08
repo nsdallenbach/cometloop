@@ -160,6 +160,34 @@ export default function App() {
   }, [showToast]);
 
   const detailTicket = detail?.tickets.find((t) => t.key === detailKey) ?? null;
+  // Latest agent task for the open ticket (agentTasks arrive newest-first).
+  const detailAgentTask = detailTicket ? (detail?.agentTasks.find((a) => a.ticketKey === detailTicket.key) ?? null) : null;
+
+  const queueForAgent = useCallback(
+    (key: string, instructions: string) => {
+      api
+        .queueTicket(key, instructions || undefined)
+        .then(() => {
+          showToast(`${key} queued for agent work`);
+          refreshDetail();
+        })
+        .catch((e: Error) => showToast(`Queue failed — ${e.message}`));
+    },
+    [showToast, refreshDetail],
+  );
+
+  const cancelAgent = useCallback(
+    (key: string) => {
+      api
+        .cancelAgentTask(key)
+        .then(() => {
+          showToast(`Agent work on ${key} cancelled`);
+          refreshDetail();
+        })
+        .catch((e: Error) => showToast(`Cancel failed — ${e.message}`));
+    },
+    [showToast, refreshDetail],
+  );
 
   // ---- command palette ----
   const paletteItems: PaletteItem[] = useMemo(() => {
@@ -235,7 +263,7 @@ export default function App() {
             <span style={{ ...mono(700, 11), color: '#fff' }}>D</span>
           </div>
           <span style={{ ...mono(500, 12), letterSpacing: '.12em' }}>DATAVAIL</span>
-          <span style={{ ...mono(400, 11), color: 'var(--tx3)', letterSpacing: '.1em' }}>[ EXECUTION CONSOLE ]</span>
+          <span style={{ ...mono(400, 11), color: 'var(--tx3)', letterSpacing: '.1em' }}>[ DELIVERY CONSOLE ]</span>
         </div>
         <div style={{ flex: 1 }} />
         <div
@@ -425,6 +453,9 @@ export default function App() {
           ticket={detailTicket}
           team={detail?.team.map((t) => t.name) ?? []}
           lead={eng ? canLead(eng.id) : false}
+          agentTask={detailAgentTask}
+          onQueueAgent={(instructions) => queueForAgent(detailTicket.key, instructions)}
+          onCancelAgent={() => cancelAgent(detailTicket.key)}
           onAssign={(assignee) => setTicket(detailTicket.key, { assignee })}
           toast={showToast}
           onClose={() => setDetailKey(null)}

@@ -1,0 +1,374 @@
+import { z } from 'zod';
+import type express from 'express';
+import { resolveIdentity, type Identity } from './roles';
+import { listContextFiles, type FilesVolume } from './context-files';
+
+/**
+ * Agent work queue: leads queue tickets for autonomous agents; external agent
+ * runners (the devbox platform — VMs running Claude Code) integrate over plain
+ * HTTP. A runner authenticates through the Databricks Apps OAuth proxy like any
+ * workspace caller, then polls the queue, atomically claims a task, reports
+ * progress (heartbeats + ticket comments) and completes with an outcome.
+ *
+ * Lifecycle: queued → claimed → working → done | failed, or cancelled by a
+ * lead. Completing with 'done' moves the ticket to Review for human sign-off
+ * (merging a linked PR still auto-moves it to Done via the repo integration);
+ * 'failed' returns the ticket to the backlog.
+ */
+
+type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
+
+export const AGENT_SCHEMA_SQL = [
+  `CREATE TABLE IF NOT EXISTS app.agent_tasks (
+    id SERIAL PRIMARY KEY,
+    ticket_key TEXT NOT NULL REFERENCES app.tickets(key) ON DELETE CASCADE,
+    engagement_id TEXT NOT NULL REFERENCES app.engagements(id) ON DELETE CASCADE,
+    state TEXT NOT NULL DEFAULT 'queued',
+    priority INT NOT NULL DEFAULT 0,
+    instructions TEXT NOT NULL DEFAULT '',
+    queued_by TEXT NOT NULL DEFAULT '',
+    agent TEXT,
+    agent_identity TEXT,
+    claimed_at TIMESTAMPTZ,
+    last_heartbeat TIMESTAMPTZ,
+    result TEXT,
+    result_url TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  // One active run per ticket; completed/cancelled runs stay as history.
+  `CREATE UNIQUE INDEX IF NOT EXISTS agent_tasks_active_ticket
+   ON app.agent_tasks (ticket_key) WHERE state IN ('queued','claimed','working')`,
+  // Latest progress note, denormalized so board cards can show it live.
+  `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS last_note TEXT`,
+];
+
+const QueueBody = z.object({
+  instructions: z.string().max(8000).optional(),
+  priority: z.number().int().min(0).max(9).optional(),
+});
+
+const OrderBody = z.object({
+  order: z.array(z.number().int().positive()).min(1).max(200),
+});
+
+const ClaimBody = z.object({
+  agent: z.string().min(1).max(80),
+  engagement: z.string().max(80).optional(),
+  ticket: z.string().max(40).optional(),
+});
+
+const ProgressBody = z.object({
+  agent: z.string().min(1).max(80),
+  note: z.string().min(1).max(8000),
+});
+
+const CompleteBody = z.object({
+  agent: z.string().min(1).max(80),
+  outcome: z.enum(['done', 'failed']),
+  summary: z.string().min(1).max(8000),
+  url: z.string().url().max(500).optional(),
+});
+
+export function setupAgentRoutes(
+  app: express.Application,
+  q: Query,
+  files: FilesVolume,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+) {
+  const feed = (engagementId: string, actor: string, text: string) =>
+    q(
+      `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
+       VALUES ($1, $2, $3, 'JUST NOW', false)`,
+      [engagementId, actor, text],
+    );
+
+  /** Everything a runner needs to work a task, in one payload. */
+  const workPackage = async (task: Record<string, unknown>) => {
+    const ticketKey = String(task.ticket_key);
+    const engagementId = String(task.engagement_id);
+    const ticket = (await q('SELECT * FROM app.tickets WHERE key = $1', [ticketKey])).rows[0] ?? null;
+    const engagement =
+      (await q('SELECT id, client, name, phase, dates, health FROM app.engagements WHERE id = $1', [engagementId])).rows[0] ?? null;
+    const comments = (
+      await q('SELECT author, body, created_at FROM app.ticket_comments WHERE ticket_key = $1 ORDER BY id', [ticketKey])
+    ).rows;
+    // Repo coordinates without the stored token — the runner brings its own git credentials.
+    const repo =
+      (
+        await q('SELECT provider, repo_url, repo_name, default_branch, status FROM app.repo_connections WHERE engagement_id = $1', [
+          engagementId,
+        ])
+      ).rows[0] ?? null;
+    const contextFiles = await listContextFiles(files, engagementId);
+    return { task, ticket, engagement, comments, repo, contextFiles };
+  };
+
+  // ---------- console side (lead actions) ----------
+
+  app.post('/api/tickets/:key/queue', async (req, res) => {
+    const parsed = QueueBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid queue request' });
+      return;
+    }
+    try {
+      const key = req.params.key;
+      const ticket = (await q('SELECT engagement_id, title, status FROM app.tickets WHERE key = $1', [key])).rows[0];
+      if (!ticket) {
+        res.status(404).json({ error: 'Ticket not found' });
+        return;
+      }
+      const engagementId = String(ticket.engagement_id);
+      const lead = await requireLead(req, res, engagementId);
+      if (!lead) return;
+      if (!['backlog', 'progress'].includes(String(ticket.status))) {
+        res.status(409).json({ error: `Only backlog or in-progress tickets can be queued (this one is ${String(ticket.status)})` });
+        return;
+      }
+      const active = (
+        await q(`SELECT id FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])
+      ).rows[0];
+      if (active) {
+        res.status(409).json({ error: 'This ticket is already queued for agent work' });
+        return;
+      }
+      const inserted = await q(
+        `INSERT INTO app.agent_tasks (ticket_key, engagement_id, priority, instructions, queued_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', lead.email],
+      );
+      await feed(engagementId, 'YOU', `Queued ${key} — ${String(ticket.title)} for agent work.`);
+      res.status(201).json(inserted.rows[0]);
+    } catch (err) {
+      console.error('queue ticket failed:', err);
+      res.status(500).json({ error: 'Failed to queue ticket' });
+    }
+  });
+
+  app.delete('/api/tickets/:key/queue', async (req, res) => {
+    try {
+      const key = req.params.key;
+      const task = (
+        await q(`SELECT * FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])
+      ).rows[0];
+      if (!task) {
+        res.status(404).json({ error: 'No active agent task for this ticket' });
+        return;
+      }
+      const engagementId = String(task.engagement_id);
+      if (!(await requireLead(req, res, engagementId))) return;
+      await q(`UPDATE app.agent_tasks SET state = 'cancelled', updated_at = NOW() WHERE id = $1`, [task.id]);
+      // A claimed ticket goes back to the backlog; drop the agent as assignee.
+      if (task.state !== 'queued') {
+        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—' WHERE key = $1 AND assignee = $2`, [
+          key,
+          typeof task.agent === 'string' ? task.agent : '',
+        ]);
+        await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
+      }
+      await feed(engagementId, 'YOU', `Cancelled agent work on ${key}.`);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('cancel queue failed:', err);
+      res.status(500).json({ error: 'Failed to cancel agent task' });
+    }
+  });
+
+  /** Reorder the queued lane: body.order is task ids top-first; top claims first. */
+  app.put('/api/engagements/:id/agent-queue/order', async (req, res) => {
+    const parsed = OrderBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'order (array of task ids) is required' });
+      return;
+    }
+    try {
+      const engagementId = req.params.id;
+      if (!(await requireLead(req, res, engagementId))) return;
+      const { order } = parsed.data;
+      // Claiming sorts priority DESC, so the top of the lane gets the highest
+      // number. Newly queued tasks default to 0 and land at the bottom.
+      for (let i = 0; i < order.length; i++) {
+        await q(
+          `UPDATE app.agent_tasks SET priority = $3, updated_at = NOW()
+           WHERE id = $1 AND engagement_id = $2 AND state = 'queued'`,
+          [order[i], engagementId, order.length - i],
+        );
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('queue reorder failed:', err);
+      res.status(500).json({ error: 'Failed to reorder the queue' });
+    }
+  });
+
+  // ---------- runner side (devbox platform) ----------
+
+  app.get('/api/agent/work', async (req, res) => {
+    try {
+      const engagement = typeof req.query.engagement === 'string' ? req.query.engagement : null;
+      const agent = typeof req.query.agent === 'string' ? req.query.agent : null;
+      const params: unknown[] = [];
+      let where = `state = 'queued'`;
+      if (engagement) {
+        params.push(engagement);
+        where += ` AND engagement_id = $${params.length}`;
+      }
+      const queued = (
+        await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)
+      ).rows;
+      const active = agent
+        ? (await q(`SELECT * FROM app.agent_tasks WHERE agent = $1 AND state IN ('claimed','working') ORDER BY id`, [agent])).rows
+        : [];
+      res.json({ queued, active });
+    } catch (err) {
+      console.error('agent poll failed:', err);
+      res.status(500).json({ error: 'Failed to read the queue' });
+    }
+  });
+
+  app.post('/api/agent/work/claim', async (req, res) => {
+    const parsed = ClaimBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'agent (runner name) is required' });
+      return;
+    }
+    try {
+      const { agent, engagement, ticket } = parsed.data;
+      const identity = await resolveIdentity(req);
+      const filters: string[] = [`state = 'queued'`];
+      const params: unknown[] = [agent, identity.email];
+      if (engagement) {
+        params.push(engagement);
+        filters.push(`engagement_id = $${params.length}`);
+      }
+      if (ticket) {
+        params.push(ticket);
+        filters.push(`ticket_key = $${params.length}`);
+      }
+      // SKIP LOCKED keeps concurrent runners from claiming the same task.
+      const claimed = (
+        await q(
+          `UPDATE app.agent_tasks SET state = 'claimed', agent = $1, agent_identity = $2,
+             claimed_at = NOW(), last_heartbeat = NOW(), updated_at = NOW()
+           WHERE id = (
+             SELECT id FROM app.agent_tasks WHERE ${filters.join(' AND ')}
+             ORDER BY priority DESC, id LIMIT 1 FOR UPDATE SKIP LOCKED
+           ) RETURNING *`,
+          params,
+        )
+      ).rows[0];
+      if (!claimed) {
+        res.status(404).json({ error: 'No queued work matches' });
+        return;
+      }
+      const key = String(claimed.ticket_key);
+      await q(`UPDATE app.tickets SET status = 'progress', assignee = $2 WHERE key = $1`, [key, agent]);
+      await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work.`);
+      res.json(await workPackage(claimed));
+    } catch (err) {
+      console.error('claim failed:', err);
+      res.status(500).json({ error: 'Failed to claim work' });
+    }
+  });
+
+  /** Re-fetch the work package for a claimed task (e.g. after a runner restart). */
+  app.get('/api/agent/work/:id', async (req, res) => {
+    try {
+      const task = (await q('SELECT * FROM app.agent_tasks WHERE id = $1', [Number(req.params.id)])).rows[0];
+      if (!task) {
+        res.status(404).json({ error: 'Task not found' });
+        return;
+      }
+      res.json(await workPackage(task));
+    } catch (err) {
+      console.error('work package failed:', err);
+      res.status(500).json({ error: 'Failed to load work package' });
+    }
+  });
+
+  app.post('/api/agent/work/:id/progress', async (req, res) => {
+    const parsed = ProgressBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'agent and note are required' });
+      return;
+    }
+    try {
+      const task = (
+        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
+      ).rows[0];
+      if (!task) {
+        res.status(404).json({ error: 'No active task with this id' });
+        return;
+      }
+      if (String(task.agent) !== parsed.data.agent) {
+        res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
+        return;
+      }
+      await q(`UPDATE app.agent_tasks SET state = 'working', last_note = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
+        task.id,
+        parsed.data.note.trim(),
+      ]);
+      await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
+        String(task.ticket_key),
+        parsed.data.agent,
+        parsed.data.note.trim(),
+      ]);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('progress failed:', err);
+      res.status(500).json({ error: 'Failed to record progress' });
+    }
+  });
+
+  app.post('/api/agent/work/:id/complete', async (req, res) => {
+    const parsed = CompleteBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'agent, outcome and summary are required' });
+      return;
+    }
+    try {
+      const task = (
+        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
+      ).rows[0];
+      if (!task) {
+        res.status(404).json({ error: 'No active task with this id' });
+        return;
+      }
+      const { agent, outcome, summary, url } = parsed.data;
+      if (String(task.agent) !== agent) {
+        res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
+        return;
+      }
+      const key = String(task.ticket_key);
+      const engagementId = String(task.engagement_id);
+      await q(
+        `UPDATE app.agent_tasks SET state = $2, result = $3, result_url = $4, last_heartbeat = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+        [task.id, outcome, summary.trim(), url ?? null],
+      );
+      if (outcome === 'done') {
+        await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+      } else {
+        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—' WHERE key = $1 AND assignee = $2`, [key, agent]);
+        await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
+      }
+      await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
+        key,
+        agent,
+        `${outcome === 'done' ? 'Completed' : 'Failed'}: ${summary.trim()}${url ? `\n${url}` : ''}`,
+      ]);
+      await feed(
+        engagementId,
+        'AGENT',
+        outcome === 'done'
+          ? `${agent} finished ${key} — moved to Review.${url ? ` ${url}` : ''}`
+          : `${agent} could not complete ${key} — returned to Backlog.`,
+      );
+      res.json({ ok: true, ticketStatus: outcome === 'done' ? 'review' : 'backlog' });
+    } catch (err) {
+      console.error('complete failed:', err);
+      res.status(500).json({ error: 'Failed to complete task' });
+    }
+  });
+}

@@ -96,12 +96,39 @@ export interface FeedItem {
   reversible: boolean;
 }
 
+export type AgentTaskState = 'queued' | 'claimed' | 'working' | 'done' | 'failed' | 'cancelled';
+
+export interface AgentTask {
+  id: number;
+  ticketKey: string;
+  engagementId: string;
+  state: AgentTaskState;
+  priority: number;
+  instructions: string;
+  queuedBy: string;
+  agent: string | null;
+  claimedAt: string | null;
+  lastHeartbeat: string | null;
+  lastNote: string | null;
+  result: string | null;
+  resultUrl: string | null;
+  createdAt: string;
+}
+
+export interface ContextFile {
+  name: string;
+  size: number;
+  lastModified: string | null;
+  url: string;
+}
+
 export interface EngagementDetail {
   tickets: Ticket[];
   sources: ContextSource[];
   feed: FeedItem[];
   team: TeamMember[];
   suggestions: Suggestion[];
+  agentTasks: AgentTask[];
 }
 
 export interface Proposal {

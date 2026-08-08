@@ -1,4 +1,4 @@
-// Demo dataset for the Engagement Execution Console, ported from the
+// Demo dataset for the Delivery Console, ported from the
 // approved claude.ai/design prototype ("Engagement Execution Console.dc.html").
 
 export interface SeedTicket {

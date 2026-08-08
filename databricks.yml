@@ -1,5 +1,5 @@
 bundle:
-  name: engagement-console
+  name: delivery-console
 
 variables:
   files_path:
@@ -20,7 +20,7 @@ resources:
     engagement_console:
       catalog_name: sandbox
       name: engagement_console
-      comment: "Engagement Execution Console app resources (SOW document volume)"
+      comment: "Delivery Console app resources (SOW document volume)"
 
   volumes:
     sow_docs:
@@ -32,8 +32,8 @@ resources:
 
   apps:
     app:
-      name: "engagement-console"
-      description: "Engagement Execution Console - Datavail delivery execution: portfolio, board, roadmap, sources, team, status feed"
+      name: "delivery-console"
+      description: "Delivery Console - Datavail delivery execution: portfolio, board, roadmap, sources, team, status feed"
       source_code_path: ./
       user_api_scopes:
         - files.files

@@ -61,6 +61,21 @@ interface Connection {
   token: string;
 }
 
+// Spreads the raw row so extra columns (status, last_sync_at, …) survive for
+// publicConnection while the fields the providers rely on are properly typed.
+function toConnection(row: Record<string, unknown>): Connection {
+  return {
+    ...row,
+    id: Number(row.id),
+    engagement_id: String(row.engagement_id),
+    provider: row.provider === 'ado' ? 'ado' : 'github',
+    repo_url: String(row.repo_url),
+    repo_name: String(row.repo_name),
+    default_branch: String(row.default_branch),
+    token: String(row.token),
+  };
+}
+
 interface RepoInfo {
   name: string;
   defaultBranch: string;
@@ -113,7 +128,7 @@ function githubHeaders(token: string) {
   return {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'engagement-console',
+    'User-Agent': 'delivery-console',
     'X-GitHub-Api-Version': '2022-11-28',
   };
 }
@@ -273,7 +288,7 @@ function maskToken(token: string): string {
   return token.length <= 8 ? '····' : `${token.slice(0, 4)}····${token.slice(-4)}`;
 }
 
-export function publicConnection(row: Record<string, unknown>) {
+export function publicConnection(row: Record<string, unknown> | Connection) {
   const { token, ...rest } = row as { token: string } & Record<string, unknown>;
   return { ...rest, token_hint: maskToken(token) };
 }
@@ -350,7 +365,7 @@ async function syncConnection(q: Query, conn: Connection): Promise<{ commits: nu
 
 async function loadConnection(q: Query, engagementId: string): Promise<Connection | null> {
   const { rows } = await q('SELECT * FROM app.repo_connections WHERE engagement_id = $1', [engagementId]);
-  return rows.length > 0 ? (rows[0] as unknown as Connection) : null;
+  return rows.length > 0 ? toConnection(rows[0]) : null;
 }
 
 const ConnectBody = z.object({
@@ -391,7 +406,7 @@ export function setupRepoRoutes(
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
         [engagementId, provider.key, url, info.name, info.defaultBranch, parsed.data.token, lead.email],
       );
-      const conn = inserted.rows[0] as unknown as Connection;
+      const conn = toConnection(inserted.rows[0]);
       let sync = { commits: 0, prs: 0 };
       try {
         sync = await syncConnection(q, conn);
@@ -443,7 +458,7 @@ export function setupRepoRoutes(
           [conn.id],
         )
       ).rows;
-      res.json({ connection: publicConnection(conn as unknown as Record<string, unknown>), prs, commits });
+      res.json({ connection: publicConnection(conn), prs, commits });
     } catch (err) {
       console.error('repo detail failed:', err);
       res.status(500).json({ error: 'Failed to load repository' });
@@ -496,7 +511,7 @@ export function startRepoPolling(q: Query, intervalMs = 10 * 60_000): void {
     try {
       const { rows } = await q('SELECT * FROM app.repo_connections');
       for (const row of rows) {
-        const conn = row as unknown as Connection;
+        const conn = toConnection(row);
         try {
           await syncConnection(q, conn);
         } catch (err) {

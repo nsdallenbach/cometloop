@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import type { Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
+import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtD, initials, mono, pct, todayIso } from '../util';
 import type { Tab } from '../App';
 
@@ -69,14 +69,36 @@ export function Workspace({
   const [pushConfirm, setPushConfirm] = useState(false);
   const [revertConfirm, setRevertConfirm] = useState<number | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [dragOverCol, setDragOverCol] = useState<TicketStatus | null>(null);
+  const [dragOverCol, setDragOverCol] = useState<TicketStatus | 'agent' | null>(null);
   const drag = useRef<string | null>(null);
+  // Card being dragged out of / within the agent lane (queued tasks only).
+  const dragTask = useRef<{ id: number; ticketKey: string } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
   const hc = HEALTH_COLOR[eng.health];
   const tickets = detail?.tickets ?? [];
+  // Latest agent task per ticket (agentTasks arrive newest-first).
+  const agentTaskByTicket = useMemo(() => {
+    const map = new Map<string, AgentTask>();
+    for (const t of detail?.agentTasks ?? []) {
+      if (!map.has(t.ticketKey)) map.set(t.ticketKey, t);
+    }
+    return map;
+  }, [detail?.agentTasks]);
+  // Deploy-to-Agent lane: running work on top (claim order), then the queue
+  // in claim priority. Tickets shown here are hidden from the status lanes.
+  const laneTasks = useMemo(() => {
+    const active = (detail?.agentTasks ?? []).filter((a) => ['queued', 'claimed', 'working'].includes(a.state));
+    const running = active.filter((a) => a.state !== 'queued').sort((a, b) => a.id - b.id);
+    const queued = active.filter((a) => a.state === 'queued').sort((a, b) => b.priority - a.priority || a.id - b.id);
+    return { running, queued };
+  }, [detail?.agentTasks]);
+  const agentLaneKeys = useMemo(
+    () => new Set([...laneTasks.running, ...laneTasks.queued].map((a) => a.ticketKey)),
+    [laneTasks],
+  );
   const proposedTickets = tickets.filter((t) => t.status === 'proposed');
   const bulkKeys = Object.keys(bulk).filter((k) => bulk[k]);
   const composerText = composer ?? eng.composer;
@@ -158,6 +180,19 @@ export function Workspace({
         {t.agent && (
           <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◆ AGENT</span>
         )}
+        {(() => {
+          const at = agentTaskByTicket.get(t.key);
+          if (!at) return null;
+          if (at.state === 'queued')
+            return <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◇ QUEUED</span>;
+          if (at.state === 'claimed' || at.state === 'working')
+            return (
+              <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
+                ◆ {(at.agent ?? 'AGENT').toUpperCase()} ON IT
+              </span>
+            );
+          return null;
+        })()}
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
@@ -189,6 +224,197 @@ export function Workspace({
         <span style={{ ...mono(400, 10), color: 'var(--tx3)', marginLeft: 'auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>
           {t.sources[0]?.type ?? ''}
         </span>
+      </div>
+    </div>
+  );
+
+  // ---- Deploy-to-Agent lane ----
+
+  const hasActiveAgentWork = laneTasks.running.length > 0 || laneTasks.queued.length > 0;
+  useEffect(() => {
+    // Live board: poll while agents hold work so cards update in place.
+    if (tab !== 'board' || !hasActiveAgentWork) return;
+    const iv = setInterval(refreshDetail, 8000);
+    return () => clearInterval(iv);
+  }, [tab, hasActiveAgentWork, refreshDetail]);
+
+  const ago = (iso: string | null) => {
+    if (!iso) return '';
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    return s < 60 ? `${Math.floor(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`;
+  };
+
+  const deployTicket = (key: string) => {
+    api
+      .queueTicket(key)
+      .then(() => {
+        toast(`${key} deployed to agent queue`);
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Queue failed — ${e.message}`));
+  };
+
+  const recallTask = (ticketKey: string, thenStatus?: TicketStatus) => {
+    api
+      .cancelAgentTask(ticketKey)
+      .then(() => {
+        if (thenStatus && thenStatus !== 'backlog') setTicket(ticketKey, { status: thenStatus });
+        toast(`${ticketKey} recalled from agent queue`);
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Recall failed — ${e.message}`));
+  };
+
+  /** Move a queued task before `beforeId` (or to the end when null). */
+  const reorderQueue = (taskId: number, beforeId: number | null) => {
+    const ids = laneTasks.queued.map((a) => a.id).filter((id) => id !== taskId);
+    const at = beforeId == null ? ids.length : ids.indexOf(beforeId);
+    ids.splice(at < 0 ? ids.length : at, 0, taskId);
+    setDetail((d) =>
+      d
+        ? {
+            ...d,
+            agentTasks: d.agentTasks.map((a) => {
+              const i = ids.indexOf(a.id);
+              return i >= 0 ? { ...a, priority: ids.length - i } : a;
+            }),
+          }
+        : d,
+    );
+    api.reorderAgentQueue(eng.id, ids).catch(() => {
+      refreshDetail();
+      toast('Reorder failed — queue restored');
+    });
+  };
+
+  const agentCard = (at: AgentTask, qPos: number | null) => {
+    const t = tickets.find((x) => x.key === at.ticketKey);
+    const running = at.state !== 'queued';
+    return (
+      <div
+        key={`at-${at.id}`}
+        draggable={lead && !running}
+        onDragStart={() => (dragTask.current = { id: at.id, ticketKey: at.ticketKey })}
+        onDragEnd={() => {
+          dragTask.current = null;
+          setDragOverCol(null);
+        }}
+        onDragOver={(e) => {
+          if (dragTask.current && !running) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          // Reorder: dropping a queued card on another queued card slots it above.
+          const dt = dragTask.current;
+          if (!dt || running || dt.id === at.id) return;
+          e.preventDefault();
+          e.stopPropagation();
+          dragTask.current = null;
+          setDragOverCol(null);
+          reorderQueue(dt.id, at.id);
+        }}
+        onClick={() => openTicket(at.ticketKey)}
+        className="hv-border"
+        style={{
+          border: `1px ${running ? 'solid' : 'dashed'} var(--agent)`,
+          background: running ? 'var(--agentsoft)' : 'var(--bg2)',
+          borderRadius: 3,
+          padding: '9px 11px',
+          cursor: lead && !running ? 'grab' : 'pointer',
+        }}
+      >
+        <div style={{ display: 'flex', gap: 7, alignItems: 'center', marginBottom: 4 }}>
+          <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>{at.ticketKey}</span>
+          {running ? (
+            <span style={{ ...mono(500, 9), background: 'var(--agent)', color: '#fff', borderRadius: 2, padding: '1px 5px', animation: 'eec-pulse 2.4s infinite' }}>
+              ◆ {(at.agent ?? 'AGENT').toUpperCase()} {at.state === 'working' ? 'WORKING' : 'CLAIMED'}
+            </span>
+          ) : (
+            <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '1px 5px' }}>◇ #{qPos} IN QUEUE</span>
+          )}
+          {lead && !running && (
+            <button
+              className="hv-bad"
+              title="Remove from queue"
+              onClick={(e) => {
+                e.stopPropagation();
+                recallTask(at.ticketKey);
+              }}
+              style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), cursor: 'pointer', padding: 0 }}
+            >
+              ✕
+            </button>
+          )}
+          {running && at.lastHeartbeat && (
+            <span title="Last heartbeat" style={{ marginLeft: 'auto', ...mono(400, 9), color: 'var(--tx3)' }}>
+              ♥ {ago(at.lastHeartbeat)}
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35 }}>{t?.title ?? at.ticketKey}</div>
+        {!running && at.instructions && (
+          <div style={{ marginTop: 5, fontSize: 11, color: 'var(--tx3)', lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            {at.instructions}
+          </div>
+        )}
+        {running && (
+          <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--tx2)', lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            {at.lastNote ?? 'Claimed — waiting for the first progress note…'}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const agentLane = (
+    <div
+      key="agent-lane"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOverCol('agent');
+      }}
+      onDragLeave={() => setDragOverCol((c) => (c === 'agent' ? null : c))}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOverCol(null);
+        const dt = dragTask.current;
+        if (dt) {
+          // Dropped on lane background: send to the back of the queue.
+          dragTask.current = null;
+          reorderQueue(dt.id, null);
+          return;
+        }
+        const key = drag.current;
+        drag.current = null;
+        if (!key || agentLaneKeys.has(key)) return;
+        if (!lead) {
+          toast('Lead access is required to deploy tickets to agents');
+          return;
+        }
+        deployTicket(key);
+      }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+        background: 'var(--bg)',
+        border: `1px ${dragOverCol === 'agent' ? 'solid var(--agent)' : 'dashed var(--line2)'}`,
+        borderRadius: 4,
+      }}
+    >
+      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderBottom: '1px solid var(--line)' }}>
+        <span style={{ ...mono(500, 10), letterSpacing: '.1em', color: 'var(--agent)' }}>◆ DEPLOY TO AGENT</span>
+        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{laneTasks.running.length + laneTasks.queued.length}</span>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
+        {laneTasks.running.map((a) => agentCard(a, null))}
+        {laneTasks.queued.map((a, i) => agentCard(a, i + 1))}
+        {!hasActiveAgentWork && (
+          <div style={{ padding: '18px 10px', fontSize: 11.5, color: 'var(--tx3)', textAlign: 'center', lineHeight: 1.5 }}>
+            Drag a ticket here to deploy it to an agent.
+            <br />
+            Agents pull from the top of the queue.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -421,12 +647,13 @@ export function Workspace({
                   No tickets on the board yet{proposedTickets.length > 0 ? ' — accept proposed tickets above to seed it.' : '.'}
                 </div>
               )}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(250px,1fr))', gap: 12, minWidth: 1040, height: '100%' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,minmax(250px,1fr))', gap: 12, minWidth: 1300, height: '100%' }}>
                 {COLS.map(([k, label]) => {
-                  const colTickets = tickets.filter((t) => t.status === k);
+                  const colTickets = tickets.filter((t) => t.status === k && !agentLaneKeys.has(t.key));
                   return (
+                    <Fragment key={k}>
+                    {k === 'progress' && agentLane}
                     <div
-                      key={k}
                       onDragOver={(e) => {
                         e.preventDefault();
                         setDragOverCol(k);
@@ -435,6 +662,15 @@ export function Workspace({
                       onDrop={(e) => {
                         e.preventDefault();
                         setDragOverCol(null);
+                        const dt = dragTask.current;
+                        if (dt) {
+                          // Queued card dragged back onto a status lane: recall it.
+                          dragTask.current = null;
+                          if (!lead) return;
+                          const t = tickets.find((x) => x.key === dt.ticketKey);
+                          recallTask(dt.ticketKey, t && t.status !== k ? k : undefined);
+                          return;
+                        }
                         const key = drag.current;
                         drag.current = null;
                         if (!key) return;
@@ -459,6 +695,7 @@ export function Workspace({
                         {colTickets.map(ticketCard)}
                       </div>
                     </div>
+                    </Fragment>
                   );
                 })}
               </div>
@@ -665,63 +902,80 @@ export function Workspace({
                     );
                   })}
                 </div>
-                {eng.milestones && (
-                  <div style={{ marginTop: 20, borderTop: '1px solid var(--line)', paddingTop: 14, display: 'flex' }}>
-                    <div style={{ width: 190, flex: 'none', ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>MILESTONES</div>
-                    <div style={{ flex: 1, height: 92, position: 'relative' }}>
-                      {eng.milestones.map((ms, i) => {
-                        const p = Math.max(1, Math.min(99, pct(rmS, rmE, ms.d)));
-                        // Near either edge, grow the label inward instead of
-                        // centering (centered labels clip at the container edge).
-                        const nearRight = p > 85;
-                        const nearLeft = p < 8;
-                        const align = nearRight ? 'flex-end' : nearLeft ? 'flex-start' : 'center';
-                        const tx = nearRight ? 'translateX(-100%)' : nearLeft ? 'none' : 'translateX(-50%)';
-                        return (
-                          <div
-                            key={ms.label + ms.d}
-                            title={`${ms.label} · ${fmtD(ms.d)}`}
-                            style={{
-                              position: 'absolute',
-                              left: `${p}%`,
-                              top: i % 2 === 0 ? 0 : 38,
-                              transform: tx,
-                              display: 'flex',
-                              flexDirection: 'column',
-                              alignItems: align,
-                              gap: 4,
-                              maxWidth: 300,
-                            }}
-                          >
-                            <div
-                              style={{
-                                width: 9,
-                                height: 9,
-                                flex: 'none',
-                                transform: 'rotate(45deg)',
-                                background: ms.done ? 'var(--ok)' : 'var(--bg2)',
-                                border: `1.5px solid ${ms.done ? 'var(--ok)' : 'var(--tx3)'}`,
-                              }}
-                            />
-                            <div
-                              style={{
-                                ...mono(400, 9),
-                                color: ms.done ? 'var(--tx2)' : 'var(--tx)',
-                                whiteSpace: 'nowrap',
-                                maxWidth: 300,
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                              }}
-                            >
-                              {ms.label.toUpperCase()}
-                            </div>
-                            <div style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtD(ms.d)}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+                {eng.milestones &&
+                  (() => {
+                    // Collision-aware lanes: milestones sorted by position stack
+                    // into the first lane with enough horizontal clearance, so
+                    // clustered dates stagger vertically instead of overlapping.
+                    const MIN_GAP = 15; // % of timeline width a label roughly needs
+                    const LANE_H = 46;
+                    const laneEnd: number[] = [];
+                    const placed = eng.milestones
+                      .map((ms) => ({ ms, p: Math.max(1, Math.min(99, pct(rmS, rmE, ms.d))) }))
+                      .sort((a, b) => a.p - b.p)
+                      .map((x) => {
+                        let lane = laneEnd.findIndex((end) => x.p - end >= MIN_GAP);
+                        if (lane === -1) lane = laneEnd.length;
+                        laneEnd[lane] = x.p;
+                        return { ...x, lane };
+                      });
+                    return (
+                      <div style={{ marginTop: 20, borderTop: '1px solid var(--line)', paddingTop: 14, display: 'flex' }}>
+                        <div style={{ width: 190, flex: 'none', ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>MILESTONES</div>
+                        <div style={{ flex: 1, height: Math.max(2, laneEnd.length) * LANE_H + 4, position: 'relative' }}>
+                          {placed.map(({ ms, p, lane }) => {
+                            // Near either edge, grow the label inward instead of
+                            // centering (centered labels clip at the container edge).
+                            const nearRight = p > 85;
+                            const nearLeft = p < 8;
+                            const align = nearRight ? 'flex-end' : nearLeft ? 'flex-start' : 'center';
+                            const tx = nearRight ? 'translateX(-100%)' : nearLeft ? 'none' : 'translateX(-50%)';
+                            return (
+                              <div
+                                key={ms.label + ms.d}
+                                title={`${ms.label} · ${fmtD(ms.d)}`}
+                                style={{
+                                  position: 'absolute',
+                                  left: `${p}%`,
+                                  top: lane * LANE_H,
+                                  transform: tx,
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  alignItems: align,
+                                  gap: 4,
+                                  maxWidth: 240,
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    width: 9,
+                                    height: 9,
+                                    flex: 'none',
+                                    transform: 'rotate(45deg)',
+                                    background: ms.done ? 'var(--ok)' : 'var(--bg2)',
+                                    border: `1.5px solid ${ms.done ? 'var(--ok)' : 'var(--tx3)'}`,
+                                  }}
+                                />
+                                <div
+                                  style={{
+                                    ...mono(400, 9),
+                                    color: ms.done ? 'var(--tx2)' : 'var(--tx)',
+                                    whiteSpace: 'nowrap',
+                                    maxWidth: 240,
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                >
+                                  {ms.label.toUpperCase()}
+                                </div>
+                                <div style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtD(ms.d)}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
               </div>
             )}
           </div>
@@ -732,6 +986,7 @@ export function Workspace({
       {detail && tab === 'sources' && (
         <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
           <RepoCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
+          <ContextFilesCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
           <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid var(--line)', background: 'var(--bg2)' }}>
             <thead>
               <tr>
@@ -1585,6 +1840,145 @@ function RepoCard({
               </div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function fmtSize(bytes: number): string {
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+function ContextFilesCard({
+  engId,
+  lead,
+  toast,
+  refreshDetail,
+}: {
+  engId: string;
+  lead: boolean;
+  toast: (msg: string) => void;
+  refreshDetail: () => void;
+}) {
+  const [files, setFiles] = useState<ContextFile[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const load = () => {
+    api
+      .contextFiles(engId)
+      .then((f) => {
+        setFiles(f);
+        setLoadError(false);
+      })
+      .catch(() => setLoadError(true));
+  };
+
+  useEffect(load, [engId]);
+
+  const upload = (file: File) => {
+    setUploading(true);
+    api
+      .uploadContextFile(engId, file)
+      .then(() => {
+        toast(`${file.name} uploaded — agents can read it as context`);
+        load();
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Upload failed — ${e.message}`))
+      .finally(() => setUploading(false));
+  };
+
+  const remove = (name: string) => {
+    api
+      .deleteContextFile(engId, name)
+      .then(() => {
+        setDeleteConfirm(null);
+        toast(`${name} removed`);
+        load();
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Delete failed — ${e.message}`));
+  };
+
+  return (
+    <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', marginBottom: 14, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--line)' }}>
+        <span style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>CONTEXT FILES</span>
+        <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>READ BY AGENTS WORKING QUEUED TICKETS</span>
+        <div style={{ flex: 1 }} />
+        <input
+          ref={inputRef}
+          type="file"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) upload(f);
+            e.target.value = '';
+          }}
+        />
+        <button
+          onClick={() => inputRef.current?.click()}
+          disabled={uploading}
+          style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx)', borderRadius: 3, padding: '4px 12px', fontSize: 11, fontWeight: 600, cursor: 'pointer', opacity: uploading ? 0.5 : 1 }}
+        >
+          {uploading ? 'Uploading…' : 'Upload file'}
+        </button>
+      </div>
+      {files === null && !loadError && <Empty label="Loading…" />}
+      {loadError && (
+        <div style={{ padding: '14px', fontSize: 12, color: 'var(--tx3)', display: 'flex', gap: 8, alignItems: 'center' }}>
+          Couldn’t load context files.
+          <button
+            onClick={load}
+            style={{ border: 'none', background: 'none', color: 'var(--acc)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {files && files.length === 0 && <Empty label="No context files yet — upload specs, schemas or runbooks for agents (and the team) to reference." />}
+      {files && files.length > 0 && (
+        <div>
+          {files.map((f) => (
+            <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', borderBottom: '1px solid var(--line)' }}>
+              <a href={f.url} style={{ fontSize: 12.5, color: 'var(--tx)', textDecoration: 'none', fontWeight: 500 }} className="hv-agent">
+                {f.name}
+              </a>
+              <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtSize(f.size)}</span>
+              <div style={{ flex: 1 }} />
+              {lead && deleteConfirm !== f.name && (
+                <button
+                  className="hv-bad"
+                  onClick={() => setDeleteConfirm(f.name)}
+                  style={{ border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 9), cursor: 'pointer', letterSpacing: '.06em' }}
+                >
+                  REMOVE
+                </button>
+              )}
+              {lead && deleteConfirm === f.name && (
+                <span style={{ display: 'inline-flex', gap: 6 }}>
+                  <button
+                    onClick={() => remove(f.name)}
+                    style={{ border: '1px solid var(--bad)', background: 'none', color: 'var(--bad)', borderRadius: 3, padding: '2px 8px', fontSize: 10.5, fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    onClick={() => setDeleteConfirm(null)}
+                    style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '2px 8px', fontSize: 10.5, cursor: 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                </span>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
