@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "delivery-console": {
+      "command": "node",
+      "args": ["mcp/server.mjs"]
+    }
+  }
+}
