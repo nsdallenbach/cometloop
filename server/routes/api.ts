@@ -1132,6 +1132,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     });
   });
 
-  startRepoPolling(q);
+  // 90s keeps merge → Done feeling live while webhooks can't reach the app
+  // (GitHub App tokens make the extra polling free, rate-limit-wise).
+  startRepoPolling(q, 90_000);
   if (process.env.DEMO_MOCK_RUNNER === '1') startMockRunner(q);
 }
