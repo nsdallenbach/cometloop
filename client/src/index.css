@@ -69,6 +69,12 @@ a:hover {
   background: transparent;
 }
 
+@keyframes eec-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @keyframes eec-pulse {
   0%,
   100% {

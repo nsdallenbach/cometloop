@@ -13,8 +13,31 @@ import type express from 'express';
  *   GITHUB_APP_WEBHOOK_SECRET  — optional, enables the webhook receiver
  */
 
+/**
+ * Accept the key however it survived transit: proper PEM, \n-escaped, base64
+ * of a PEM, or whitespace-mangled (e.g. PowerShell `$(cat)` joins lines with
+ * spaces). Rebuilds the 64-char PEM body so OpenSSL always gets valid input.
+ */
+function normalizePem(raw: string): string {
+  let k = raw.trim().replace(/\\n/g, '\n');
+  if (k && !k.includes('-----BEGIN')) {
+    try {
+      const decoded = Buffer.from(k, 'base64').toString('utf8');
+      if (decoded.includes('-----BEGIN')) k = decoded;
+    } catch {
+      /* not base64 — leave as-is; signing will fail loudly */
+    }
+  }
+  const m = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(k);
+  if (m) {
+    const body = m[2].replace(/\s+/g, '');
+    k = `-----BEGIN ${m[1]}-----\n${(body.match(/.{1,64}/g) ?? []).join('\n')}\n-----END ${m[1]}-----\n`;
+  }
+  return k;
+}
+
 const APP_ID = process.env.GITHUB_APP_ID ?? '';
-const PRIVATE_KEY = (process.env.GITHUB_APP_PRIVATE_KEY ?? '').replace(/\\n/g, '\n');
+const PRIVATE_KEY = normalizePem(process.env.GITHUB_APP_PRIVATE_KEY ?? '');
 export const WEBHOOK_SECRET = process.env.GITHUB_APP_WEBHOOK_SECRET ?? '';
 
 export const githubAppConfigured = (): boolean => Boolean(APP_ID && PRIVATE_KEY);

@@ -7,7 +7,7 @@ import type { Tab } from '../App';
 const COLS: [TicketStatus, string][] = [
   ['backlog', 'BACKLOG'],
   ['progress', 'IN PROGRESS'],
-  ['review', 'IN REVIEW'],
+  ['review', 'REVIEW'],
   ['done', 'DONE'],
 ];
 
@@ -156,7 +156,12 @@ export function Workspace({
     }, 1200);
   };
 
-  const ticketCard = (t: Ticket) => (
+  const ticketCard = (t: Ticket) => {
+    const at = agentTaskByTicket.get(t.key);
+    // Agent finished → parked in Review awaiting human sign-off (yellow).
+    const agentDone = at?.state === 'done' && t.status === 'review';
+    const agentFailed = at?.state === 'failed' && t.status === 'backlog';
+    return (
     <div
       key={t.key}
       draggable
@@ -168,7 +173,7 @@ export function Workspace({
       onClick={() => openTicket(t.key)}
       className="hv-border"
       style={{
-        border: `1px solid ${t.blocked ? 'var(--bad)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
+        border: `1px solid ${t.blocked ? 'var(--bad)' : agentDone ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
         background: 'var(--bg2)',
         borderRadius: 3,
         padding: '9px 11px',
@@ -181,7 +186,6 @@ export function Workspace({
           <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◆ AGENT</span>
         )}
         {(() => {
-          const at = agentTaskByTicket.get(t.key);
           if (!at) return null;
           if (at.state === 'queued')
             return <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◇ QUEUED</span>;
@@ -191,6 +195,10 @@ export function Workspace({
                 ◆ {(at.agent ?? 'AGENT').toUpperCase()} ON IT
               </span>
             );
+          if (agentDone)
+            return <span style={{ ...mono(500, 9), color: 'var(--warn)', border: '1px solid var(--warn)', borderRadius: 2, padding: '1px 4px' }}>◆ READY FOR REVIEW</span>;
+          if (agentFailed)
+            return <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ AGENT FAILED</span>;
           return null;
         })()}
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
@@ -226,7 +234,8 @@ export function Workspace({
         </span>
       </div>
     </div>
-  );
+    );
+  };
 
   // ---- Deploy-to-Agent lane ----
 
@@ -291,6 +300,26 @@ export function Workspace({
   const agentCard = (at: AgentTask, qPos: number | null) => {
     const t = tickets.find((x) => x.key === at.ticketKey);
     const running = at.state !== 'queued';
+    // Warning state: a runner holds the task but hasn't heartbeat in 3 min.
+    const stale = running && at.lastHeartbeat != null && Date.now() - new Date(at.lastHeartbeat).getTime() > 3 * 60_000;
+    // Status dot: grey ring queued → green spinner running → yellow ⚠ stalled.
+    const statusDot = stale ? (
+      <span title="No heartbeat for over 3 minutes" style={{ ...mono(600, 11), color: 'var(--warn)', flex: 'none', lineHeight: 1 }}>⚠</span>
+    ) : (
+      <span
+        title={running ? 'Runner active' : 'Waiting for a runner'}
+        style={{
+          width: 9,
+          height: 9,
+          flex: 'none',
+          display: 'inline-block',
+          borderRadius: '50%',
+          border: `2px solid ${running ? 'var(--ok)' : 'var(--tx3)'}`,
+          borderTopColor: running ? 'transparent' : 'var(--tx3)',
+          animation: running ? 'eec-spin .8s linear infinite' : 'none',
+        }}
+      />
+    );
     return (
       <div
         key={`at-${at.id}`}
@@ -324,10 +353,20 @@ export function Workspace({
         }}
       >
         <div style={{ display: 'flex', gap: 7, alignItems: 'center', marginBottom: 4 }}>
+          {statusDot}
           <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>{at.ticketKey}</span>
           {running ? (
-            <span style={{ ...mono(500, 9), background: 'var(--agent)', color: '#fff', borderRadius: 2, padding: '1px 5px', animation: 'eec-pulse 2.4s infinite' }}>
-              ◆ {(at.agent ?? 'AGENT').toUpperCase()} {at.state === 'working' ? 'WORKING' : 'CLAIMED'}
+            <span
+              style={{
+                ...mono(500, 9),
+                background: stale ? 'var(--warn)' : 'var(--agent)',
+                color: '#fff',
+                borderRadius: 2,
+                padding: '1px 5px',
+                animation: stale ? 'none' : 'eec-pulse 2.4s infinite',
+              }}
+            >
+              ◆ {(at.agent ?? 'AGENT').toUpperCase()} {stale ? 'STALLED' : at.state === 'working' ? 'WORKING' : 'CLAIMED'}
             </span>
           ) : (
             <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '1px 5px' }}>◇ #{qPos} IN QUEUE</span>

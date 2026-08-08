@@ -6,3 +6,8 @@ env:
     valueFrom: postgres
   - name: DATABRICKS_SERVING_ENDPOINT_NAME
     valueFrom: serving-endpoint
+  # GitHub App auth — the client id doubles as the JWT issuer.
+  - name: GITHUB_APP_ID
+    value: 'Iv23liTTM6GVI2Sic9cW'
+  - name: GITHUB_APP_PRIVATE_KEY
+    valueFrom: github-app-private-key

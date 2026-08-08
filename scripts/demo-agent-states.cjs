@@ -46,6 +46,7 @@ async function call(method, path, body, tok) {
 
   let n = 0;
   while (Date.now() < DEADLINE) {
+    try {
     n++;
     tok = mintToken();
     // Start each cycle from a clean backlog ticket, whatever the last one left.
@@ -81,6 +82,11 @@ async function call(method, path, body, tok) {
     );
     console.log(`#${n} completed ${done ? 'done' : 'failed'}`);
     await sleep(STEP);
+    } catch (e) {
+      // App restarts (deploys) 502 for a minute — ride it out, don't die.
+      console.warn(`cycle #${n} hiccup: ${e.message} — retrying in 20s`);
+      await sleep(20_000);
+    }
   }
 
   const tok2 = mintToken();
