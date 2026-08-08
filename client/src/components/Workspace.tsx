@@ -160,6 +160,7 @@ export function Workspace({
     // Agent finished → parked in Review awaiting human sign-off (yellow).
     const agentDone = at?.state === 'done' && t.status === 'review';
     const agentFailed = at?.state === 'failed' && t.status === 'backlog';
+    const isDone = t.status === 'done';
     return (
     <div
       key={t.key}
@@ -172,7 +173,7 @@ export function Workspace({
       onClick={() => openTicket(t.key)}
       className="hv-border"
       style={{
-        border: `1px solid ${t.blocked ? 'var(--bad)' : agentDone ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
+        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : agentDone ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
         background: 'var(--bg2)',
         borderRadius: 3,
         padding: '9px 11px',
@@ -200,6 +201,9 @@ export function Workspace({
             return <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ AGENT FAILED</span>;
           return null;
         })()}
+        {isDone && (
+          <span style={{ ...mono(500, 9), color: 'var(--ok)', border: '1px solid var(--ok)', borderRadius: 2, padding: '1px 4px' }}>✓ DONE</span>
+        )}
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
