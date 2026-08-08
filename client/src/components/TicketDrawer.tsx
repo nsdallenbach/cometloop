@@ -47,6 +47,25 @@ export function TicketDrawer({
 }) {
   const proposed = ticket.status === 'proposed';
   const [delConfirm, setDelConfirm] = useState(false);
+  // Drag the drawer's left edge to resize; the width sticks across sessions.
+  const [drawerW, setDrawerW] = useState(() => {
+    const saved = Number(localStorage.getItem('eec-drawer-w'));
+    return Number.isFinite(saved) && saved >= 380 ? Math.min(saved, 1200) : 620;
+  });
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = drawerW;
+    const clamp = (w: number) => Math.min(1200, Math.max(380, w));
+    const move = (ev: MouseEvent) => setDrawerW(clamp(startW + (startX - ev.clientX)));
+    const up = (ev: MouseEvent) => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      localStorage.setItem('eec-drawer-w', String(clamp(startW + (startX - ev.clientX))));
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  };
   const [queueOpen, setQueueOpen] = useState(false);
   const [instructions, setInstructions] = useState('');
   const agentActive = agentTask !== null && ['queued', 'claimed', 'working'].includes(agentTask.state);
@@ -115,7 +134,7 @@ export function TicketDrawer({
           top: 0,
           right: 0,
           bottom: 0,
-          width: 'min(620px, 94vw)',
+          width: `min(${drawerW}px, 94vw)`,
           background: 'var(--bg2)',
           borderLeft: '1px solid var(--line)',
           zIndex: 41,
@@ -126,6 +145,11 @@ export function TicketDrawer({
           fontFamily: "'DM Sans', sans-serif",
         }}
       >
+        <div
+          onMouseDown={startResize}
+          title="Drag to resize"
+          style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 6, cursor: 'ew-resize', zIndex: 1 }}
+        />
         <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--line)' }}>
           <span style={{ ...mono(500, 11), color: 'var(--tx3)' }}>{ticket.key}</span>
           {ticket.agent && !proposed && (
