@@ -62,6 +62,7 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 | `POST` | `/api/agent/work/claim` | Atomically claim the next task → returns the work package |
 | `GET` | `/api/agent/work/:id` | Re-fetch the work package for a claimed task |
 | `POST` | `/api/agent/work/:id/progress` | Heartbeat + progress note (becomes a ticket comment) |
+| `POST` | `/api/agent/work/:id/git-credential` | Short-lived clone/push token (GitHub App connections only) |
 | `POST` | `/api/agent/work/:id/complete` | Finish with `done` or `failed` |
 | `GET` | `/api/engagements/:id/context-files` | List context files for an engagement |
 | `GET` | `/api/engagements/:id/context-files/:name` | Download one context file |

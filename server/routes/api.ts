@@ -3,6 +3,7 @@ import express, { Application } from 'express';
 import { extractSowText } from './extract-text';
 import { resolveIdentity, type Identity } from './roles';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
+import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes } from './agent-work';
 import { setupContextFileRoutes } from './context-files';
 import {
@@ -1103,6 +1104,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     });
 
     setupRepoRoutes(app, q, requireLead);
+    setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireLead);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
 

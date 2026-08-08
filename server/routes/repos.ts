@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import type express from 'express';
+import express from 'express';
 import type { Identity } from './roles';
+import { githubAppConfigured, installationToken, verifyWebhookSignature, WEBHOOK_SECRET } from './github-app';
 
 /**
  * Git repository integration: one repo per engagement, GitHub or Azure DevOps.
@@ -26,6 +27,10 @@ export const REPO_SCHEMA_SQL = [
     last_sync_at TIMESTAMPTZ,
     created_by TEXT NOT NULL DEFAULT ''
   )`,
+  // 'pat' connections keep a stored token; 'app' connections keep only an
+  // installation id and mint short-lived tokens per request.
+  `ALTER TABLE app.repo_connections ADD COLUMN IF NOT EXISTS auth_type TEXT NOT NULL DEFAULT 'pat'`,
+  `ALTER TABLE app.repo_connections ADD COLUMN IF NOT EXISTS installation_id BIGINT`,
   `CREATE TABLE IF NOT EXISTS app.repo_prs (
     id SERIAL PRIMARY KEY,
     connection_id INT NOT NULL REFERENCES app.repo_connections(id) ON DELETE CASCADE,
@@ -51,7 +56,7 @@ export const REPO_SCHEMA_SQL = [
   )`,
 ];
 
-interface Connection {
+export interface Connection {
   id: number;
   engagement_id: string;
   provider: 'github' | 'ado';
@@ -59,6 +64,8 @@ interface Connection {
   repo_name: string;
   default_branch: string;
   token: string;
+  auth_type: 'pat' | 'app';
+  installation_id: number | null;
 }
 
 // Spreads the raw row so extra columns (status, last_sync_at, …) survive for
@@ -73,7 +80,22 @@ function toConnection(row: Record<string, unknown>): Connection {
     repo_name: String(row.repo_name),
     default_branch: String(row.default_branch),
     token: String(row.token),
+    auth_type: row.auth_type === 'app' ? 'app' : 'pat',
+    installation_id: row.installation_id == null ? null : Number(row.installation_id),
   };
+}
+
+/** Resolve a usable API token: stored PAT, or a fresh installation token. */
+export async function connectionToken(conn: Connection): Promise<string> {
+  if (conn.auth_type === 'app' && conn.installation_id != null) {
+    return (await installationToken(conn.installation_id)).token;
+  }
+  return conn.token;
+}
+
+/** Copy of the connection with `token` resolved for immediate API use. */
+async function withLiveToken(conn: Connection): Promise<Connection> {
+  return { ...conn, token: await connectionToken(conn) };
 }
 
 interface RepoInfo {
@@ -290,10 +312,11 @@ function maskToken(token: string): string {
 
 export function publicConnection(row: Record<string, unknown> | Connection) {
   const { token, ...rest } = row as { token: string } & Record<string, unknown>;
-  return { ...rest, token_hint: maskToken(token) };
+  return { ...rest, token_hint: rest.auth_type === 'app' ? 'GitHub App' : maskToken(token) };
 }
 
-async function syncConnection(q: Query, conn: Connection): Promise<{ commits: number; prs: number }> {
+async function syncConnection(q: Query, rawConn: Connection): Promise<{ commits: number; prs: number }> {
+  const conn = await withLiveToken(rawConn);
   const impl = conn.provider === 'github' ? github : ado;
 
   // Only tickets of this engagement are linkable.
@@ -363,7 +386,7 @@ async function syncConnection(q: Query, conn: Connection): Promise<{ commits: nu
   return { commits: newCommits, prs: changedPrs };
 }
 
-async function loadConnection(q: Query, engagementId: string): Promise<Connection | null> {
+export async function loadConnection(q: Query, engagementId: string): Promise<Connection | null> {
   const { rows } = await q('SELECT * FROM app.repo_connections WHERE engagement_id = $1', [engagementId]);
   return rows.length > 0 ? toConnection(rows[0]) : null;
 }
@@ -373,38 +396,68 @@ const ConnectBody = z.object({
   token: z.string().min(8).max(500),
 });
 
+const AppConnectBody = z.object({
+  installationId: z.number().int().positive(),
+  fullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+});
+
 export function setupRepoRoutes(
   app: express.Application,
   q: Query,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
 ) {
   app.post('/api/engagements/:id/repo', async (req, res) => {
-    const parsed = ConnectBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: 'A repository URL and an access token are required' });
+    // Two connect modes: GitHub App (installation pick, no stored secret) or
+    // a pasted PAT (GitHub or Azure DevOps fallback).
+    const viaApp = AppConnectBody.safeParse(req.body);
+    const viaPat = ConnectBody.safeParse(req.body);
+    if (!viaApp.success && !viaPat.success) {
+      res.status(400).json({ error: 'A repository URL and an access token (or a GitHub App repo pick) are required' });
       return;
     }
     try {
       const engagementId = req.params.id;
       const lead = await requireLead(req, res, engagementId);
       if (!lead) return;
-      const url = parsed.data.url.replace(/\/+$/, '');
-      const provider = providerFor(url);
-      if (!provider) {
-        res.status(400).json({
-          error: 'Unsupported repository URL — use https://github.com/owner/repo or https://dev.azure.com/org/project/_git/repo',
-        });
-        return;
-      }
       if (await loadConnection(q, engagementId)) {
         res.status(409).json({ error: 'A repository is already connected — disconnect it first' });
         return;
       }
-      const info = await provider.impl.validate(url, parsed.data.token);
+
+      let providerKey: 'github' | 'ado';
+      let url: string;
+      let info: RepoInfo;
+      let stored: { token: string; authType: 'pat' | 'app'; installationId: number | null };
+      if (viaApp.success) {
+        if (!githubAppConfigured()) {
+          res.status(409).json({ error: 'GitHub App is not configured on this deployment' });
+          return;
+        }
+        providerKey = 'github';
+        url = `https://github.com/${viaApp.data.fullName}`;
+        const { token } = await installationToken(viaApp.data.installationId);
+        info = await github.validate(url, token);
+        stored = { token: '', authType: 'app', installationId: viaApp.data.installationId };
+      } else if (viaPat.success) {
+        url = viaPat.data.url.replace(/\/+$/, '');
+        const provider = providerFor(url);
+        if (!provider) {
+          res.status(400).json({
+            error: 'Unsupported repository URL — use https://github.com/owner/repo or https://dev.azure.com/org/project/_git/repo',
+          });
+          return;
+        }
+        providerKey = provider.key;
+        info = await provider.impl.validate(url, viaPat.data.token);
+        stored = { token: viaPat.data.token, authType: 'pat', installationId: null };
+      } else {
+        return; // unreachable — guarded above
+      }
+
       const inserted = await q(
-        `INSERT INTO app.repo_connections (engagement_id, provider, repo_url, repo_name, default_branch, token, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-        [engagementId, provider.key, url, info.name, info.defaultBranch, parsed.data.token, lead.email],
+        `INSERT INTO app.repo_connections (engagement_id, provider, repo_url, repo_name, default_branch, token, auth_type, installation_id, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [engagementId, providerKey, url, info.name, info.defaultBranch, stored.token, stored.authType, stored.installationId, lead.email],
       );
       const conn = toConnection(inserted.rows[0]);
       let sync = { commits: 0, prs: 0 };
@@ -416,7 +469,11 @@ export function setupRepoRoutes(
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
          VALUES ($1, 'YOU', $2, 'JUST NOW', $3, false)`,
-        [engagementId, `Connected ${provider.key === 'github' ? 'GitHub' : 'Azure DevOps'} repository ${info.name}.`, info.name],
+        [
+          engagementId,
+          `Connected ${providerKey === 'github' ? 'GitHub' : 'Azure DevOps'} repository ${info.name}${stored.authType === 'app' ? ' via GitHub App' : ''}.`,
+          info.name,
+        ],
       );
       res.status(201).json({ connection: publicConnection(inserted.rows[0]), sync });
     } catch (err) {
@@ -482,6 +539,42 @@ export function setupRepoRoutes(
         msg.slice(0, 500),
       ]).catch(() => {});
       res.status(502).json({ error: `Sync failed — ${msg}` });
+    }
+  });
+
+  // GitHub webhook receiver: push / pull_request events trigger an immediate
+  // re-sync of the matching connection. NOTE: Databricks Apps sit behind the
+  // workspace OAuth proxy, so direct GitHub deliveries are blocked today —
+  // this endpoint is HMAC-gated and ready for unauthenticated ingress or a
+  // relay; until then the poller (see startRepoPolling) keeps things fresh.
+  app.post('/api/webhooks/github', express.raw({ type: '*/*', limit: '2mb' }), async (req, res) => {
+    try {
+      if (!WEBHOOK_SECRET) {
+        res.status(404).json({ error: 'Webhooks are not configured' });
+        return;
+      }
+      // Prefer raw bytes for the HMAC; a parsed body (upstream json parser)
+      // falls back to re-serialization, which round-trips GitHub's compact JSON.
+      const raw: Buffer | string = Buffer.isBuffer(req.body) ? req.body : JSON.stringify(req.body ?? {});
+      if (!verifyWebhookSignature(raw, req.headers['x-hub-signature-256'] as string | undefined)) {
+        res.status(401).json({ error: 'Signature verification failed' });
+        return;
+      }
+      const event = String(req.headers['x-github-event'] ?? '');
+      const payload = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : raw) as { repository?: { full_name?: string } };
+      const fullName = payload.repository?.full_name;
+      if (!fullName || !['push', 'pull_request'].includes(event)) {
+        res.json({ ok: true, ignored: true });
+        return;
+      }
+      const { rows } = await q(`SELECT * FROM app.repo_connections WHERE provider = 'github' AND repo_name = $1`, [fullName]);
+      for (const row of rows) {
+        await syncConnection(q, toConnection(row)).catch((err) => console.warn('[repos] webhook sync failed:', (err as Error).message));
+      }
+      res.json({ ok: true, synced: rows.length });
+    } catch (err) {
+      console.warn('[repos] webhook failed:', (err as Error).message);
+      res.status(400).json({ error: 'Bad webhook payload' });
     }
   });
 

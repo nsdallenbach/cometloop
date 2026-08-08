@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type express from 'express';
 import { resolveIdentity, type Identity } from './roles';
 import { listContextFiles, type FilesVolume } from './context-files';
+import { loadConnection } from './repos';
+import { installationToken } from './github-app';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -284,6 +286,54 @@ export function setupAgentRoutes(
     } catch (err) {
       console.error('work package failed:', err);
       res.status(500).json({ error: 'Failed to load work package' });
+    }
+  });
+
+  /**
+   * Vend a short-lived git credential for the claimed task's repo. Only
+   * GitHub App connections can vend — runners on PAT-connected repos bring
+   * their own git credentials. The token is an installation token (~1h TTL)
+   * scoped to the repos the App is installed on.
+   */
+  app.post('/api/agent/work/:id/git-credential', async (req, res) => {
+    const parsed = z.object({ agent: z.string().min(1).max(80) }).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'agent (runner name) is required' });
+      return;
+    }
+    try {
+      const task = (
+        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
+      ).rows[0];
+      if (!task) {
+        res.status(404).json({ error: 'No active task with this id' });
+        return;
+      }
+      if (String(task.agent) !== parsed.data.agent) {
+        res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
+        return;
+      }
+      const conn = await loadConnection(q, String(task.engagement_id));
+      if (!conn) {
+        res.status(404).json({ error: 'No repository connected to this engagement' });
+        return;
+      }
+      if (conn.provider !== 'github' || conn.auth_type !== 'app' || conn.installation_id == null) {
+        res.status(409).json({ error: 'Repository is not connected via the GitHub App — bring your own git credentials' });
+        return;
+      }
+      const { token, expiresAt } = await installationToken(conn.installation_id);
+      res.json({
+        provider: 'github',
+        repo: conn.repo_name,
+        defaultBranch: conn.default_branch,
+        token,
+        expiresAt,
+        cloneUrl: `https://x-access-token:${token}@github.com/${conn.repo_name}.git`,
+      });
+    } catch (err) {
+      console.error('git-credential failed:', err);
+      res.status(500).json({ error: 'Failed to vend a git credential' });
     }
   });
 

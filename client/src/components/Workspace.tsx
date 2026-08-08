@@ -232,11 +232,12 @@ export function Workspace({
 
   const hasActiveAgentWork = laneTasks.running.length > 0 || laneTasks.queued.length > 0;
   useEffect(() => {
-    // Live board: poll while agents hold work so cards update in place.
-    if (tab !== 'board' || !hasActiveAgentWork) return;
+    // Live board: poll so agent cards update in place and newly queued work
+    // appears without a manual refresh.
+    if (tab !== 'board') return;
     const iv = setInterval(refreshDetail, 8000);
     return () => clearInterval(iv);
-  }, [tab, hasActiveAgentWork, refreshDetail]);
+  }, [tab, refreshDetail]);
 
   const ago = (iso: string | null) => {
     if (!iso) return '';
@@ -1597,6 +1598,9 @@ function RepoCard({
   const [url, setUrl] = useState('');
   const [token, setToken] = useState('');
   const [connecting, setConnecting] = useState(false);
+  // GitHub App picker: null = probing, 'off' = app not configured/reachable.
+  const [appRepos, setAppRepos] = useState<{ installationId: number; fullName: string }[] | 'off' | null>(null);
+  const [appPick, setAppPick] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [disconnectConfirm, setDisconnectConfirm] = useState(false);
 
@@ -1617,6 +1621,30 @@ function RepoCard({
 
   // Initial state is already 'loading'; the effect only starts the fetch.
   useEffect(fetchRepo, [engId]);
+
+  useEffect(() => {
+    if (!lead) return;
+    api
+      .githubAppStatus()
+      .then((s) => (s.configured ? api.githubAppRepos().then((r) => setAppRepos(r.repos)) : setAppRepos('off')))
+      .catch(() => setAppRepos('off'));
+  }, [lead]);
+
+  const connectViaApp = () => {
+    const pick = (Array.isArray(appRepos) ? appRepos : []).find((r) => r.fullName === appPick);
+    if (!pick || connecting) return;
+    setConnecting(true);
+    api
+      .connectRepoViaApp(engId, pick.installationId, pick.fullName)
+      .then(() => {
+        toast('Repository connected via GitHub App — first sync complete');
+        setAppPick('');
+        load();
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(e.message))
+      .finally(() => setConnecting(false));
+  };
 
   const connect = () => {
     if (!url.trim() || !token.trim() || connecting) return;
@@ -1736,6 +1764,41 @@ function RepoCard({
             Connect the delivery repo to link commits and PRs to tickets by key (e.g. <span className="mono">ABC-104</span> in a branch or PR
             title). Opening a linked PR moves its ticket to Review; merging moves it to Done.
           </div>
+          {Array.isArray(appRepos) && appRepos.length > 0 && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+              <span style={{ ...mono(500, 9), border: '1px solid var(--line2)', color: 'var(--tx2)', borderRadius: 2, padding: '2px 6px', letterSpacing: '.06em' }}>
+                GITHUB APP
+              </span>
+              <select value={appPick} onChange={(e) => setAppPick(e.target.value)} style={{ ...inputStyle, flex: '1 1 300px', cursor: 'pointer' }}>
+                <option value="">Pick an installed repository…</option>
+                {appRepos.map((r) => (
+                  <option key={r.fullName} value={r.fullName}>
+                    {r.fullName}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={connectViaApp}
+                disabled={!appPick || connecting}
+                style={{
+                  background: 'var(--acc)',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 3,
+                  padding: '7px 16px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  opacity: !appPick || connecting ? 0.45 : 1,
+                }}
+              >
+                {connecting ? 'Connecting…' : 'Connect'}
+              </button>
+              <div style={{ flexBasis: '100%', ...mono(400, 10), color: 'var(--tx3)' }}>
+                No stored tokens — the console mints short-lived credentials per sync. Or paste a token below.
+              </div>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <input
               value={url}

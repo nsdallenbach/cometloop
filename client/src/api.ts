@@ -328,6 +328,18 @@ export const api = {
     await http(`/api/engagements/${engId}/repo`, { method: 'POST', ...json({ url, token }) });
   },
 
+  async connectRepoViaApp(engId: string, installationId: number, fullName: string): Promise<void> {
+    await http(`/api/engagements/${engId}/repo`, { method: 'POST', ...json({ installationId, fullName }) });
+  },
+
+  githubAppStatus(): Promise<{ configured: boolean; installations: { id: number; account: string }[] }> {
+    return http('/api/github-app/status');
+  },
+
+  githubAppRepos(): Promise<{ repos: { installationId: number; fullName: string; defaultBranch: string; private: boolean }[] }> {
+    return http('/api/github-app/repos');
+  },
+
   disconnectRepo(engId: string) {
     return http(`/api/engagements/${engId}/repo`, { method: 'DELETE' });
   },
