@@ -1688,7 +1688,7 @@ function NewTicketModal({
           />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
-          <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LANDS IN BACKLOG · ⌘↵ TO CREATE</span>
+          <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LANDS IN BACKLOG · CTRL+ENTER TO CREATE</span>
           <div style={{ flex: 1 }} />
           <button
             onClick={onClose}
