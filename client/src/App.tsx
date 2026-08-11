@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { api } from './api';
 import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
 import { mono, STATUS_LABEL } from './util';
@@ -10,7 +11,7 @@ import { TicketDrawer } from './components/TicketDrawer';
 import { Palette, type PaletteItem } from './components/Palette';
 
 type Route = 'portfolio' | 'setup' | 'workspace' | 'admin';
-export type Tab = 'board' | 'roadmap' | 'sources' | 'team' | 'feed';
+export type Tab = 'board' | 'roadmap' | 'analytics' | 'sources' | 'team' | 'feed';
 
 export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>(
@@ -231,6 +232,7 @@ export default function App() {
   }, [engagements, detail, engId, goPortfolio, openEngagement, canCreate, isAdmin]);
 
   return (
+    <MotionConfig reducedMotion="user">
     <div
       className="eec"
       data-theme={theme}
@@ -490,28 +492,34 @@ export default function App() {
 
       {palette && <Palette theme={theme} items={paletteItems} onClose={() => setPalette(false)} />}
 
-      {toast && (
-        <div
-          data-theme={theme}
-          style={{
-            position: 'fixed',
-            bottom: 22,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'var(--bg3)',
-            border: '1px solid var(--line2)',
-            color: 'var(--tx)',
-            borderRadius: 4,
-            padding: '10px 18px',
-            fontSize: 12.5,
-            zIndex: 60,
-            boxShadow: '0 8px 30px rgba(0,0,0,.4)',
-            animation: 'eec-fadeUp .2s ease',
-          }}
-        >
-          {toast}
-        </div>
-      )}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            key={toast}
+            data-theme={theme}
+            initial={{ opacity: 0, transform: 'translateX(-50%) translateY(10px)' }}
+            animate={{ opacity: 1, transform: 'translateX(-50%) translateY(0px)' }}
+            exit={{ opacity: 0, transform: 'translateX(-50%) translateY(6px)' }}
+            transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.2 }}
+            style={{
+              position: 'fixed',
+              bottom: 22,
+              left: '50%',
+              background: 'var(--bg3)',
+              border: '1px solid var(--line2)',
+              color: 'var(--tx)',
+              borderRadius: 4,
+              padding: '10px 18px',
+              fontSize: 12.5,
+              zIndex: 60,
+              boxShadow: '0 8px 30px rgba(0,0,0,.4)',
+            }}
+          >
+            {toast}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
+    </MotionConfig>
   );
 }

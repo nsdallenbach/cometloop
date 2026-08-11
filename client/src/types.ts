@@ -99,6 +99,7 @@ export interface FeedItem {
   timeLabel: string;
   source: string | null;
   reversible: boolean;
+  createdAt: string;
 }
 
 export type AgentTaskState = 'queued' | 'claimed' | 'working' | 'done' | 'failed' | 'cancelled';

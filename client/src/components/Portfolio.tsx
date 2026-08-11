@@ -153,7 +153,7 @@ export function Portfolio({
         </div>
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(340px,1fr))', gap: 12 }}>
-        {filtered.map((e) => {
+        {filtered.map((e, i) => {
           const hc = HEALTH_COLOR[e.health];
           const burnColor = e.burn > e.plan + 5 ? 'var(--bad)' : e.burn > e.plan ? 'var(--warn)' : 'var(--tx2)';
           return (
@@ -176,6 +176,7 @@ export function Portfolio({
                 flexDirection: 'column',
                 gap: 10,
                 animation: 'eec-fadeUp .25s ease both',
+                animationDelay: `${Math.min(i, 8) * 35}ms`,
               }}
             >
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
@@ -210,7 +211,7 @@ export function Portfolio({
                     <span style={{ color: 'var(--tx2)' }}>{e.pct}%</span>
                   </div>
                   <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${e.pct}%`, background: 'var(--tx2)' }} />
+                    <div className="bar-anim" style={{ height: '100%', width: `${e.pct}%`, background: 'var(--tx2)' }} />
                   </div>
                 </div>
                 <div>
@@ -221,7 +222,7 @@ export function Portfolio({
                     </span>
                   </div>
                   <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, overflow: 'hidden', position: 'relative' }}>
-                    <div style={{ height: '100%', width: `${Math.min(100, e.burn)}%`, background: burnColor }} />
+                    <div className="bar-anim" style={{ height: '100%', width: `${Math.min(100, e.burn)}%`, background: burnColor }} />
                     <div
                       style={{
                         position: 'absolute',
