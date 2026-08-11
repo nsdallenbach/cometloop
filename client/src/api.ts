@@ -208,6 +208,10 @@ export const api = {
     return http(`/api/tickets/${key}`, { method: 'DELETE' });
   },
 
+  async refineTicket(key: string): Promise<Ticket> {
+    return mapTicket(await http<Row>(`/api/tickets/${key}/refine`, { method: 'POST', ...json({}) }));
+  },
+
   bulkTickets(keys: string[], patch: { status?: TicketStatus; assignee?: string }) {
     return http('/api/tickets/bulk', { method: 'POST', ...json({ keys, patch }) });
   },

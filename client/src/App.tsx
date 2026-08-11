@@ -458,6 +458,7 @@ export default function App() {
           onCancelAgent={() => cancelAgent(detailTicket.key)}
           onAssign={(assignee) => setTicket(detailTicket.key, { assignee })}
           toast={showToast}
+          refreshDetail={refreshDetail}
           onClose={() => setDetailKey(null)}
           onAccept={() => {
             setTicket(detailTicket.key, { status: 'backlog' });
