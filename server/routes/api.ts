@@ -431,7 +431,21 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     app.get('/api/engagements/:id/detail', async (req, res) => {
       try {
         const id = req.params.id;
-        const tickets = (await q('SELECT * FROM app.tickets WHERE engagement_id = $1 ORDER BY seq', [id])).rows;
+        // Latest tracked deploy per ticket rides along so board cards can show
+        // pipeline progress while the ticket holds in Review.
+        const tickets = (
+          await q(
+            `SELECT t.*, d.deploy_state, d.deploy_url FROM app.tickets t
+             LEFT JOIN LATERAL (
+               SELECT pr.deploy_state, pr.deploy_url FROM app.repo_prs pr
+               JOIN app.repo_connections c ON c.id = pr.connection_id
+               WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id AND pr.deploy_state IS NOT NULL
+               ORDER BY pr.updated_at DESC NULLS LAST LIMIT 1
+             ) d ON true
+             WHERE t.engagement_id = $1 ORDER BY t.seq`,
+            [id],
+          )
+        ).rows;
         const sources = (await q('SELECT * FROM app.sources WHERE engagement_id = $1 ORDER BY id', [id])).rows;
         const feed = (await q('SELECT * FROM app.feed_items WHERE engagement_id = $1 AND NOT reverted ORDER BY id', [id])).rows;
         const team = (
