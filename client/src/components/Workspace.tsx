@@ -4,6 +4,7 @@ import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtD, initials, mono, pct, todayIso } from '../util';
 import { Analytics } from './Analytics';
+import { Standards } from './Standards';
 import type { Tab } from '../App';
 
 const COLS: [TicketStatus, string][] = [
@@ -138,6 +139,7 @@ export function Workspace({
     { key: 'roadmap', label: 'Roadmap' },
     { key: 'analytics', label: 'Analytics' },
     { key: 'sources', label: 'Sources' },
+    { key: 'standards', label: 'Standards' },
     { key: 'team', label: 'Team' },
     { key: 'feed', label: 'Status Feed' },
   ];
@@ -1202,6 +1204,9 @@ export function Workspace({
           </table>
         </div>
       )}
+
+      {/* ===== STANDARDS ===== */}
+      {detail && tab === 'standards' && <Standards engId={eng.id} lead={lead} toast={toast} />}
 
       {/* ===== TEAM ===== */}
       {detail && tab === 'team' && (
