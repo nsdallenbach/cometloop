@@ -85,6 +85,17 @@ export function Workspace({
   const dragOverColRef = useRef<TicketStatus | 'agent' | null>(null);
   const hoverQcardRef = useRef<number | null>(null);
   const suppressClick = useRef(false);
+  // A card the user just dropped skips the layout spring and slots straight
+  // into its new lane — without this it re-appears in the source slot and
+  // visibly springs across. Springs stay for automation-driven moves. The
+  // window covers async drops (agent deploy/complete land after an API round
+  // trip, not in the drop's render).
+  const justDropped = useRef<{ key: string; until: number } | null>(null);
+  const markDropped = (key: string) => (justDropped.current = { key, until: Date.now() + 700 });
+  const isJustDropped = (key: string) => {
+    const j = justDropped.current;
+    return j !== null && j.key === key && Date.now() < j.until;
+  };
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
@@ -185,7 +196,7 @@ export function Workspace({
         className: 'hv-border',
       })}
       style={{
-        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : agentDone ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
+        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : t.status === 'review' ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
         background: 'var(--bg2)',
         borderRadius: 3,
         padding: '9px 11px',
@@ -266,7 +277,9 @@ export function Workspace({
       layoutId={`card-${t.key}`}
       layout
       initial={false}
-      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+      // Cards the user just dropped slot straight into place; springs are for
+      // moves the user didn't make (agent claims, poll-driven updates).
+      transition={isJustDropped(t.key) ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
       // While dragging, the in-lane card dims to a placeholder; the floating
       // clone under the cursor is the thing that moves.
       style={{ borderRadius: 3, opacity: pDrag?.kind === 'ticket' && pDrag.key === t.key ? 0.3 : 1 }}
@@ -417,6 +430,7 @@ export function Workspace({
   };
 
   const dropCard = (payload: DragPayload, lane: TicketStatus | 'agent' | null, overQcard: number | null) => {
+    markDropped(payload.key);
     if (payload.kind === 'task') {
       if (!lead) return;
       // Dropping a queued card on another queued card slots it above.
@@ -564,7 +578,7 @@ export function Workspace({
       layoutId={`card-${at.ticketKey}`}
       layout
       initial={false}
-      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+      transition={isJustDropped(at.ticketKey) ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
       style={{ borderRadius: 3, opacity: pDrag?.kind === 'task' && pDrag.taskId === at.id ? 0.3 : 1 }}
     >
       {agentCardInner(at, qPos)}
@@ -838,7 +852,9 @@ export function Workspace({
                         flexDirection: 'column',
                         minHeight: 0,
                         background: 'var(--bg)',
-                        border: `1px solid ${dragOverCol === k ? 'var(--acc)' : 'var(--line)'}`,
+                        // Drag-over highlight matches the lane's card accent:
+                        // Review yellow, Done green, Backlog blue.
+                        border: `1px solid ${dragOverCol === k ? (k === 'review' ? 'var(--warn)' : k === 'done' ? 'var(--ok)' : 'var(--acc)') : 'var(--line)'}`,
                         borderRadius: 4,
                       }}
                     >
