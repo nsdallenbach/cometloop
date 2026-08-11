@@ -5,6 +5,7 @@ import { resolveIdentity, type Identity } from './roles';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
+import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
 import { setupContextFileRoutes } from './context-files';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
@@ -136,7 +137,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -1344,9 +1345,23 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
     });
 
+    // The telemetry volume is optional — consoles deployed before the
+    // agent_telemetry bundle resource exists still run, minus the archive.
+    let telemetry: ReturnType<AppKitServices['files']> | null = null;
+    if (process.env.DATABRICKS_VOLUME_TELEMETRY) {
+      try {
+        telemetry = appkit.files('telemetry');
+      } catch (err) {
+        console.warn('[api] telemetry volume unavailable — tool-call logs stay in Postgres only:', (err as Error).message);
+      }
+    } else {
+      console.log('[api] DATABRICKS_VOLUME_TELEMETRY not set — tool-call logs stay in Postgres only');
+    }
+
     setupRepoRoutes(app, q, requireLead);
     setupGithubAppRoutes(app);
-    setupAgentRoutes(app, q, appkit.files('files'), requireLead);
+    setupAgentRoutes(app, q, appkit.files('files'), requireLead, telemetry);
+    setupToolCallRoutes(app, q);
     setupPrConflictRoutes(app, q);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);

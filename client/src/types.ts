@@ -122,6 +122,14 @@ export interface AgentTask {
   createdAt: string;
 }
 
+/** One tool invocation streamed from an agent run (live feed in the ticket drawer). */
+export interface ToolCall {
+  id: number;
+  tool: string;
+  detail: string;
+  calledAt: string;
+}
+
 export interface ContextFile {
   name: string;
   size: number;

@@ -4,6 +4,7 @@ import { resolveIdentity, type Identity } from './roles';
 import { listContextFiles, type FilesVolume } from './context-files';
 import { loadConnection } from './repos';
 import { installationToken } from './github-app';
+import { archiveToolCalls } from './tool-calls';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -182,7 +183,10 @@ export function setupAgentRoutes(
   q: Query,
   files: FilesVolume,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  telemetry: FilesVolume | null = null,
 ) {
+  /** Fire-and-forget: archive a finished run's tool-call log to the telemetry volume. */
+  const archive = (taskId: number) => void archiveToolCalls(q, telemetry, taskId);
   const feed = (engagementId: string, actor: string, text: string) =>
     q(
       `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -275,6 +279,7 @@ export function setupAgentRoutes(
       ]);
       await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
       console.log(`[agent] task ${String(task.id)} (${key}) marked done from the board — ticket moved to review`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Marked agent work on ${key} done — moved to Review.`);
       res.json({ ok: true });
     } catch (err) {
@@ -305,6 +310,7 @@ export function setupAgentRoutes(
         await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
       }
       console.log(`[agent] task ${String(task.id)} (${key}) cancelled from state '${String(task.state)}'`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Cancelled agent work on ${key}.`);
       res.json({ ok: true });
     } catch (err) {
@@ -680,6 +686,7 @@ export function setupAgentRoutes(
          WHERE id = $1`,
         [task.id, outcome, summary.trim(), url ?? null],
       );
+      archive(Number(task.id));
       if (outcome === 'done') {
         await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
       } else {
