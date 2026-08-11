@@ -1,0 +1,21 @@
+; systemd unit for the Delivery Console devbox runner.
+;   sudo cp delivery-runner.service /etc/systemd/system/
+;   sudo systemctl enable --now delivery-runner
+[Unit]
+Description=Delivery Console agent runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=devbox
+WorkingDirectory=/home/devbox
+Environment=AGENT_NAME=%H
+; Environment=ENGAGEMENT=execution-console
+; Environment=MCP_SERVER=/home/devbox/engagement-console/mcp/server.mjs
+ExecStart=/usr/bin/node /home/devbox/engagement-console/devbox-runner/runner.mjs
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
