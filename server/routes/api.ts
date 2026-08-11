@@ -6,6 +6,7 @@ import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
 import { setupContextFileRoutes } from './context-files';
+import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
 import {
   SEED_ENGAGEMENTS,
   SEED_TICKETS,
@@ -134,7 +135,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -283,6 +284,77 @@ async function refinePlan(
     console.warn('[api] ticket refinement failed:', (err as Error).message);
     return null;
   }
+}
+
+/**
+ * Comment-driven refinement: while no runner has ever picked up a ticket, a
+ * new comment is treated as feedback on the plan. The ticket is re-planned
+ * with the feedback applied and the planning agent replies in the thread —
+ * tagging the commenter, 1-2 plain sentences on what changed. Runs in the
+ * background after the comment posts; any failure leaves the comment as a
+ * plain comment.
+ */
+async function applyCommentFeedback(appkit: AppKitServices, key: string, author: string, feedback: string): Promise<void> {
+  const q = (text: string, params?: unknown[]) => appkit.lakebase.query(text, params);
+  const asText = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const t = (await q('SELECT * FROM app.tickets WHERE key = $1', [key])).rows[0];
+  if (!t) return;
+  if (!['backlog', 'progress', 'proposed'].includes(String(t.status))) return;
+  // "Never picked up": no runner has ever claimed work on this ticket.
+  const picked = (
+    await q(`SELECT 1 FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('claimed','working','done','failed') LIMIT 1`, [key])
+  ).rows;
+  if (picked.length > 0) return;
+
+  const existingAc = (() => {
+    try {
+      const raw: unknown = typeof t.ac === 'string' ? JSON.parse(t.ac) : (t.ac ?? []);
+      return Array.isArray(raw) ? (raw as unknown[]).map((a) => asText(a)).filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  })();
+
+  const response = await appkit.serving('default').invoke({
+    messages: [
+      {
+        role: 'user',
+        content: [
+          'You are the delivery-planning agent for a consulting delivery board. A team member left feedback on a planned ticket that no agent has started yet. Update the ticket to incorporate the feedback.',
+          'Respond with ONLY a JSON object, no code fences:',
+          '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "reply": "1-2 short plain sentences telling the commenter what you changed — no jargon, no filler"}',
+          'Keep the description in the planned format (## Context / ## Approach / ## Dependencies). If the current description contains an "## Original request" section, keep it verbatim at the end. Change only what the feedback calls for; keep everything else as-is.',
+          'Current title:',
+          asText(t.title),
+          'Current description:',
+          asText(t.description).trim() || '(empty)',
+          'Current acceptance criteria:',
+          existingAc.length > 0 ? existingAc.map((a) => `- ${a}`).join('\n') : '(none)',
+          'Feedback comment:',
+          feedback,
+        ].join('\n\n'),
+      },
+    ],
+    max_tokens: 2000,
+  });
+  const text = extractText(response);
+  const jsonMatch = /\{[\s\S]*\}/.exec(text);
+  if (!jsonMatch) return;
+  const plan = JSON.parse(jsonMatch[0]) as { title?: unknown; description?: unknown; acceptance_criteria?: unknown; reply?: unknown };
+  const title = typeof plan.title === 'string' && plan.title.trim() ? plan.title.trim().slice(0, 200) : asText(t.title);
+  const description = typeof plan.description === 'string' && plan.description.trim() ? plan.description.trim() : asText(t.description);
+  const ac = Array.isArray(plan.acceptance_criteria)
+    ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)
+    : existingAc;
+  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? plan.reply.trim().slice(0, 600) : 'Updated the ticket based on your comment.';
+
+  await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4 WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
+  await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [key, 'Planning Agent', `@${author} — ${reply}`]);
+  await q(
+    `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
+     VALUES ($1, 'AGENT', $2, 'JUST NOW', false)`,
+    [String(t.engagement_id), `Planning agent reworked ${key} from ${author}'s feedback.`],
+  );
 }
 
 function parseJsonBlock(text: string): unknown {
@@ -1255,6 +1327,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireLead);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
+    setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
 
     app.post('/api/tickets/:key/comments', async (req, res) => {
       const parsed = CommentBody.safeParse(req.body);
@@ -1268,11 +1341,17 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           res.status(404).json({ error: 'Ticket not found' });
           return;
         }
+        const author = requestAuthor(req);
         const result = await q(
           'INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3) RETURNING *',
-          [req.params.key, requestAuthor(req), parsed.data.body.trim()],
+          [req.params.key, author, parsed.data.body.trim()],
         );
         res.status(201).json(result.rows[0]);
+        // Before a runner ever picks the ticket up, comments double as plan
+        // feedback — the planning agent updates the ticket and replies here.
+        void applyCommentFeedback(appkit, req.params.key, author, parsed.data.body.trim()).catch((err) =>
+          console.warn('[api] comment feedback refinement failed:', (err as Error).message),
+        );
       } catch (err) {
         console.error('add comment failed:', err);
         res.status(500).json({ error: 'Failed to add comment' });
