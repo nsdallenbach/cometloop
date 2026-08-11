@@ -244,6 +244,14 @@ export function Workspace({
           <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ DEPLOY FAILED</span>
         )}
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
+        {!isDone && t.waitingOn > 0 && (
+          <span
+            title={`Waiting on ${t.waitingOn} linked ticket${t.waitingOn === 1 ? '' : 's'} — see Linked work in the ticket`}
+            style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}
+          >
+            ⧗ WAITING ON {t.waitingOn}
+          </span>
+        )}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>

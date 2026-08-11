@@ -8,6 +8,7 @@ import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-wor
 import { setupPrConflictRoutes } from './pr-conflicts';
 import { setupContextFileRoutes } from './context-files';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
+import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
 import {
   SEED_ENGAGEMENTS,
   SEED_TICKETS,
@@ -136,7 +137,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -562,10 +563,16 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         const id = req.params.id;
         // Latest tracked deploy per ticket rides along so board cards can show
-        // pipeline progress while the ticket holds in Review.
+        // pipeline progress while the ticket holds in Review; waiting_on counts
+        // unresolved blocking tickets so cards can flag open dependencies.
         const tickets = (
           await q(
-            `SELECT t.*, d.deploy_state, d.deploy_url FROM app.tickets t
+            `SELECT t.*, d.deploy_state, d.deploy_url,
+                    (SELECT COUNT(*)::int FROM app.ticket_links l
+                     JOIN app.tickets b ON b.key = l.ticket_key
+                     WHERE l.linked_key = t.key AND l.type = 'blocks'
+                       AND b.status NOT IN ('done','dismissed')) AS waiting_on
+             FROM app.tickets t
              LEFT JOIN LATERAL (
                SELECT pr.deploy_state, pr.deploy_url FROM app.repo_prs pr
                JOIN app.repo_connections c ON c.id = pr.connection_id
@@ -1345,6 +1352,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     });
 
     setupRepoRoutes(app, q, requireLead);
+    setupTicketLinkRoutes(app, q);
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireLead);
     setupPrConflictRoutes(app, q);

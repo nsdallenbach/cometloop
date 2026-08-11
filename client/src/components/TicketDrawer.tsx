@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
-import type { AgentTask, Ticket, TicketComment, TicketDev } from '../types';
+import type { AgentTask, Ticket, TicketComment, TicketDev, TicketLinkType, TicketLinks } from '../types';
 import { STATUS_LABEL, initials, mono } from '../util';
 import { Markdown } from './Markdown';
 
@@ -14,6 +14,20 @@ const AGENT_STATE_LABEL: Record<AgentTask['state'], string> = {
 };
 
 const PR_STATE_COLOR: Record<string, string> = { open: 'var(--warn)', merged: 'var(--ok)', closed: 'var(--tx3)' };
+
+const LINK_BADGE: Record<TicketLinkType, { label: string; color: string }> = {
+  blocked_by: { label: '⧗ WAITING ON', color: 'var(--bad)' },
+  blocks: { label: 'BLOCKS', color: 'var(--warn)' },
+  relates: { label: 'RELATES', color: 'var(--acc)' },
+  mention: { label: 'MENTIONED', color: 'var(--tx3)' },
+};
+
+/** How the user phrases the link when creating it from this ticket's side. */
+const LINK_TYPE_OPTIONS: { value: 'blocked_by' | 'blocks' | 'relates'; label: string }[] = [
+  { value: 'blocked_by', label: 'is blocked by' },
+  { value: 'blocks', label: 'blocks' },
+  { value: 'relates', label: 'relates to' },
+];
 
 const DEPLOY_BADGE: Record<string, { label: string; color: string; pulse?: boolean }> = {
   pending: { label: '◌ DEPLOY QUEUED', color: 'var(--warn)', pulse: true },
@@ -37,6 +51,8 @@ export function TicketDrawer({
   team,
   lead,
   agentTask,
+  allTickets,
+  onOpenTicket,
   onQueueAgent,
   onCancelAgent,
   onAssign,
@@ -53,6 +69,8 @@ export function TicketDrawer({
   team: string[];
   lead: boolean;
   agentTask: AgentTask | null;
+  allTickets: Ticket[];
+  onOpenTicket: (key: string) => void;
   onQueueAgent: (instructions: string) => void;
   onCancelAgent: () => void;
   onAssign: (assignee: string) => void;
@@ -112,6 +130,51 @@ export function TicketDrawer({
   }, [ticket.key]);
 
   useEffect(loadDev, [loadDev]);
+
+  // ---- linked tickets & branches ----
+  const [linked, setLinked] = useState<{ key: string; data: TicketLinks | null } | null>(null);
+  const [linkType, setLinkType] = useState<'blocked_by' | 'blocks' | 'relates'>('blocked_by');
+  const [linkTarget, setLinkTarget] = useState('');
+  const [linking, setLinking] = useState(false);
+
+  const loadLinks = useCallback(() => {
+    void api
+      .ticketLinks(ticket.key)
+      .then((data) => setLinked({ key: ticket.key, data }))
+      .catch(() => setLinked({ key: ticket.key, data: null }));
+  }, [ticket.key]);
+
+  useEffect(loadLinks, [loadLinks]);
+
+  const linksData = linked && linked.key === ticket.key ? linked.data : null;
+  const linkedKeys = new Set((linksData?.links ?? []).filter((l) => l.type !== 'mention').map((l) => l.key));
+  const linkableTickets = allTickets.filter(
+    (t) => t.key !== ticket.key && !linkedKeys.has(t.key) && !['dismissed', 'proposed'].includes(t.status),
+  );
+
+  const addLink = () => {
+    if (!linkTarget || linking) return;
+    setLinking(true);
+    api
+      .addTicketLink(ticket.key, linkTarget, linkType)
+      .then(() => {
+        setLinkTarget('');
+        loadLinks();
+        refreshDetail(); // board cards show dependency chips
+      })
+      .catch((e: Error) => toast(`Link failed — ${e.message}`))
+      .finally(() => setLinking(false));
+  };
+
+  const removeLink = (id: number) => {
+    api
+      .removeTicketLink(ticket.key, id)
+      .then(() => {
+        loadLinks();
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Unlink failed — ${e.message}`));
+  };
 
   // Stale results from a previously opened ticket render as "loading".
   const comments = loaded && loaded.key === ticket.key && !loaded.error ? loaded.list : null;
@@ -427,6 +490,123 @@ export function TicketDrawer({
               </div>
             </>
           )}
+          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+            LINKED WORK{linksData && linksData.links.length > 0 ? ` · ${linksData.links.length}` : ''}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
+            {linksData === null && linked?.key === ticket.key && (
+              <div style={{ fontSize: 12, color: 'var(--tx3)' }}>
+                Couldn’t load linked work.{' '}
+                <button onClick={loadLinks} style={{ border: 'none', background: 'none', color: 'var(--acc)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
+                  Retry
+                </button>
+              </div>
+            )}
+            {(linksData?.links ?? []).map((l) => {
+              const badge = LINK_BADGE[l.type];
+              const statusColor = l.status === 'done' ? 'var(--ok)' : l.status === 'review' ? 'var(--warn)' : 'var(--tx3)';
+              return (
+                <div
+                  key={`${l.type}-${l.key}-${l.id ?? 'm'}`}
+                  className="hv-agent"
+                  onClick={() => onOpenTicket(l.key)}
+                  title={`Open ${l.key}`}
+                  style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px', cursor: 'pointer' }}
+                >
+                  <span style={{ ...mono(500, 9), color: badge.color, border: `1px solid ${badge.color}`, borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em', flex: 'none' }}>
+                    {badge.label}
+                  </span>
+                  <span style={{ ...mono(500, 10), color: 'var(--tx3)', flex: 'none' }}>{l.key}</span>
+                  <span style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {l.title}
+                  </span>
+                  <span style={{ ...mono(400, 9), color: statusColor, flex: 'none', letterSpacing: '.06em' }}>
+                    {(STATUS_LABEL[l.status] ?? l.status).toUpperCase()}
+                  </span>
+                  {l.id !== null && (
+                    <button
+                      className="hv-bad"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeLink(l.id as number);
+                      }}
+                      title="Remove link"
+                      style={{ flex: 'none', border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 13, cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {(linksData?.branches.length ?? 0) > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                <span style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em' }}>BRANCHES</span>
+                {(linksData?.branches ?? []).map((b) => (
+                  <a
+                    key={b.branch}
+                    href={b.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={`PR #${b.prNumber} — ${b.state}`}
+                    className="hv-border"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid var(--line)', borderRadius: 3, padding: '3px 8px', textDecoration: 'none' }}
+                  >
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: PR_STATE_COLOR[b.state] ?? 'var(--tx3)', flex: 'none' }} />
+                    <span style={{ ...mono(400, 10), color: 'var(--tx2)', maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {b.branch}
+                    </span>
+                  </a>
+                ))}
+              </div>
+            )}
+            {linkableTickets.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ ...mono(400, 10), color: 'var(--tx3)', flex: 'none' }}>{ticket.key}</span>
+                <select
+                  value={linkType}
+                  onChange={(e) => setLinkType(e.target.value as typeof linkType)}
+                  style={{ background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
+                >
+                  {LINK_TYPE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={linkTarget}
+                  onChange={(e) => setLinkTarget(e.target.value)}
+                  style={{ flex: 1, minWidth: 0, background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
+                >
+                  <option value="">Select a ticket…</option>
+                  {linkableTickets.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.key} — {t.title}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={addLink}
+                  disabled={!linkTarget || linking}
+                  style={{
+                    flex: 'none',
+                    border: '1px solid var(--line2)',
+                    background: 'none',
+                    color: 'var(--tx2)',
+                    borderRadius: 3,
+                    padding: '3px 10px',
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    opacity: !linkTarget || linking ? 0.45 : 1,
+                  }}
+                >
+                  {linking ? '…' : 'Link'}
+                </button>
+              </div>
+            )}
+          </div>
           {devData && (devData.prs.length > 0 || devData.commits.length > 0) && (
             <>
               <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>DEVELOPMENT</div>

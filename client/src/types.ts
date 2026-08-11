@@ -63,6 +63,8 @@ export interface Ticket {
   blocked: boolean;
   deployState: DeployState | null;
   deployUrl: string | null;
+  /** Unresolved blocking tickets (open `blocks` links pointing at this ticket). */
+  waitingOn: number;
 }
 
 export interface ContextSource {
@@ -225,4 +227,29 @@ export interface RepoDetail {
 export interface TicketDev {
   prs: RepoPr[];
   commits: RepoCommit[];
+}
+
+/** A link seen from one ticket's side; 'mention' = detected in text, not stored. */
+export type TicketLinkType = 'blocks' | 'blocked_by' | 'relates' | 'mention';
+
+export interface TicketLink {
+  /** Stored link id; null for detected mentions (which cannot be removed). */
+  id: number | null;
+  key: string;
+  title: string;
+  status: TicketStatus;
+  type: TicketLinkType;
+}
+
+/** A git branch linked to the ticket via its most recent synced PR. */
+export interface LinkedBranch {
+  branch: string;
+  prNumber: number;
+  state: 'open' | 'merged' | 'closed';
+  url: string;
+}
+
+export interface TicketLinks {
+  links: TicketLink[];
+  branches: LinkedBranch[];
 }
