@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { motion } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, Ticket, TicketComment, TicketDev } from '../types';
 import { STATUS_LABEL, initials, mono } from '../util';
@@ -98,8 +99,19 @@ export function TicketDrawer({
   const loadComments = useCallback(() => {
     void api
       .comments(ticket.key)
-      .then((list) => setLoaded({ key: ticket.key, list, error: false }))
-      .catch(() => setLoaded({ key: ticket.key, list: null, error: true }));
+      .then((list) =>
+        setLoaded((cur) => {
+          // A poll that started before a just-posted comment resolved would
+          // otherwise briefly erase it — keep locally known comments on top.
+          if (cur && cur.key === ticket.key && cur.list) {
+            const seen = new Set(list.map((c) => c.id));
+            const extra = cur.list.filter((c) => !seen.has(c.id));
+            return { key: ticket.key, list: [...list, ...extra], error: false };
+          }
+          return { key: ticket.key, list, error: false };
+        }),
+      )
+      .catch(() => setLoaded((cur) => (cur && cur.key === ticket.key && cur.list ? cur : { key: ticket.key, list: null, error: true })));
   }, [ticket.key]);
 
   useEffect(loadComments, [loadComments]);
@@ -128,6 +140,14 @@ export function TicketDrawer({
     const iv = setInterval(loadDev, 8000);
     return () => clearInterval(iv);
   }, [watchDev, loadDev]);
+
+  // Agent replies land as comments: poll while the drawer is open — fast while
+  // an agent is actively on the ticket, relaxed otherwise — so responses appear
+  // without reopening the drawer.
+  useEffect(() => {
+    const iv = setInterval(loadComments, agentActive ? 5000 : 15000);
+    return () => clearInterval(iv);
+  }, [agentActive, loadComments]);
 
   const [mergeArm, setMergeArm] = useState<number | null>(null);
   const [merging, setMerging] = useState<number | null>(null);
@@ -541,7 +561,13 @@ export function TicketDrawer({
               <div style={{ fontSize: 12, color: 'var(--tx3)' }}>No comments yet — start the thread below.</div>
             )}
             {(comments ?? []).map((c) => (
-              <div key={c.id} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
+              <motion.div
+                key={c.id}
+                initial={{ opacity: 0, transform: 'translateY(4px)' }}
+                animate={{ opacity: 1, transform: 'translateY(0px)' }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}
+              >
                 <span
                   style={{
                     flex: 'none',
@@ -566,8 +592,61 @@ export function TicketDrawer({
                   </div>
                   <Markdown text={c.body} />
                 </div>
-              </div>
+              </motion.div>
             ))}
+            {agentTask && ['claimed', 'working'].includes(agentTask.state) && (
+              <motion.div
+                key="agent-typing"
+                initial={{ opacity: 0, transform: 'translateY(4px)' }}
+                animate={{ opacity: 1, transform: 'translateY(0px)' }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                style={{ display: 'flex', gap: 9, alignItems: 'center' }}
+              >
+                <span
+                  style={{
+                    flex: 'none',
+                    width: 22,
+                    height: 22,
+                    borderRadius: '50%',
+                    background: 'var(--agentsoft)',
+                    border: '1px solid var(--agent)',
+                    display: 'grid',
+                    placeItems: 'center',
+                    ...mono(500, 10),
+                    color: 'var(--agent)',
+                  }}
+                  title={agentTask.agent ?? 'Agent'}
+                >
+                  ◆
+                </span>
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    border: '1px solid var(--line)',
+                    borderRadius: 3,
+                    padding: '8px 12px',
+                    background: 'var(--bg)',
+                  }}
+                >
+                  {[0, 1, 2].map((i) => (
+                    <motion.span
+                      key={i}
+                      animate={{
+                        opacity: [0.3, 1, 0.3],
+                        transform: ['translateY(0px)', 'translateY(-2.5px)', 'translateY(0px)'],
+                      }}
+                      transition={{ repeat: Infinity, duration: 1, delay: i * 0.16, ease: 'easeInOut' }}
+                      style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--agent)', display: 'inline-block' }}
+                    />
+                  ))}
+                  <span style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em', marginLeft: 5 }}>
+                    AGENT IS WORKING — REPLIES LAND HERE
+                  </span>
+                </div>
+              </motion.div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
             <textarea
