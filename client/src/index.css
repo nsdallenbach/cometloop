@@ -36,6 +36,48 @@ a:hover {
   --agent: #7a8ff5;
   --agentsoft: rgba(122, 143, 245, 0.13);
   --rowpad: 9px 12px;
+
+  /* shadcn token bridge (appkit-ui + Bklit components inherit the console palette) */
+  --background: var(--bg);
+  --foreground: var(--tx);
+  --card: var(--bg2);
+  --card-foreground: var(--tx);
+  --popover: var(--bg2);
+  --popover-foreground: var(--tx);
+  --primary: var(--acc);
+  --primary-foreground: #ffffff;
+  --muted: var(--bg3);
+  --muted-foreground: var(--tx2);
+  --border: var(--line);
+
+  /* Bklit chart tokens — series pair #ff3621/#6e84f2 validated for CVD + contrast
+     on --bg2 (dark band needs L ≤ 0.67, hence the darker periwinkle vs --agent) */
+  --chart-1: #ff3621;
+  --chart-2: #6e84f2;
+  --chart-3: #95a3af;
+  --chart-4: #5e6e7b;
+  --chart-5: #3a4750;
+  --chart-background: var(--bg2);
+  --chart-foreground: var(--tx2);
+  --chart-foreground-muted: var(--tx3);
+  --chart-line-primary: var(--chart-1);
+  --chart-line-secondary: var(--chart-2);
+  --chart-crosshair: var(--tx3);
+  --chart-grid: var(--line);
+  --chart-brush-border: var(--chart-grid);
+  --chart-tooltip-background: rgba(23, 30, 37, 0.94);
+  --chart-tooltip-foreground: var(--tx);
+  --chart-tooltip-muted: var(--tx3);
+  --chart-marker-background: var(--bg3);
+  --chart-marker-border: var(--line2);
+  --chart-marker-foreground: var(--tx);
+  --chart-label: var(--tx2);
+  --chart-scale-01: #141b22;
+  --chart-scale-02: #1c2630;
+  --chart-scale-03: #27333f;
+  --chart-scale-04: #35434f;
+  --chart-scale-05: #45545f;
+  --chart-scale-pattern-color: #1a222b;
 }
 
 [data-theme='light'] {
@@ -55,6 +97,60 @@ a:hover {
   --agent: #4a63d8;
   --agentsoft: rgba(74, 99, 216, 0.1);
   --rowpad: 9px 12px;
+
+  /* shadcn token bridge */
+  --background: var(--bg);
+  --foreground: var(--tx);
+  --card: var(--bg2);
+  --card-foreground: var(--tx);
+  --popover: var(--bg2);
+  --popover-foreground: var(--tx);
+  --primary: var(--acc);
+  --primary-foreground: #ffffff;
+  --muted: var(--bg3);
+  --muted-foreground: var(--tx2);
+  --border: var(--line);
+
+  /* Bklit chart tokens — series pair #e22a16/#4a63d8 validated on white */
+  --chart-1: #e22a16;
+  --chart-2: #4a63d8;
+  --chart-3: #57646e;
+  --chart-4: #8b98a2;
+  --chart-5: #c6cfd6;
+  --chart-background: var(--bg2);
+  --chart-foreground: var(--tx2);
+  --chart-foreground-muted: var(--tx3);
+  --chart-line-primary: var(--chart-1);
+  --chart-line-secondary: var(--chart-2);
+  --chart-crosshair: var(--tx3);
+  --chart-grid: var(--line);
+  --chart-brush-border: var(--chart-grid);
+  --chart-tooltip-background: rgba(21, 28, 34, 0.94);
+  --chart-tooltip-foreground: #f5f6f7;
+  --chart-tooltip-muted: #95a3af;
+  --chart-marker-background: var(--bg3);
+  --chart-marker-border: var(--line2);
+  --chart-marker-foreground: var(--tx);
+  --chart-label: var(--tx2);
+  --chart-scale-01: #fafbfb;
+  --chart-scale-02: #eef1f3;
+  --chart-scale-03: #dde3e7;
+  --chart-scale-04: #c3ccd3;
+  --chart-scale-05: #a4b0b9;
+  --chart-scale-pattern-color: #f0f2f4;
+}
+
+/* Tailwind utilities for the Bklit-specific color tokens */
+@theme inline {
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-label: var(--chart-label);
+  --color-chart-tooltip-background: var(--chart-tooltip-background);
+  --color-chart-tooltip-foreground: var(--chart-tooltip-foreground);
+  --color-chart-tooltip-muted: var(--chart-tooltip-muted);
 }
 
 .eec ::-webkit-scrollbar {
@@ -116,6 +212,71 @@ a:hover {
 .eec select:focus {
   outline: 1px solid var(--acc);
   outline-offset: -1px;
+}
+
+/* ============ Microinteractions ============ */
+
+/* Hover states ease instead of snapping */
+.hv-card,
+.hv-border,
+.hv-border-bg,
+.hv-bg,
+.hv-tx2,
+.hv-tx,
+.hv-bad,
+.hv-agent {
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+.hv-bright {
+  transition: filter 0.15s ease;
+}
+tr.hv-row td {
+  transition: background-color 0.12s ease;
+}
+
+/* Buttons: eased hover + a subtle press */
+.eec button {
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease,
+    transform 0.1s ease;
+}
+.eec button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.eec button:focus-visible {
+  outline: 1px solid var(--acc);
+  outline-offset: 1px;
+}
+.eec input,
+.eec select,
+.eec textarea {
+  transition: border-color 0.15s ease;
+}
+
+/* Opt-in: progress/load bars glide to their new width */
+.bar-anim {
+  transition: width 0.6s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+/* Tab/route panes rise in on mount */
+.tab-pane {
+  animation: eec-fadeUp 0.2s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eec *,
+  .eec *::before,
+  .eec *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* hover helpers (inline styles can't express :hover) */

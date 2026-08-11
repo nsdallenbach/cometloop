@@ -129,6 +129,7 @@ function mapFeed(r: Row): FeedItem {
     timeLabel: s(r.time_label),
     source: r.source == null ? null : s(r.source),
     reversible: b(r.reversible),
+    createdAt: s(r.created_at),
   };
 }
 
