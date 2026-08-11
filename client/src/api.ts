@@ -22,6 +22,7 @@ import type {
   TicketComment,
   TicketDev,
   TicketStatus,
+  TicketWithEngagement,
 } from './types';
 
 type Row = Record<string, unknown>;
@@ -87,6 +88,10 @@ function mapTicket(r: Row): Ticket {
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
   };
+}
+
+function mapTicketWithEngagement(r: Row): TicketWithEngagement {
+  return { ...mapTicket(r), client: s(r.client), engagementName: s(r.engagement_name) };
 }
 
 function mapSource(r: Row): ContextSource {
@@ -193,6 +198,15 @@ export const api = {
       suggestions: d.suggestions.map(mapSuggestion),
       agentTasks: (d.agentTasks ?? []).map(mapAgentTask),
     };
+  },
+
+  async tickets(): Promise<TicketWithEngagement[]> {
+    const rows = await http<Row[]>('/api/tickets');
+    return rows.map(mapTicketWithEngagement);
+  },
+
+  async ticket(key: string): Promise<TicketWithEngagement> {
+    return mapTicketWithEngagement(await http<Row>(`/api/tickets/${encodeURIComponent(key)}`));
   },
 
   async createTicket(
