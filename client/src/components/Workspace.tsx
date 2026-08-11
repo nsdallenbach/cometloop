@@ -49,6 +49,8 @@ export function Workspace({
   onEngagementChanged,
   refreshDetail,
   lead,
+  newTicket,
+  setNewTicket,
 }: {
   eng: Engagement;
   detail: EngagementDetail | null;
@@ -63,9 +65,10 @@ export function Workspace({
   onEngagementChanged: () => void;
   refreshDetail: () => void;
   lead: boolean;
+  newTicket: boolean;
+  setNewTicket: (open: boolean) => void;
 }) {
   const [boardMode, setBoardMode] = useState<'kanban' | 'table'>('kanban');
-  const [newTicket, setNewTicket] = useState(false);
   // Tickets being created in the background (the LLM drafts the plan, which
   // takes a while) — drives the floating progress bar instead of a frozen modal.
   const [pendingCreates, setPendingCreates] = useState(0);
@@ -744,6 +747,7 @@ export function Workspace({
             <button
               className="hv-border"
               onClick={() => setNewTicket(true)}
+              title="Shortcut: N"
               style={{
                 border: '1px solid var(--line2)',
                 background: 'none',
@@ -1723,8 +1727,8 @@ function NewTicketModal({
         exit={{ opacity: 0, transform: 'translate(-50%,-50%) scale(0.98) translateY(4px)' }}
         transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose();
-          else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
+          // Escape is handled by the app-level layering (palette > modal > drawer).
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
         }}
         style={{
           position: 'fixed',
