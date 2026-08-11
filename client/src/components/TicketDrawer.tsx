@@ -40,6 +40,7 @@ export function TicketDrawer({
   onQueueAgent,
   onCancelAgent,
   onAssign,
+  onTags,
   toast,
   refreshDetail,
   onClose,
@@ -56,6 +57,7 @@ export function TicketDrawer({
   onQueueAgent: (instructions: string) => void;
   onCancelAgent: () => void;
   onAssign: (assignee: string) => void;
+  onTags: (tags: string[]) => void;
   toast: (msg: string) => void;
   refreshDetail: () => void;
   onClose: () => void;
@@ -94,6 +96,23 @@ export function TicketDrawer({
   const [dev, setDev] = useState<{ key: string; data: TicketDev | null } | null>(null);
   const [draft, setDraft] = useState('');
   const [posting, setPosting] = useState(false);
+  const [tagDraft, setTagDraft] = useState('');
+
+  const addTag = () => {
+    const tag = tagDraft.trim();
+    if (!tag) return;
+    setTagDraft('');
+    if (ticket.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return;
+    if (tag.length > 40) {
+      toast('Tags are limited to 40 characters');
+      return;
+    }
+    if (ticket.tags.length >= 20) {
+      toast('Tickets are limited to 20 tags');
+      return;
+    }
+    onTags([...ticket.tags, tag]);
+  };
 
   const loadComments = useCallback(() => {
     void api
@@ -263,6 +282,56 @@ export function TicketDrawer({
               <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>WORKSTREAM</div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.workstream}</div>
             </div>
+          </div>
+          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>TAGS</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 16 }}>
+            {ticket.tags.map((tag) => (
+              <span
+                key={tag}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  ...mono(500, 10),
+                  color: 'var(--tx2)',
+                  border: '1px solid var(--line2)',
+                  background: 'var(--bg)',
+                  borderRadius: 2,
+                  padding: '2px 4px 2px 7px',
+                }}
+              >
+                {tag}
+                <button
+                  className="hv-bad"
+                  title={`Remove tag "${tag}"`}
+                  onClick={() => onTags(ticket.tags.filter((t) => t !== tag))}
+                  style={{ border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 11, cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <input
+              value={tagDraft}
+              onChange={(e) => setTagDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ',') {
+                  e.preventDefault();
+                  addTag();
+                }
+              }}
+              onBlur={addTag}
+              placeholder={ticket.tags.length === 0 ? 'Add a tag…' : '+ tag'}
+              style={{
+                width: ticket.tags.length === 0 ? 120 : 70,
+                background: 'var(--bg)',
+                border: '1px dashed var(--line2)',
+                borderRadius: 2,
+                color: 'var(--tx)',
+                padding: '3px 7px',
+                fontSize: 11.5,
+              }}
+            />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>DESCRIPTION</span>

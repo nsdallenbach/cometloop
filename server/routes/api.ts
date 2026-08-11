@@ -8,6 +8,7 @@ import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-wor
 import { setupPrConflictRoutes } from './pr-conflicts';
 import { setupContextFileRoutes } from './context-files';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
+import { normalizeTags } from './ticket-tags';
 import {
   SEED_ENGAGEMENTS,
   SEED_TICKETS,
@@ -76,8 +77,10 @@ const SCHEMA_SQL = [
     description TEXT NOT NULL DEFAULT '',
     ac JSONB NOT NULL DEFAULT '[]',
     blocked BOOLEAN NOT NULL DEFAULT false,
+    tags JSONB NOT NULL DEFAULT '[]',
     seq SERIAL
   )`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'`,
   `CREATE TABLE IF NOT EXISTS app.sources (
     id SERIAL PRIMARY KEY,
     engagement_id TEXT NOT NULL REFERENCES app.engagements(id),
@@ -425,11 +428,14 @@ const ProposalPlanSchema = z.object({
 const PatchTicketBody = z.object({
   status: z.enum(['backlog', 'progress', 'review', 'done', 'proposed', 'dismissed']).optional(),
   assignee: z.string().optional(),
+  tags: z.array(z.string().max(40)).max(20).optional(),
 });
 
 const BulkBody = z.object({
   keys: z.array(z.string()).min(1),
-  patch: PatchTicketBody,
+  // Tags are excluded: a bulk patch replaces the whole tag list, which is
+  // never what "tag these N tickets" means. Tags are edited per-ticket.
+  patch: PatchTicketBody.omit({ tags: true }),
 });
 
 const SuggestionBody = z.object({ decision: z.enum(['acc', 'ovr']) });
@@ -611,6 +617,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
       try {
         const { status, assignee } = parsed.data;
+        const tags = parsed.data.tags === undefined ? undefined : normalizeTags(parsed.data.tags);
         let review: { engagementId: string; from: string } | null = null;
         if (status !== undefined) {
           // Moving tickets in or out of the agent-review states is a lead decision;
@@ -636,6 +643,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           params.push(assignee);
           sets.push(`assignee = $${params.length}`);
         }
+        if (tags !== undefined) {
+          params.push(JSON.stringify(tags));
+          sets.push(`tags = $${params.length}`);
+        }
         if (sets.length === 0) {
           res.status(400).json({ error: 'Empty patch' });
           return;
@@ -647,7 +658,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         const updated = result.rows[0] as { key: string; title: string; status: string };
         console.log(
-          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}`,
+          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${tags !== undefined ? ` — tags → [${tags.join(', ')}]` : ''}`,
         );
         if (review && updated.status !== review.from) {
           const verb =

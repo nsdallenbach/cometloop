@@ -61,6 +61,7 @@ export interface Ticket {
   description: string;
   ac: string[];
   blocked: boolean;
+  tags: string[];
   deployState: DeployState | null;
   deployUrl: string | null;
 }

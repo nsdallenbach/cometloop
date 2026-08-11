@@ -160,11 +160,11 @@ export default function App() {
 
   // ---- ticket mutations shared by board + drawer ----
   // Optimistic with rollback: the previous field values are restored on failure.
-  const setTicket = useCallback((key: string, patch: { status?: TicketStatus; assignee?: string }) => {
-    let prev: { status: TicketStatus; assignee: string } | null = null;
+  const setTicket = useCallback((key: string, patch: { status?: TicketStatus; assignee?: string; tags?: string[] }) => {
+    let prev: { status: TicketStatus; assignee: string; tags: string[] } | null = null;
     setDetail((d) => {
       const t = d?.tickets.find((x) => x.key === key);
-      if (t) prev = { status: t.status, assignee: t.assignee };
+      if (t) prev = { status: t.status, assignee: t.assignee, tags: t.tags };
       return d ? { ...d, tickets: d.tickets.map((x) => (x.key === key ? { ...x, ...patch } : x)) } : d;
     });
     api.patchTicket(key, patch).catch((e: Error) => {
@@ -487,6 +487,7 @@ export default function App() {
           onQueueAgent={(instructions) => queueForAgent(detailTicket.key, instructions)}
           onCancelAgent={() => cancelAgent(detailTicket.key)}
           onAssign={(assignee) => setTicket(detailTicket.key, { assignee })}
+          onTags={(tags) => setTicket(detailTicket.key, { tags })}
           toast={showToast}
           refreshDetail={refreshDetail}
           onClose={() => setDetailKey(null)}
