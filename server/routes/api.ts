@@ -348,6 +348,7 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
     : existingAc;
   const reply = typeof plan.reply === 'string' && plan.reply.trim() ? plan.reply.trim().slice(0, 600) : 'Updated the ticket based on your comment.';
 
+  console.log(`[api] comment feedback applied to ${key} — plan updated (${ac.length} AC)`);
   await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4 WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
   await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [key, 'Planning Agent', `@${author} — ${reply}`]);
   await q(
@@ -644,6 +645,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           return;
         }
         const updated = result.rows[0] as { key: string; title: string; status: string };
+        console.log(
+          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}`,
+        );
         if (review && updated.status !== review.from) {
           const verb =
             updated.status === 'dismissed' ? 'Dismissed' : review.from === 'proposed' ? 'Accepted' : 'Reinstated';
@@ -680,6 +684,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const asText = (v: unknown): string => (typeof v === 'string' ? v : '');
         const original = asText(t.description).trim() || asText(t.title);
         const content = [asText(t.title), asText(t.description).trim()].filter(Boolean).join('\n\n');
+        console.log(`[api] refining ticket ${key} via the planning model (${content.length} chars of context)`);
         const plan = await refinePlan(appkit, content);
         if (!plan) {
           res.status(502).json({ error: 'The planning model is unavailable — try again shortly' });
@@ -696,6 +701,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             return [];
           }
         })();
+        console.log(`[api] ticket ${key} refined — ${plan.ac.length > 0 ? plan.ac.length : existingAc.length} AC`);
         const updated = await q(
           `UPDATE app.tickets SET title = $2, description = $3, ac = $4 WHERE key = $1 RETURNING *`,
           [key, plan.title || String(t.title), description, JSON.stringify(plan.ac.length > 0 ? plan.ac : existingAc)],
@@ -757,6 +763,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             ac = plan.ac;
           }
           if (!title) title = fallbackTitle(content);
+          console.log(`[api] chatbox ticket for ${engId} ${plan ? 'planned via model' : 'using fallback title'} (${content.length} chars)`);
         }
         const author = requestAuthor(req);
         const result = await q(
@@ -774,6 +781,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             JSON.stringify(ac),
           ],
         );
+        console.log(`[api] created ticket ${key} in ${engId} (${ac.length} AC)`);
         const who = assignee?.trim();
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -801,6 +809,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         await q('UPDATE app.repo_prs SET ticket_key = NULL WHERE ticket_key = $1', [key]);
         await q('UPDATE app.repo_commits SET ticket_key = NULL WHERE ticket_key = $1', [key]);
         await q('DELETE FROM app.tickets WHERE key = $1', [key]);
+        console.log(`[api] deleted ticket ${key} from ${engagementId}`);
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
            VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
@@ -837,6 +846,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         if (patch.assignee !== undefined) {
           await q('UPDATE app.tickets SET assignee = $1 WHERE key = ANY($2)', [patch.assignee, keys]);
         }
+        console.log(
+          `[api] bulk updated ${keys.length} ticket(s)${patch.status !== undefined ? ` — status → '${patch.status}'` : ''}${patch.assignee !== undefined ? ` — assignee → '${patch.assignee}'` : ''}`,
+        );
         res.json({ updated: keys.length });
       } catch (err) {
         console.error('bulk update failed:', err);
@@ -937,6 +949,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         });
         const text = extractText(response).trim();
         if (!text) throw new Error('empty model response');
+        console.log(`[api] weekly draft generated for ${id} (${text.length} chars)`);
         await q('UPDATE app.engagements SET composer = $2, pushed = false WHERE id = $1', [id, text]);
         res.json({ text });
       } catch (err) {
@@ -988,6 +1001,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           return;
         }
         const path = `sows/${Date.now()}-${filename}`;
+        console.log(`[api] SOW upload — ${body.length} bytes to ${path}`);
         await appkit.files('files').upload(path, body, { overwrite: true });
         // Keep only the most recent upload in memory for text extraction at parse time.
         for (const k of Object.keys(req.app.locals)) {
@@ -1034,6 +1048,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         } else {
           docText = description ?? '';
         }
+        console.log(`[api] SOW parse — source ${path ? `document ${path}` : 'written brief'}, ${docText.length} chars extracted`);
         const today = new Date().toISOString().slice(0, 10);
         const sourceKind = path ? 'a signed SOW / SOP document' : 'a written project brief from the engagement lead';
         const prompt = [
@@ -1069,6 +1084,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           });
           return;
         }
+        console.log(
+          `[api] SOW plan validated — ${validated.data.phases.length} phases, ${validated.data.milestones?.length ?? 0} milestones, ${validated.data.proposals.length} proposals`,
+        );
         res.json({ milestones: [], ...validated.data, extractedChars: docText.length });
       } catch (err) {
         const msg = (err as Error).message;
@@ -1178,6 +1196,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           id,
           creator.email,
         ]);
+        console.log(`[api] created engagement ${id} — ${proposals.length} tickets seeded from ${planOrigin} (${phases.length} phases)`);
         res.status(201).json({ id });
       } catch (err) {
         console.error('create engagement failed:', err);
@@ -1201,6 +1220,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         await q('DELETE FROM app.engagement_members WHERE engagement_id = $1', [id]);
         await q('DELETE FROM app.tickets WHERE engagement_id = $1', [id]);
         await q('DELETE FROM app.engagements WHERE id = $1', [id]);
+        console.log(`[api] deleted engagement ${id} (cascade: tickets, sources, feed, members)`);
         res.json({ ok: true });
       } catch (err) {
         console.error('delete engagement failed:', err);
@@ -1359,6 +1379,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     });
   });
 
+  console.log('[api] API routes registered');
   // 90s keeps merge → Done feeling live while webhooks can't reach the app
   // (GitHub App tokens make the extra polling free, rate-limit-wise).
   startRepoPolling(q, 90_000);
