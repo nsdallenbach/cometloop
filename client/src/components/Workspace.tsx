@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { LayoutGroup, motion } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtD, initials, mono, pct, todayIso } from '../util';
@@ -162,8 +163,15 @@ export function Workspace({
     const agentFailed = at?.state === 'failed' && t.status === 'backlog';
     const isDone = t.status === 'done';
     return (
-    <div
+    <motion.div
       key={t.key}
+      layoutId={`card-${t.key}`}
+      layout
+      initial={false}
+      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+      style={{ borderRadius: 3 }}
+    >
+    <div
       draggable
       onDragStart={() => (drag.current = t.key)}
       onDragEnd={() => {
@@ -237,6 +245,7 @@ export function Workspace({
         </span>
       </div>
     </div>
+    </motion.div>
     );
   };
 
@@ -336,8 +345,15 @@ export function Workspace({
       />
     );
     return (
-      <div
+      <motion.div
         key={`at-${at.id}`}
+        layoutId={`card-${at.ticketKey}`}
+        layout
+        initial={false}
+        transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+        style={{ borderRadius: 3 }}
+      >
+      <div
         draggable={lead}
         onDragStart={() => (dragTask.current = { id: at.id, ticketKey: at.ticketKey, queued: !running })}
         onDragEnd={() => {
@@ -423,6 +439,7 @@ export function Workspace({
           </div>
         )}
       </div>
+      </motion.div>
     );
   };
 
@@ -691,6 +708,7 @@ export function Workspace({
                   No tickets on the board yet{proposedTickets.length > 0 ? ' — accept proposed tickets above to seed it.' : '.'}
                 </div>
               )}
+              <LayoutGroup>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(250px,1fr))', gap: 12, minWidth: 1040, height: '100%' }}>
                 {COLS.map(([k, label]) => {
                   // No In Progress lane: human-active tickets sit in Backlog
@@ -752,6 +770,7 @@ export function Workspace({
                   );
                 })}
               </div>
+              </LayoutGroup>
             </div>
           )}
 
