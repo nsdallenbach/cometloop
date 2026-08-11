@@ -22,6 +22,10 @@ export default tseslint.config(
       // Standalone subpackages — plain JS outside the TS project service.
       'mcp/**',
       'devbox-runner/**',
+      // Vendored Bklit UI chart components (installed via shadcn registry);
+      // kept as shipped so kit upgrades stay a clean re-copy.
+      'client/src/components/charts/**',
+      'client/src/components/shimmering-text.tsx',
     ],
   },
 
