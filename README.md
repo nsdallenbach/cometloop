@@ -193,3 +193,14 @@ databricks bundle deploy -t prod
 - **Frontend**: React.js, TypeScript, Vite, Tailwind CSS, React Router
 - **UI Components**: Radix UI, shadcn/ui
 - **Databricks**: AppKit SDK
+
+## Agent Runners
+
+Tickets can be handed off to autonomous agents straight from the board. Dragging a card into the **◆ Deploy to Agent** lane (or clicking **Queue for agent** in the ticket drawer) queues it on the console's HTTP work queue; order within the lane is claim priority.
+
+External devbox runners pick up work with a wait/claim loop: each runner long-polls `GET /api/agent/work/wait` until a ticket is queued, atomically claims it via `POST /api/agent/work/claim`, receives the work package (ticket, lead instructions, repo coordinates, context files), then posts progress notes and completes with `done` or `failed`.
+
+See:
+
+- [docs/devbox-integration.md](docs/devbox-integration.md) -- the HTTP contract: authentication, endpoints, and a minimal runner loop
+- [devbox-runner/README.md](devbox-runner/README.md) -- the reference runner implementation and how to run it
