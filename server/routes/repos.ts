@@ -626,6 +626,24 @@ export async function loadConnection(q: Query, engagementId: string): Promise<Co
   return rows.length > 0 ? toConnection(rows[0]) : null;
 }
 
+/**
+ * Webhook idempotency: GitHub retries deliveries and each retry carries the
+ * same X-GitHub-Delivery GUID. Remember recently seen ids so a redelivery
+ * acks immediately instead of racing a second sync (concurrent syncs read
+ * prev-state before the other's write and can double-post feed items).
+ */
+const DELIVERY_TTL_MS = 15 * 60_000;
+const seenDeliveries = new Map<string, number>();
+
+export function rememberDelivery(id: string, now = Date.now()): boolean {
+  for (const [k, at] of seenDeliveries) {
+    if (now - at > DELIVERY_TTL_MS) seenDeliveries.delete(k);
+  }
+  if (seenDeliveries.has(id)) return false;
+  seenDeliveries.set(id, now);
+  return true;
+}
+
 const ConnectBody = z.object({
   url: z.string().url().max(500),
   token: z.string().min(8).max(500),
@@ -802,6 +820,11 @@ export function setupRepoRoutes(
         res.json({ ok: true, ignored: true });
         return;
       }
+      const deliveryId = String(req.headers['x-github-delivery'] ?? '');
+      if (deliveryId && !rememberDelivery(deliveryId)) {
+        res.json({ ok: true, duplicate: true });
+        return;
+      }
       const { rows } = await q(`SELECT * FROM app.repo_connections WHERE provider = 'github' AND repo_name = $1`, [fullName]);
       for (const row of rows) {
         await syncConnection(q, toConnection(row)).catch((err) => console.warn('[repos] webhook sync failed:', (err as Error).message));
@@ -913,13 +936,35 @@ export function setupRepoRoutes(
   });
 }
 
-/** Poll all connected repositories; failures are recorded per connection. */
-export function startRepoPolling(q: Query, intervalMs = 10 * 60_000): void {
+/**
+ * Poll all connected repositories; failures are recorded per connection.
+ *
+ * Adaptive cadence: every connection syncs at least every `intervalMs`, but a
+ * "hot" connection — one with an open PR linked to an active ticket, or a
+ * deploy watch in flight — syncs every `hotIntervalMs` so an external merge
+ * lands on the board well inside a minute without hammering the provider API
+ * for idle repos.
+ */
+export function startRepoPolling(q: Query, intervalMs = 90_000, hotIntervalMs = 30_000): void {
+  const lastSynced = new Map<number, number>();
   const tick = async () => {
     try {
       const { rows } = await q('SELECT * FROM app.repo_connections');
+      const hot = new Set(
+        (
+          await q(
+            `SELECT DISTINCT pr.connection_id FROM app.repo_prs pr
+             JOIN app.tickets t ON t.key = pr.ticket_key
+             WHERE t.status NOT IN ('done','dismissed')
+               AND (pr.state = 'open' OR pr.deploy_state IN ('pending','running','failed'))`,
+          )
+        ).rows.map((r) => Number(r.connection_id)),
+      );
       for (const row of rows) {
         const conn = toConnection(row);
+        const due = Date.now() - (lastSynced.get(conn.id) ?? 0) >= (hot.has(conn.id) ? hotIntervalMs : intervalMs);
+        if (!due) continue;
+        lastSynced.set(conn.id, Date.now());
         try {
           await syncConnection(q, conn);
         } catch (err) {
@@ -934,5 +979,5 @@ export function startRepoPolling(q: Query, intervalMs = 10 * 60_000): void {
       console.warn('[repos] poll failed:', (err as Error).message);
     }
   };
-  setInterval(() => void tick(), intervalMs).unref?.();
+  setInterval(() => void tick(), hotIntervalMs).unref?.();
 }

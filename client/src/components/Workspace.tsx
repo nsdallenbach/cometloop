@@ -246,6 +246,46 @@ export function Workspace({
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
+      {t.activePr && (
+        <a
+          href={t.activePr.url}
+          target="_blank"
+          rel="noreferrer"
+          title={`PR #${t.activePr.number}: ${t.activePr.title} — ${t.activePr.state}`}
+          className="hv-border"
+          // Keep the link from starting a card drag or opening the drawer.
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            marginBottom: 7,
+            border: '1px solid var(--line)',
+            borderRadius: 2,
+            padding: '3px 7px',
+            background: 'var(--bg)',
+            textDecoration: 'none',
+          }}
+        >
+          <span
+            style={{
+              ...mono(500, 8.5),
+              flex: 'none',
+              color: PR_STATE_COLOR[t.activePr.state],
+              border: `1px solid ${PR_STATE_COLOR[t.activePr.state]}`,
+              borderRadius: 2,
+              padding: '0 4px',
+              letterSpacing: '.06em',
+            }}
+          >
+            PR {t.activePr.state.toUpperCase()}
+          </span>
+          <span style={{ ...mono(400, 9.5), color: 'var(--tx2)', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            ⎇ {t.activePr.branch || `#${t.activePr.number}`}
+          </span>
+        </a>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
         <span
           className="hv-border"
