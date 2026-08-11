@@ -569,34 +569,55 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           if (m && Number(m[1]) >= next) next = Number(m[1]) + 1;
         }
         const key = `${prefix}-${next}`;
-        const { description, assignee, est, workstream } = parsed.data;
+        const { assignee, est, workstream } = parsed.data;
+        let description = parsed.data.description?.trim() ?? '';
         let title = parsed.data.title?.trim() ?? '';
+        let ac: string[] = [];
         if (!title) {
-          // Single-chatbox flow: no title supplied, so derive one from the content.
-          const content = description?.trim() ?? '';
+          // Single-chatbox flow: refine the raw request into a planned ticket.
+          // The description doubles as the agent prompt, so it should read like
+          // the output of planning: context, approach, dependencies, AC.
+          const content = description;
           try {
             const response = await appkit.serving('default').invoke({
               messages: [
                 {
                   role: 'user',
                   content: [
-                    'Write a concise ticket title (max 10 words, plain text, no quotes, no trailing period) summarizing this work request:',
+                    'You are the delivery-planning agent for a consulting delivery board. A team member typed a work request into a chat box. Turn it into a well-formed delivery ticket.',
+                    'Respond with ONLY a JSON object, no code fences:',
+                    '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...]}',
+                    'The description becomes the prompt handed to an autonomous coding agent, so make it a compact plan in markdown with these sections (omit any that truly do not apply): ## Context (what exists today and why this is needed), ## Approach (how to implement, referencing systems/files/endpoints implied by the request), ## Dependencies (other tickets, credentials, decisions or unknowns the agent should check first).',
+                    'Plan only what the request implies — do not invent scope. 3-6 acceptance criteria.',
+                    'Work request:',
                     content,
                   ].join('\n\n'),
                 },
               ],
-              max_tokens: 60,
+              max_tokens: 1500,
             });
-            title = extractText(response).trim().replace(/^["'\s]+|["'\s.]+$/g, '').split('\n')[0].slice(0, 200);
+            const text = extractText(response);
+            const jsonMatch = /\{[\s\S]*\}/.exec(text);
+            if (jsonMatch) {
+              const plan = JSON.parse(jsonMatch[0]) as { title?: unknown; description?: unknown; acceptance_criteria?: unknown };
+              if (typeof plan.title === 'string' && plan.title.trim()) title = plan.title.trim().slice(0, 200);
+              if (typeof plan.description === 'string' && plan.description.trim()) {
+                // Keep the human's words verbatim below the plan — they are the intent of record.
+                description = `${plan.description.trim()}\n\n## Original request\n\n> ${content.replace(/\n/g, '\n> ')}`;
+              }
+              if (Array.isArray(plan.acceptance_criteria)) {
+                ac = plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10);
+              }
+            }
           } catch (err) {
-            console.warn('[api] title derivation failed, using fallback:', (err as Error).message);
+            console.warn('[api] ticket refinement failed, using raw content:', (err as Error).message);
           }
           if (!title) title = fallbackTitle(content);
         }
         const author = requestAuthor(req);
         const result = await q(
           `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked)
-           VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,'[]',false) RETURNING *`,
+           VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,$9,false) RETURNING *`,
           [
             key,
             engId,
@@ -605,7 +626,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             est?.trim() || '—',
             workstream?.trim() ?? '',
             JSON.stringify([{ type: 'MANUAL', label: `Created in console by ${author}` }]),
-            description?.trim() ?? '',
+            description,
+            JSON.stringify(ac),
           ],
         );
         const who = assignee?.trim();

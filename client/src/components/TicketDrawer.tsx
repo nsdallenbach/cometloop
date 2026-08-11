@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { AgentTask, Ticket, TicketComment, TicketDev } from '../types';
 import { STATUS_LABEL, initials, mono } from '../util';
+import { Markdown } from './Markdown';
 
 const AGENT_STATE_LABEL: Record<AgentTask['state'], string> = {
   queued: 'QUEUED — WAITING FOR A RUNNER',
@@ -253,7 +254,9 @@ export function TicketDrawer({
             </div>
           </div>
           <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>DESCRIPTION</div>
-          <p style={{ margin: '0 0 16px', fontSize: 12.5, lineHeight: 1.55, color: 'var(--tx2)' }}>{ticket.description}</p>
+          <div style={{ margin: '0 0 16px' }}>
+            <Markdown text={ticket.description} />
+          </div>
           <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>ACCEPTANCE CRITERIA</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 16 }}>
             {ticket.ac.map((a, i) => (
@@ -523,7 +526,7 @@ export function TicketDrawer({
                     <span style={{ fontSize: 11.5, fontWeight: 600 }}>{c.author}</span>
                     <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 'auto' }}>{fmtTime(c.createdAt)}</span>
                   </div>
-                  <div style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--tx2)', whiteSpace: 'pre-wrap' }}>{c.body}</div>
+                  <Markdown text={c.body} />
                 </div>
               </div>
             ))}
