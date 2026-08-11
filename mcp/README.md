@@ -37,6 +37,10 @@ Environment (all optional):
 **Tickets**: `create_ticket`, `move_ticket`, `assign_ticket`,
 `comment_on_ticket`
 
+**Attachments**: `list_ticket_attachments`, `attach_file_to_ticket`,
+`read_ticket_attachment`, `delete_ticket_attachment` (lead only; uploads are
+capped at 25 MB and executable file types are rejected)
+
 **Queue (lead)**: `queue_ticket_for_agent`, `cancel_agent_work`,
 `complete_agent_work`
 

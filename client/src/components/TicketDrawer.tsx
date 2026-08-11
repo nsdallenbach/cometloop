@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import type { AgentTask, Ticket, TicketComment, TicketDev } from '../types';
+import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev } from '../types';
 import { STATUS_LABEL, initials, mono } from '../util';
 import { Markdown } from './Markdown';
 
@@ -14,6 +14,9 @@ const AGENT_STATE_LABEL: Record<AgentTask['state'], string> = {
 };
 
 const PR_STATE_COLOR: Record<string, string> = { open: 'var(--warn)', merged: 'var(--ok)', closed: 'var(--tx3)' };
+
+const fmtSize = (bytes: number) =>
+  bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
 
 const DEPLOY_BADGE: Record<string, { label: string; color: string; pulse?: boolean }> = {
   pending: { label: '◌ DEPLOY QUEUED', color: 'var(--warn)', pulse: true },
@@ -104,6 +107,43 @@ export function TicketDrawer({
 
   useEffect(loadComments, [loadComments]);
 
+  const [attach, setAttach] = useState<{ key: string; list: TicketAttachment[] | null } | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [attachArm, setAttachArm] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const loadAttachments = useCallback(() => {
+    void api
+      .attachments(ticket.key)
+      .then((list) => setAttach({ key: ticket.key, list }))
+      .catch(() => setAttach({ key: ticket.key, list: null }));
+  }, [ticket.key]);
+
+  useEffect(loadAttachments, [loadAttachments]);
+
+  const uploadAttachment = (file: File) => {
+    setUploading(true);
+    api
+      .uploadAttachment(ticket.key, file)
+      .then(() => {
+        toast(`Attached ${file.name}`);
+        loadAttachments();
+      })
+      .catch((e: Error) => toast(`Attach failed — ${e.message}`))
+      .finally(() => setUploading(false));
+  };
+
+  const removeAttachment = (a: TicketAttachment) => {
+    setAttachArm(null);
+    api
+      .deleteAttachment(ticket.key, a.id)
+      .then(() => {
+        toast(`Removed ${a.filename}`);
+        loadAttachments();
+      })
+      .catch((e: Error) => toast(`Delete failed — ${e.message}`));
+  };
+
   const loadDev = useCallback(() => {
     void api
       .ticketDev(ticket.key)
@@ -114,6 +154,7 @@ export function TicketDrawer({
   useEffect(loadDev, [loadDev]);
 
   // Stale results from a previously opened ticket render as "loading".
+  const attachments = attach && attach.key === ticket.key ? attach.list : null;
   const comments = loaded && loaded.key === ticket.key && !loaded.error ? loaded.list : null;
   const commentsError = loaded !== null && loaded.key === ticket.key && loaded.error;
   const devData = dev && dev.key === ticket.key ? dev.data : null;
@@ -325,6 +366,87 @@ export function TicketDrawer({
               >
                 <span style={{ ...mono(500, 9), color: 'var(--agent)', border: '1px solid var(--agent)', borderRadius: 2, padding: '1px 5px' }}>{sr.type}</span>
                 <span style={{ fontSize: 12, color: 'var(--tx2)', flex: 1 }}>{sr.label}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
+              ATTACHMENTS{attachments && attachments.length > 0 ? ` · ${attachments.length}` : ''}
+            </span>
+            <input
+              ref={fileInput}
+              type="file"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (file) uploadAttachment(file);
+              }}
+            />
+            <button
+              className="hv-border"
+              disabled={uploading}
+              onClick={() => fileInput.current?.click()}
+              title="Attach a file to this ticket (max 25 MB)"
+              style={{
+                marginLeft: 'auto',
+                border: '1px solid var(--line2)',
+                background: 'none',
+                color: 'var(--tx2)',
+                borderRadius: 3,
+                padding: '2px 9px',
+                fontSize: 10.5,
+                fontWeight: 600,
+                cursor: 'pointer',
+                opacity: uploading ? 0.5 : 1,
+              }}
+            >
+              {uploading ? 'Uploading…' : '+ Attach file'}
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
+            {attachments && attachments.length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--tx3)' }}>No files attached.</div>
+            )}
+            {(attachments ?? []).map((a) => (
+              <div
+                key={a.id}
+                style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '7px 11px' }}
+              >
+                <span style={{ ...mono(500, 9), color: 'var(--tx3)', border: '1px solid var(--line2)', borderRadius: 2, padding: '1px 5px' }}>
+                  {fmtSize(a.size)}
+                </span>
+                <a
+                  href={a.url}
+                  download={a.filename}
+                  title={`Uploaded by ${a.uploader}${a.createdAt ? ` · ${fmtTime(a.createdAt)}` : ''}`}
+                  style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textDecoration: 'none' }}
+                >
+                  {a.filename}
+                </a>
+                <span style={{ ...mono(400, 9), color: 'var(--tx3)', maxWidth: 140, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {a.uploader.split('@')[0]}
+                </span>
+                {lead && (
+                  <button
+                    className="hv-bad"
+                    onClick={() => (attachArm === a.id ? removeAttachment(a) : setAttachArm(a.id))}
+                    onMouseLeave={() => setAttachArm((cur) => (cur === a.id ? null : cur))}
+                    title={attachArm === a.id ? 'Click again to delete' : `Delete ${a.filename}`}
+                    style={{
+                      flex: 'none',
+                      border: 'none',
+                      background: 'none',
+                      color: attachArm === a.id ? 'var(--bad)' : 'var(--tx3)',
+                      ...mono(500, 9),
+                      letterSpacing: '.06em',
+                      cursor: 'pointer',
+                      padding: '2px 4px',
+                    }}
+                  >
+                    {attachArm === a.id ? 'CONFIRM?' : '✕'}
+                  </button>
+                )}
               </div>
             ))}
           </div>

@@ -19,6 +19,7 @@ import type {
   Suggestion,
   TeamMember,
   Ticket,
+  TicketAttachment,
   TicketComment,
   TicketDev,
   TicketStatus,
@@ -384,6 +385,28 @@ export const api = {
 
   reorderAgentQueue(engId: string, order: number[]) {
     return http(`/api/engagements/${engId}/agent-queue/order`, { method: 'PUT', ...json({ order }) });
+  },
+
+  // ---- ticket attachments ----
+
+  async attachments(ticketKey: string): Promise<TicketAttachment[]> {
+    const d = await http<{ attachments: TicketAttachment[] }>(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments`);
+    return d.attachments;
+  },
+
+  uploadAttachment(ticketKey: string, file: File): Promise<TicketAttachment> {
+    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments?filename=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        ...(file.type ? { 'X-Attachment-Content-Type': file.type } : {}),
+      },
+      body: file,
+    });
+  },
+
+  deleteAttachment(ticketKey: string, id: string) {
+    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
 
   // ---- context files ----

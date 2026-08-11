@@ -68,6 +68,10 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 | `POST` | `/api/agent/work/:id/complete` | Finish with `done` or `failed` |
 | `GET` | `/api/engagements/:id/context-files` | List context files for an engagement |
 | `GET` | `/api/engagements/:id/context-files/:name` | Download one context file |
+| `GET` | `/api/tickets/:key/attachments` | List a ticket's file attachments |
+| `POST` | `/api/tickets/:key/attachments?filename=` | Upload an attachment (raw body, max 25 MB; executables rejected) |
+| `GET` | `/api/tickets/:key/attachments/:id` | Download one attachment (`X-Content-Sha256` header carries the checksum) |
+| `DELETE` | `/api/tickets/:key/attachments/:id` | Delete an attachment (lead only) |
 
 ### Claim
 
@@ -82,8 +86,8 @@ atomic (`FOR UPDATE SKIP LOCKED`) — concurrent runners never get the same task
 
 The response contains `task` (note `task.id` and `task.instructions`),
 `ticket` (with `description` and `ac` acceptance criteria), `engagement`,
-`comments`, `repo`, and `contextFiles` (each with a relative `url` to download
-through the app).
+`comments`, `repo`, `contextFiles`, and `attachments` (context files and
+attachments each carry a relative `url` to download through the app).
 
 ### Progress
 

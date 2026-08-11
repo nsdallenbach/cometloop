@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type express from 'express';
 import { resolveIdentity, type Identity } from './roles';
 import { listContextFiles, type FilesVolume } from './context-files';
+import { listTicketAttachments } from './ticket-attachments';
 import { loadConnection } from './repos';
 import { installationToken } from './github-app';
 
@@ -134,6 +135,7 @@ function renderPrompt(
   engagement: Record<string, unknown> | null,
   repo: Record<string, unknown> | null,
   contextFiles: { name: string }[],
+  attachments: { filename: string; size: number }[],
 ): string {
   const key = txt(task.ticket_key);
   const ac = (() => {
@@ -156,6 +158,11 @@ function renderPrompt(
     `- work-package.json — full task payload (task id ${txt(task.id)}; you are agent "${txt(task.agent) || 'agent'}")`,
     ...(contextFiles.length > 0 ? [`- ./context/ — engagement reference files: ${contextFiles.map((f) => f.name).join(', ')}`] : []),
     ...(repo ? [`- ./repo/ — clone of ${txt(repo.repo_name)} (default branch ${txt(repo.default_branch)})`] : []),
+    ...(attachments.length > 0
+      ? [
+          `- Ticket attachments (fetch via the list_ticket_attachments / read_ticket_attachment MCP tools or GET /api/tickets/${key}/attachments): ${attachments.map((a) => `${a.filename} (${Math.ceil(a.size / 1024)} KB)`).join(', ')}`,
+        ]
+      : []),
     '',
     '## Delivery expectations',
     `- Work in ./repo. Create a branch named ${key}-<short-slug> — the branch or PR title MUST contain ${key} so the console auto-links your work.`,
@@ -198,7 +205,17 @@ export function setupAgentRoutes(
         ])
       ).rows[0] ?? null;
     const contextFiles = await listContextFiles(files, engagementId);
-    return { task, ticket, engagement, comments, repo, contextFiles, prompt: renderPrompt(task, ticket, engagement, repo, contextFiles) };
+    const attachments = await listTicketAttachments(q, ticketKey).catch(() => []);
+    return {
+      task,
+      ticket,
+      engagement,
+      comments,
+      repo,
+      contextFiles,
+      attachments,
+      prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, attachments),
+    };
   };
 
   // ---------- console side (lead actions) ----------
