@@ -6,10 +6,6 @@ env:
     valueFrom: postgres
   - name: DATABRICKS_SERVING_ENDPOINT_NAME
     valueFrom: serving-endpoint
-  # Demo: simulated runner claims queued tickets so board states can be
-  # exercised without a devbox. Remove before pointing real runners here.
-  - name: DEMO_MOCK_RUNNER
-    value: '1'
   # GitHub App auth — the client id doubles as the JWT issuer.
   - name: GITHUB_APP_ID
     value: 'Iv23liTTM6GVI2Sic9cW'
