@@ -100,6 +100,21 @@ export function Workspace({
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
+  // "N" opens the create-ticket modal from the board — same as the "+ New
+  // ticket" button. Ignored while typing in a field or holding a modifier.
+  useEffect(() => {
+    if (tab !== 'board') return;
+    const kd = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== 'n' || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest('input,textarea,select,[contenteditable="true"]')) return;
+      e.preventDefault();
+      setNewTicket(true);
+    };
+    window.addEventListener('keydown', kd);
+    return () => window.removeEventListener('keydown', kd);
+  }, [tab]);
+
   const hc = HEALTH_COLOR[eng.health];
   const tickets = detail?.tickets ?? [];
   // Latest agent task per ticket (agentTasks arrive newest-first).
@@ -741,6 +756,7 @@ export function Workspace({
             <button
               className="hv-border"
               onClick={() => setNewTicket(true)}
+              title="New ticket (N)"
               style={{
                 border: '1px solid var(--line2)',
                 background: 'none',
@@ -1595,12 +1611,16 @@ export function Workspace({
           <NewTicketModal
             key="new-ticket-modal"
             engId={eng.id}
+            lead={lead}
             toast={toast}
             onClose={() => setNewTicket(false)}
-            onCreated={(t) => {
+            onCreated={(t, deploy) => {
               setNewTicket(false);
               setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
-              toast(`${t.key} created`);
+              // Deploy path: the ticket exists either way — if queueing fails
+              // it simply stays in Backlog and the queue error is toasted.
+              if (deploy) deployTicket(t.key);
+              else toast(`${t.key} created`);
             }}
           />
         )}
@@ -1641,27 +1661,35 @@ export function Workspace({
   );
 }
 
-/** Modal for creating a ticket manually — one chatbox; the title is derived from the content. */
+/**
+ * Modal for creating a ticket manually — one chatbox; the title is derived
+ * from the content. Two ways out: "Create ticket" lands it in Backlog, and
+ * (for leads) "Create & deploy" queues it straight to an agent in one click.
+ */
 function NewTicketModal({
   engId,
+  lead,
   toast,
   onClose,
   onCreated,
 }: {
   engId: string;
+  lead: boolean;
   toast: (msg: string) => void;
   onClose: () => void;
-  onCreated: (t: Ticket) => void;
+  onCreated: (t: Ticket, deploy: boolean) => void;
 }) {
   const [description, setDescription] = useState('');
-  const [creating, setCreating] = useState(false);
+  // Which action is in flight — keeps the pressed button's label honest while
+  // both stay disabled.
+  const [creating, setCreating] = useState<false | 'backlog' | 'deploy'>(false);
 
-  const create = () => {
+  const create = (deploy: boolean) => {
     if (!description.trim() || creating) return;
-    setCreating(true);
+    setCreating(deploy ? 'deploy' : 'backlog');
     api
       .createTicket(engId, { description: description.trim() })
-      .then(onCreated)
+      .then((t) => onCreated(t, deploy))
       .catch((e: Error) => toast(`Create failed — ${e.message}`))
       .finally(() => setCreating(false));
   };
@@ -1682,8 +1710,10 @@ function NewTicketModal({
         exit={{ opacity: 0, transform: 'translate(-50%,-50%) scale(0.98) translateY(4px)' }}
         transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
         onKeyDown={(e) => {
+          // Ctrl+Enter → Backlog; Ctrl+Shift+Enter → create & deploy (leads —
+          // for everyone else the shift is ignored and it lands in Backlog).
           if (e.key === 'Escape') onClose();
-          else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
+          else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create(lead && e.shiftKey);
         }}
         style={{
           position: 'fixed',
@@ -1731,7 +1761,9 @@ function NewTicketModal({
           />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
-          <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LANDS IN BACKLOG · CTRL+ENTER TO CREATE</span>
+          <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
+            {lead ? 'CTRL+ENTER → BACKLOG · CTRL+SHIFT+ENTER → DEPLOY' : 'LANDS IN BACKLOG · CTRL+ENTER TO CREATE'}
+          </span>
           <div style={{ flex: 1 }} />
           <button
             onClick={onClose}
@@ -1740,8 +1772,9 @@ function NewTicketModal({
             Cancel
           </button>
           <button
-            onClick={create}
-            disabled={!description.trim() || creating}
+            onClick={() => create(false)}
+            disabled={!description.trim() || !!creating}
+            title="Create in Backlog (Ctrl+Enter)"
             style={{
               background: 'var(--acc)',
               color: '#fff',
@@ -1754,8 +1787,28 @@ function NewTicketModal({
               opacity: !description.trim() || creating ? 0.45 : 1,
             }}
           >
-            {creating ? 'Creating…' : 'Create ticket'}
+            {creating === 'backlog' ? 'Creating…' : 'Create ticket'}
           </button>
+          {lead && (
+            <button
+              onClick={() => create(true)}
+              disabled={!description.trim() || !!creating}
+              title="Create and deploy straight to the agent queue (Ctrl+Shift+Enter)"
+              style={{
+                background: 'var(--agent)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 3,
+                padding: '7px 16px',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                opacity: !description.trim() || creating ? 0.45 : 1,
+              }}
+            >
+              {creating === 'deploy' ? 'Deploying…' : '◆ Create & deploy'}
+            </button>
+          )}
         </div>
       </motion.div>
     </>
