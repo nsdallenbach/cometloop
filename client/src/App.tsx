@@ -25,6 +25,7 @@ export default function App() {
   const [detailKey, setDetailKey] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [palette, setPalette] = useState(false);
+  const [newTicket, setNewTicket] = useState(false);
   const [toast, setToastMsg] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [me, setMe] = useState<Me | null>(null);
@@ -106,20 +107,30 @@ export default function App() {
 
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPalette((p) => !p);
+      } else if (
+        e.key.toLowerCase() === 'n' &&
+        !e.metaKey && !e.ctrlKey && !e.altKey &&
+        !typing && !palette && !newTicket && !detailKey &&
+        route === 'workspace' && engId
+      ) {
+        e.preventDefault();
+        setTab('board');
+        setNewTicket(true);
       } else if (e.key === 'Escape') {
         // Close the topmost layer only.
-        setPalette((p) => {
-          if (!p) setDetailKey(null);
-          return false;
-        });
+        if (palette) setPalette(false);
+        else if (newTicket) setNewTicket(false);
+        else setDetailKey(null);
       }
     };
     window.addEventListener('keydown', kd);
     return () => window.removeEventListener('keydown', kd);
-  }, []);
+  }, [route, engId, palette, newTicket, detailKey]);
 
   const eng = useMemo(() => engagements.find((e) => e.id === engId) ?? null, [engagements, engId]);
 
@@ -136,12 +147,14 @@ export default function App() {
     setDetail(null);
     setDetailError(null);
     setDetailKey(null);
+    setNewTicket(false);
     setRoute('workspace');
   }, []);
 
   const goPortfolio = useCallback(() => {
     setRoute('portfolio');
     setDetailKey(null);
+    setNewTicket(false);
     void refreshEngagements();
   }, [refreshEngagements]);
 
@@ -193,6 +206,19 @@ export default function App() {
   // ---- command palette ----
   const paletteItems: PaletteItem[] = useMemo(() => {
     const items: PaletteItem[] = [
+      ...(route === 'workspace' && eng
+        ? [
+            {
+              kind: 'ACTION',
+              label: `New ticket — ${eng.client} board`,
+              hint: 'N',
+              run: () => {
+                setTab('board');
+                setNewTicket(true);
+              },
+            },
+          ]
+        : []),
       { kind: 'NAV', label: 'Go to Portfolio', hint: 'G P', run: () => goPortfolio() },
       ...engagements.slice(0, 4).map((e) => ({
         kind: 'NAV',
@@ -229,7 +255,7 @@ export default function App() {
       })),
     ];
     return items;
-  }, [engagements, detail, engId, goPortfolio, openEngagement, canCreate, isAdmin]);
+  }, [engagements, detail, engId, eng, route, goPortfolio, openEngagement, canCreate, isAdmin]);
 
   return (
     <MotionConfig reducedMotion="user">
@@ -446,6 +472,8 @@ export default function App() {
           onEngagementChanged={() => void refreshEngagements()}
           refreshDetail={refreshDetail}
           lead={canLead(eng.id)}
+          newTicket={newTicket}
+          setNewTicket={setNewTicket}
         />
       )}
 
