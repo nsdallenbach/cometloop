@@ -16,3 +16,11 @@ For enhanced AI assistance with Databricks CLI operations, authentication, data 
 databricks aitools install
 ```
 <!-- appkit-instructions-end -->
+
+## Development standards
+
+Read [docs/development-standards.md](./docs/development-standards.md) before
+making changes — it is the working agreement for this repo: git/PR flow and
+the CI deploy gate, validation commands, database migration ownership rules,
+server/client/LLM conventions, and agent-runner discipline. The same document
+is maintained in the app's Standards tab for the Execution Console engagement.
