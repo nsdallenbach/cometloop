@@ -51,13 +51,14 @@ devbox install `delivery-runner.service` so the loop survives reboots.
 
 ## Permissions note
 
-The default `CLAUDE_ARGS` is `--permission-mode acceptEdits`. Depending on
-your Claude Code permission configuration, non-interactive runs may also need
-git/gh allowances, e.g.:
+The default `CLAUDE_ARGS` is `--permission-mode acceptEdits`, but validation
+showed non-interactive runs need an explicit allowlist — without it, file
+writes and MCP tools get auto-denied. The tested set:
 
 ```bash
-CLAUDE_ARGS='--permission-mode acceptEdits --allowedTools Bash(git:*) Bash(gh:*) Bash(curl:*) Bash(npm:*)'
+CLAUDE_ARGS='--permission-mode acceptEdits --allowedTools Write,Edit,Bash(git:*),Bash(gh:*),Bash(curl:*),Bash(node:*),Bash(npm:*),mcp__delivery-console__*'
 ```
 
-Tune to your devbox's risk tolerance; a locked-down VM can afford broader
-allowances than a workstation.
+On Windows, `run-local.ps1` launches the emulation with this configuration
+baked in. On a locked-down single-purpose VM,
+`CLAUDE_ARGS='--dangerously-skip-permissions'` is a defensible alternative.
