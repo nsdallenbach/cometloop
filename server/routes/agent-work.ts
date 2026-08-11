@@ -163,6 +163,16 @@ function renderPrompt(
     '- If the GIT_TOKEN environment variable is set, push with https://x-access-token:$GIT_TOKEN@github.com/<owner>/<repo>.git and open the PR via the GitHub REST API with that token; otherwise use local git credentials / gh.',
     '- If delivery-console MCP tools are available, post report_agent_progress at plan time and before pushing, and raise flag_agent_work if you get blocked instead of guessing.',
     '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
+    ...(repo
+      ? [
+          '',
+          '## After the PR is open — merge conflicts',
+          `- Check the PR for merge conflicts against ${txt(repo.default_branch) || 'the base branch'}: run \`git fetch origin\` then \`git merge-tree $(git merge-base HEAD origin/<base>) HEAD origin/<base>\` (conflict markers in the output = conflicted files), and POST /api/agent/work/${txt(task.id)}/pr/<number>/conflicts with {"agent","conflict_files"} (also available as the check_pr_conflicts MCP tool). The report cross-references other open/recent PRs touching the same files, the tickets they are linked to, and returns an auto-resolve vs developer-review assessment.`,
+          '- If there are conflicts, review the overlapping PRs listed in the report before touching anything, to understand where the conflicting changes came from.',
+          '- Auto-resolve ONLY when the report recommends auto-resolve (no overlapping open PR, no other ticket impacted) AND the conflicts are trivially mergeable (non-overlapping hunks, imports, lockfiles, formatting). Then merge origin/<base> into your branch, resolve, re-run the relevant build/tests, push, and document the resolution with a PR comment (comment_on_pr tool or POST .../pr/<number>/comment).',
+          '- If resolution is not safe — overlapping logic changes, or a conflicting PR belongs to another ticket — do NOT resolve or merge. Escalate with escalate_pr_conflict (or POST .../pr/<number>/escalate with {"agent","reason","conflicting_prs"}): this comments on the PR naming the conflicting PR(s)/ticket(s), labels it merge-conflict, requests review from the developers who own the conflicting changes, and flags the ticket on the board. Then finish normally with the PR left open for developer review, and say in RESULT.md that the PR is flagged.',
+        ]
+      : []),
   ];
   return lines.join('\n');
 }

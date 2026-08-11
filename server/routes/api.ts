@@ -5,6 +5,7 @@ import { resolveIdentity, type Identity } from './roles';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
+import { setupPrConflictRoutes } from './pr-conflicts';
 import { setupContextFileRoutes } from './context-files';
 import {
   SEED_ENGAGEMENTS,
@@ -1325,6 +1326,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupRepoRoutes(app, q, requireLead);
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireLead);
+    setupPrConflictRoutes(app, q);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
 
     app.post('/api/tickets/:key/comments', async (req, res) => {
