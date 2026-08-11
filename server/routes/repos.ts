@@ -142,6 +142,16 @@ interface Provider {
   pipeline(conn: Connection, sha: string): Promise<PipelineStatus>;
 }
 
+/** Provider API error that keeps the HTTP status so callers can tell auth/permission failures from transient ones. */
+export class ProviderHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 async function jsonFetch(url: string, headers: Record<string, string>, init?: { method?: string; body?: unknown }): Promise<unknown> {
   const resp = await fetch(url, {
     method: init?.method ?? 'GET',
@@ -159,7 +169,7 @@ async function jsonFetch(url: string, headers: Record<string, string>, init?: { 
         : resp.status === 404
           ? (msg ?? 'repository not found — check the URL (and that the token can see it)')
           : (msg ?? `provider returned ${resp.status}`);
-    throw new Error(detail);
+    throw new ProviderHttpError(detail, resp.status);
   }
   if (resp.status === 204) return null;
   return resp.json();
@@ -536,6 +546,10 @@ export async function checkDeployments(q: Query, rawConn: Connection): Promise<v
     const sha = typeof row.merge_sha === 'string' && row.merge_sha ? row.merge_sha : null;
     const prevDeploy = typeof row.deploy_state === 'string' ? row.deploy_state : '';
     if (!sha) continue; // the next sync pass backfills the merge commit
+    const rawStarted = row.deploy_started_at;
+    const started =
+      rawStarted instanceof Date ? rawStarted.getTime() : typeof rawStarted === 'string' && rawStarted ? new Date(rawStarted).getTime() : 0;
+    const graceOver = Date.now() - started > NO_PIPELINE_GRACE_MS;
     try {
       const p = await impl.pipeline(conn, sha);
       if (p.state === 'running') {
@@ -553,15 +567,22 @@ export async function checkDeployments(q: Query, rawConn: Connection): Promise<v
         // Feed the failure once, not on every re-check of a still-failed run.
         if (p.state !== prevDeploy) await settleDeploy(q, conn, number, ticketKey, p.state);
       } else {
-        const raw = row.deploy_started_at;
-        const started = raw instanceof Date ? raw.getTime() : typeof raw === 'string' && raw ? new Date(raw).getTime() : 0;
-        if (Date.now() - started > NO_PIPELINE_GRACE_MS) {
+        if (graceOver) {
           await q(`UPDATE app.repo_prs SET deploy_state = 'none' WHERE connection_id = $1 AND number = $2`, [conn.id, number]);
           await settleDeploy(q, conn, number, ticketKey, 'none');
         }
       }
     } catch (err) {
       console.warn(`[repos] deploy check failed for PR #${number} (${conn.repo_name}):`, (err as Error).message);
+      // A permission error is not transient: the token simply can't read CI
+      // status (e.g. a GitHub App without Actions: Read, or an ADO PAT without
+      // Build: Read). Left alone the watch would spin forever with the board
+      // stuck on DEPLOYING — settle the ticket instead and say why in the feed.
+      const status = err instanceof ProviderHttpError ? err.status : null;
+      if ((status === 401 || status === 403) && graceOver) {
+        await q(`UPDATE app.repo_prs SET deploy_state = 'none' WHERE connection_id = $1 AND number = $2`, [conn.id, number]);
+        await settleDeploy(q, conn, number, ticketKey, 'unreadable');
+      }
     }
   }
 }
@@ -571,7 +592,7 @@ async function settleDeploy(
   conn: Connection,
   prNumber: number,
   ticketKey: string | null,
-  outcome: 'success' | 'failed' | 'none',
+  outcome: 'success' | 'failed' | 'none' | 'unreadable',
 ): Promise<void> {
   if (!ticketKey) return;
   const ticket = (await q('SELECT status FROM app.tickets WHERE key = $1', [ticketKey])).rows[0];
@@ -590,7 +611,9 @@ async function settleDeploy(
   const text =
     outcome === 'success'
       ? `Deploy pipeline succeeded for PR #${prNumber} — ${ticketKey} moved to Done.`
-      : `PR #${prNumber} merged (no deploy pipeline detected) — ${ticketKey} moved to Done.`;
+      : outcome === 'unreadable'
+        ? `⚠ Pipeline status for PR #${prNumber} is not readable with the connected credentials — ${ticketKey} moved to Done without deploy verification. Grant the GitHub App "Actions: Read" (or the ADO PAT "Build: Read") to enable deploy tracking.`
+        : `PR #${prNumber} merged (no deploy pipeline detected) — ${ticketKey} moved to Done.`;
   await q(
     `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
      VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
