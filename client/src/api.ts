@@ -15,6 +15,7 @@ import type {
   RepoConnection,
   RepoDetail,
   RepoPr,
+  RoadmapSettings,
   Suggestion,
   TeamMember,
   Ticket,
@@ -66,6 +67,7 @@ function mapEngagement(r: Row): Engagement {
     milestones: r.milestones == null ? null : j(r.milestones, []),
     composer: s(r.composer),
     pushed: b(r.pushed),
+    roadmapSettings: r.roadmap_settings == null ? null : j(r.roadmap_settings, null),
   };
 }
 
@@ -85,6 +87,8 @@ function mapTicket(r: Row): Ticket {
     blocked: b(r.blocked),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
+    roadmapItem: r.roadmap_item == null ? null : s(r.roadmap_item),
+    estHours: r.est_hours == null ? null : n(r.est_hours),
   };
 }
 
@@ -201,8 +205,12 @@ export const api = {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
   },
 
-  patchTicket(key: string, patch: { status?: TicketStatus; assignee?: string }) {
+  patchTicket(key: string, patch: { status?: TicketStatus; assignee?: string; roadmapItem?: string | null; estHours?: number | null }) {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
+  },
+
+  saveRoadmapSettings(engId: string, settings: RoadmapSettings): Promise<RoadmapSettings> {
+    return http<RoadmapSettings>(`/api/engagements/${engId}/roadmap-settings`, { method: 'PATCH', ...json(settings) });
   },
 
   deleteTicket(key: string) {

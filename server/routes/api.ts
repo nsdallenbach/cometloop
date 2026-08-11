@@ -129,6 +129,11 @@ const SCHEMA_SQL = [
     reverted BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  // Roadmap linkage: tickets attach to a roadmap item (phase name) and carry
+  // effort in LLM-hours; per-engagement settings translate hours to days.
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS roadmap_item TEXT`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS est_hours REAL`,
+  `ALTER TABLE app.engagements ADD COLUMN IF NOT EXISTS roadmap_settings JSONB`,
 ];
 
 async function initSchema(appkit: AppKitServices) {
@@ -249,7 +254,8 @@ function extractText(response: unknown): string {
 async function refinePlan(
   appkit: AppKitServices,
   content: string,
-): Promise<{ title: string; description: string; ac: string[] } | null> {
+  roadmapItems: string[] = [],
+): Promise<{ title: string; description: string; ac: string[]; estHours: number | null; roadmapItem: string | null } | null> {
   try {
     const response = await appkit.serving('default').invoke({
       messages: [
@@ -258,9 +264,15 @@ async function refinePlan(
           content: [
             'You are the delivery-planning agent for a consulting delivery board. A team member typed a work request into a chat box. Turn it into a well-formed delivery ticket.',
             'Respond with ONLY a JSON object, no code fences:',
-            '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...]}',
+            '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "est_hours": number' +
+              (roadmapItems.length > 0 ? ', "roadmap_item": "one of the roadmap items below"' : '') +
+              '}',
             'The description becomes the prompt handed to an autonomous coding agent, so make it a compact plan in markdown with these sections (omit any that truly do not apply): ## Context (what exists today and why this is needed), ## Approach (how to implement, referencing systems/files/endpoints implied by the request), ## Dependencies (other tickets, credentials, decisions or unknowns the agent should check first).',
             'Plan only what the request implies — do not invent scope. 3-6 acceptance criteria.',
+            'est_hours is the effort for an autonomous coding agent to complete the work, in agent-hours (a number, may be fractional, typically 0.5–40).',
+            ...(roadmapItems.length > 0
+              ? [`roadmap_item must be exactly one of: ${roadmapItems.map((p) => JSON.stringify(p)).join(', ')} — pick the item this work belongs to.`]
+              : []),
             'Work request:',
             content,
           ].join('\n\n'),
@@ -271,16 +283,60 @@ async function refinePlan(
     const text = extractText(response);
     const jsonMatch = /\{[\s\S]*\}/.exec(text);
     if (!jsonMatch) return null;
-    const plan = JSON.parse(jsonMatch[0]) as { title?: unknown; description?: unknown; acceptance_criteria?: unknown };
+    const plan = JSON.parse(jsonMatch[0]) as {
+      title?: unknown;
+      description?: unknown;
+      acceptance_criteria?: unknown;
+      est_hours?: unknown;
+      roadmap_item?: unknown;
+    };
     const title = typeof plan.title === 'string' ? plan.title.trim().slice(0, 200) : '';
     const description = typeof plan.description === 'string' ? plan.description.trim() : '';
     const ac = Array.isArray(plan.acceptance_criteria)
       ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)
       : [];
+    const estHours =
+      typeof plan.est_hours === 'number' && Number.isFinite(plan.est_hours) && plan.est_hours > 0
+        ? Math.min(400, Math.round(plan.est_hours * 2) / 2)
+        : null;
+    // Only accept an item that actually exists on the roadmap — the model must not invent one.
+    const roadmapItem =
+      typeof plan.roadmap_item === 'string' && roadmapItems.includes(plan.roadmap_item.trim()) ? plan.roadmap_item.trim() : null;
     if (!title && !description) return null;
-    return { title, description, ac };
+    return { title, description, ac, estHours, roadmapItem };
   } catch (err) {
     console.warn('[api] ticket refinement failed:', (err as Error).message);
+    return null;
+  }
+}
+
+/** Phase/roadmap-item names from an engagement row's phases JSONB, defensively parsed. */
+function roadmapItemNames(phasesRaw: unknown): string[] {
+  try {
+    const arr: unknown = typeof phasesRaw === 'string' ? JSON.parse(phasesRaw) : phasesRaw;
+    if (!Array.isArray(arr)) return [];
+    return arr.map((p) => (p && typeof p === 'object' && typeof (p as { name?: unknown }).name === 'string' ? (p as { name: string }).name : '')).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** Default roadmap item when the model doesn't pick one: the phase whose window contains today, else the last not-yet-started phase, else null. */
+function activeRoadmapItem(phasesRaw: unknown): string | null {
+  try {
+    const arr: unknown = typeof phasesRaw === 'string' ? JSON.parse(phasesRaw) : phasesRaw;
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    const today = new Date().toISOString().slice(0, 10);
+    const phases = arr.filter(
+      (p): p is { name: string; s: string; e: string } =>
+        !!p && typeof p === 'object' && typeof (p as { name?: unknown }).name === 'string' && typeof (p as { s?: unknown }).s === 'string' && typeof (p as { e?: unknown }).e === 'string',
+    );
+    const current = phases.find((p) => p.s <= today && today <= p.e);
+    if (current) return current.name;
+    const upcoming = phases.find((p) => p.s > today);
+    if (upcoming) return upcoming.name;
+    return phases[phases.length - 1]?.name ?? null;
+  } catch {
     return null;
   }
 }
@@ -351,6 +407,8 @@ const ProposalPlanSchema = z.object({
 const PatchTicketBody = z.object({
   status: z.enum(['backlog', 'progress', 'review', 'done', 'proposed', 'dismissed']).optional(),
   assignee: z.string().optional(),
+  roadmapItem: z.string().max(120).nullable().optional(),
+  estHours: z.number().min(0).max(400).nullable().optional(),
 });
 
 const BulkBody = z.object({
@@ -359,6 +417,13 @@ const BulkBody = z.object({
 });
 
 const SuggestionBody = z.object({ decision: z.enum(['acc', 'ovr']) });
+
+/** How ticket effort (LLM agent-hours) translates into roadmap days. */
+const RoadmapSettingsBody = z.object({
+  hoursPerDay: z.number().min(0.5).max(24),
+  bufferPct: z.number().min(0).max(200),
+  workdaysPerWeek: z.number().min(1).max(7),
+});
 
 const ComposerBody = z.object({ text: z.string() });
 
@@ -562,6 +627,14 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           params.push(assignee);
           sets.push(`assignee = $${params.length}`);
         }
+        if (parsed.data.roadmapItem !== undefined) {
+          params.push(parsed.data.roadmapItem);
+          sets.push(`roadmap_item = $${params.length}`);
+        }
+        if (parsed.data.estHours !== undefined) {
+          params.push(parsed.data.estHours);
+          sets.push(`est_hours = $${params.length}`);
+        }
         if (sets.length === 0) {
           res.status(400).json({ error: 'Empty patch' });
           return;
@@ -588,6 +661,30 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
     });
 
+    app.patch('/api/engagements/:id/roadmap-settings', async (req, res) => {
+      const parsed = RoadmapSettingsBody.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'Invalid roadmap settings' });
+        return;
+      }
+      try {
+        const id = req.params.id;
+        if (!(await requireLead(req, res, id))) return;
+        const result = await q('UPDATE app.engagements SET roadmap_settings = $2 WHERE id = $1 RETURNING roadmap_settings', [
+          id,
+          JSON.stringify(parsed.data),
+        ]);
+        if (result.rows.length === 0) {
+          res.status(404).json({ error: 'Engagement not found' });
+          return;
+        }
+        res.json(parsed.data);
+      } catch (err) {
+        console.error('save roadmap settings failed:', err);
+        res.status(500).json({ error: 'Failed to save roadmap settings' });
+      }
+    });
+
     /**
      * Retroactively refine an existing ticket into a planned ticket via the
      * serving endpoint. The previous description is preserved verbatim under
@@ -608,7 +705,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const asText = (v: unknown): string => (typeof v === 'string' ? v : '');
         const original = asText(t.description).trim() || asText(t.title);
         const content = [asText(t.title), asText(t.description).trim()].filter(Boolean).join('\n\n');
-        const plan = await refinePlan(appkit, content);
+        const engRow = (await q('SELECT phases FROM app.engagements WHERE id = $1', [String(t.engagement_id)])).rows[0];
+        const plan = await refinePlan(appkit, content, roadmapItemNames(engRow?.phases));
         if (!plan) {
           res.status(502).json({ error: 'The planning model is unavailable — try again shortly' });
           return;
@@ -625,8 +723,17 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           }
         })();
         const updated = await q(
-          `UPDATE app.tickets SET title = $2, description = $3, ac = $4 WHERE key = $1 RETURNING *`,
-          [key, plan.title || String(t.title), description, JSON.stringify(plan.ac.length > 0 ? plan.ac : existingAc)],
+          `UPDATE app.tickets SET title = $2, description = $3, ac = $4,
+             est_hours = COALESCE($5, est_hours), roadmap_item = COALESCE($6, roadmap_item)
+           WHERE key = $1 RETURNING *`,
+          [
+            key,
+            plan.title || String(t.title),
+            description,
+            JSON.stringify(plan.ac.length > 0 ? plan.ac : existingAc),
+            plan.estHours,
+            plan.roadmapItem,
+          ],
         );
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -648,7 +755,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
       try {
         const engId = req.params.id;
-        const eng = (await q('SELECT client FROM app.engagements WHERE id = $1', [engId])).rows[0];
+        const eng = (await q('SELECT client, phases FROM app.engagements WHERE id = $1', [engId])).rows[0];
         if (!eng) {
           res.status(404).json({ error: 'Engagement not found' });
           return;
@@ -670,12 +777,14 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         let description = parsed.data.description?.trim() ?? '';
         let title = parsed.data.title?.trim() ?? '';
         let ac: string[] = [];
+        let estHours: number | null = null;
+        let roadmapItem: string | null = null;
         if (!title) {
           // Single-chatbox flow: refine the raw request into a planned ticket.
           // The description doubles as the agent prompt, so it should read like
           // the output of planning: context, approach, dependencies, AC.
           const content = description;
-          const plan = await refinePlan(appkit, content);
+          const plan = await refinePlan(appkit, content, roadmapItemNames(eng.phases));
           if (plan) {
             if (plan.title) title = plan.title;
             if (plan.description) {
@@ -683,23 +792,29 @@ export async function setupApiRoutes(appkit: AppKitServices) {
               description = `${plan.description}\n\n## Original request\n\n> ${content.replace(/\n/g, '\n> ')}`;
             }
             ac = plan.ac;
+            estHours = plan.estHours;
+            roadmapItem = plan.roadmapItem;
           }
           if (!title) title = fallbackTitle(content);
         }
+        // Every ticket lands on the roadmap: fall back to the phase active today.
+        if (!roadmapItem) roadmapItem = activeRoadmapItem(eng.phases);
         const author = requestAuthor(req);
         const result = await q(
-          `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked)
-           VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,$9,false) RETURNING *`,
+          `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, est_hours, roadmap_item)
+           VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,$9,false,$10,$11) RETURNING *`,
           [
             key,
             engId,
             title.trim(),
             assignee?.trim() || '—',
-            est?.trim() || '—',
+            est?.trim() || (estHours != null ? `${estHours}h` : '—'),
             workstream?.trim() ?? '',
             JSON.stringify([{ type: 'MANUAL', label: `Created in console by ${author}` }]),
             description,
             JSON.stringify(ac),
+            estHours,
+            roadmapItem,
           ],
         );
         const who = assignee?.trim();

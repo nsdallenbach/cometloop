@@ -14,6 +14,16 @@ export interface Milestone {
   done: boolean;
 }
 
+/** How ticket effort (LLM agent-hours) translates into roadmap calendar time. */
+export interface RoadmapSettings {
+  /** Agent-hours of ticket effort that land in one working day. */
+  hoursPerDay: number;
+  /** Schedule buffer applied on top of the translated days, in percent. */
+  bufferPct: number;
+  /** Working days per week — converts working days to calendar days. */
+  workdaysPerWeek: number;
+}
+
 export interface Engagement {
   id: string;
   client: string;
@@ -38,6 +48,7 @@ export interface Engagement {
   milestones: Milestone[] | null;
   composer: string;
   pushed: boolean;
+  roadmapSettings: RoadmapSettings | null;
 }
 
 export interface TicketSource {
@@ -63,6 +74,10 @@ export interface Ticket {
   blocked: boolean;
   deployState: DeployState | null;
   deployUrl: string | null;
+  /** Roadmap item (phase name) this ticket is linked to; null = unscheduled. */
+  roadmapItem: string | null;
+  /** Effort in LLM agent-hours, estimated at planning time. */
+  estHours: number | null;
 }
 
 export interface ContextSource {
