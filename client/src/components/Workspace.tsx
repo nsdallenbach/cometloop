@@ -66,6 +66,9 @@ export function Workspace({
 }) {
   const [boardMode, setBoardMode] = useState<'kanban' | 'table'>('kanban');
   const [newTicket, setNewTicket] = useState(false);
+  // Tickets being created in the background (the LLM drafts the plan, which
+  // takes a while) — drives the floating progress bar instead of a frozen modal.
+  const [pendingCreates, setPendingCreates] = useState(0);
   const [assignPop, setAssignPop] = useState<{ key: string; x: number; y: number } | null>(null);
   const [bulk, setBulk] = useState<Record<string, boolean>>({});
   const [composer, setComposer] = useState<string | null>(null);
@@ -1594,15 +1597,62 @@ export function Workspace({
         {newTicket && (
           <NewTicketModal
             key="new-ticket-modal"
-            engId={eng.id}
-            toast={toast}
             onClose={() => setNewTicket(false)}
-            onCreated={(t) => {
+            onCreate={(description) => {
               setNewTicket(false);
-              setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
-              toast(`${t.key} created`);
+              setPendingCreates((n) => n + 1);
+              api
+                .createTicket(eng.id, { description })
+                .then((t) => {
+                  setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
+                  toast(`${t.key} created`);
+                })
+                .catch((e: Error) => toast(`Create failed — ${e.message}`))
+                .finally(() => setPendingCreates((n) => n - 1));
             }}
           />
+        )}
+      </AnimatePresence>
+
+      {/* Background ticket creation: the modal closes immediately and this bar
+          rides above the toast until the AI-drafted plan lands on the board. */}
+      <AnimatePresence>
+        {pendingCreates > 0 && (
+          <motion.div
+            key="creating-bar"
+            initial={{ opacity: 0, transform: 'translateX(-50%) translateY(12px)' }}
+            animate={{ opacity: 1, transform: 'translateX(-50%) translateY(0px)' }}
+            exit={{ opacity: 0, transform: 'translateX(-50%) translateY(8px)' }}
+            transition={{ type: 'spring', visualDuration: 0.3, bounce: 0.2 }}
+            style={{
+              position: 'fixed',
+              bottom: 64,
+              left: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 9,
+              background: 'var(--bg2)',
+              border: '1px solid var(--agent)',
+              borderRadius: 4,
+              padding: '9px 16px',
+              zIndex: 60,
+              boxShadow: '0 8px 30px rgba(0,0,0,.4)',
+            }}
+          >
+            <span
+              style={{
+                width: 11,
+                height: 11,
+                borderRadius: '50%',
+                border: '1.5px solid var(--agentsoft)',
+                borderTopColor: 'var(--agent)',
+                animation: 'eec-spin .8s linear infinite',
+              }}
+            />
+            <span style={{ ...mono(500, 10.5), color: 'var(--agent)', letterSpacing: '.08em' }}>
+              PLANNING {pendingCreates > 1 ? `${pendingCreates} TICKETS` : 'TICKET'} WITH AI — LANDS IN BACKLOG
+            </span>
+          </motion.div>
         )}
       </AnimatePresence>
 
@@ -1641,29 +1691,20 @@ export function Workspace({
   );
 }
 
-/** Modal for creating a ticket manually — one chatbox; the title is derived from the content. */
+/** Modal for creating a ticket manually — one chatbox; the title is derived from the content.
+ * Creation itself runs in the parent so the modal can close immediately. */
 function NewTicketModal({
-  engId,
-  toast,
   onClose,
-  onCreated,
+  onCreate,
 }: {
-  engId: string;
-  toast: (msg: string) => void;
   onClose: () => void;
-  onCreated: (t: Ticket) => void;
+  onCreate: (description: string) => void;
 }) {
   const [description, setDescription] = useState('');
-  const [creating, setCreating] = useState(false);
 
   const create = () => {
-    if (!description.trim() || creating) return;
-    setCreating(true);
-    api
-      .createTicket(engId, { description: description.trim() })
-      .then(onCreated)
-      .catch((e: Error) => toast(`Create failed — ${e.message}`))
-      .finally(() => setCreating(false));
+    if (!description.trim()) return;
+    onCreate(description.trim());
   };
 
   return (
@@ -1741,7 +1782,7 @@ function NewTicketModal({
           </button>
           <button
             onClick={create}
-            disabled={!description.trim() || creating}
+            disabled={!description.trim()}
             style={{
               background: 'var(--acc)',
               color: '#fff',
@@ -1751,10 +1792,10 @@ function NewTicketModal({
               fontSize: 12,
               fontWeight: 600,
               cursor: 'pointer',
-              opacity: !description.trim() || creating ? 0.45 : 1,
+              opacity: !description.trim() ? 0.45 : 1,
             }}
           >
-            {creating ? 'Creating…' : 'Create ticket'}
+            Create ticket
           </button>
         </div>
       </motion.div>
