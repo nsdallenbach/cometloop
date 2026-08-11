@@ -235,6 +235,9 @@ export function setupAgentRoutes(
          VALUES ($1,$2,$3,$4,$5) RETURNING *`,
         [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', lead.email],
       );
+      console.log(
+        `[agent] queued ${key} as task ${String(inserted.rows[0].id)} (engagement ${engagementId}, priority ${parsed.data.priority ?? 0})`,
+      );
       await feed(engagementId, 'YOU', `Queued ${key} — ${String(ticket.title)} for agent work.`);
       res.status(201).json(inserted.rows[0]);
     } catch (err) {
@@ -261,6 +264,7 @@ export function setupAgentRoutes(
         'Marked done from the board.',
       ]);
       await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+      console.log(`[agent] task ${String(task.id)} (${key}) marked done from the board — ticket moved to review`);
       await feed(engagementId, 'YOU', `Marked agent work on ${key} done — moved to Review.`);
       res.json({ ok: true });
     } catch (err) {
@@ -290,6 +294,7 @@ export function setupAgentRoutes(
         ]);
         await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
       }
+      console.log(`[agent] task ${String(task.id)} (${key}) cancelled from state '${String(task.state)}'`);
       await feed(engagementId, 'YOU', `Cancelled agent work on ${key}.`);
       res.json({ ok: true });
     } catch (err) {
@@ -309,6 +314,7 @@ export function setupAgentRoutes(
       const engagementId = req.params.id;
       if (!(await requireLead(req, res, engagementId))) return;
       const { order } = parsed.data;
+      console.log(`[agent] reordering queue for engagement ${engagementId} (${order.length} task(s))`);
       // Claiming sorts priority DESC, so the top of the lane gets the highest
       // number. Newly queued tasks default to 0 and land at the bottom.
       for (let i = 0; i < order.length; i++) {
@@ -345,6 +351,7 @@ export function setupAgentRoutes(
         }
         const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
         if (queued.length > 0) {
+          console.log(`[agent] wait poll answered with ${queued.length} queued task(s)${engagement ? ` (engagement ${engagement})` : ''}`);
           res.json({ queued });
           return;
         }
@@ -419,6 +426,7 @@ export function setupAgentRoutes(
         return;
       }
       const key = String(claimed.ticket_key);
+      console.log(`[agent] ${agent} claimed task ${String(claimed.id)} (${key}) — ticket moved to progress`);
       await q(`UPDATE app.tickets SET status = 'progress', assignee = $2 WHERE key = $1`, [key, agent]);
       await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work.`);
       res.json(await workPackage(claimed));
@@ -436,6 +444,7 @@ export function setupAgentRoutes(
         res.status(404).json({ error: 'Task not found' });
         return;
       }
+      console.log(`[agent] work package re-fetched for task ${String(task.id)} (${String(task.ticket_key)}, state '${String(task.state)}')`);
       res.json(await workPackage(task));
     } catch (err) {
       console.error('work package failed:', err);
@@ -477,6 +486,8 @@ export function setupAgentRoutes(
         return;
       }
       const { token, expiresAt } = await installationToken(conn.installation_id);
+      // Log the vend event only — never the token itself.
+      console.log(`[agent] vended git credential for task ${String(task.id)} (repo ${conn.repo_name}, expires ${expiresAt})`);
       res.json({
         provider: 'github',
         repo: conn.repo_name,
@@ -509,6 +520,9 @@ export function setupAgentRoutes(
         res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
         return;
       }
+      console.log(
+        `[agent] progress on task ${String(task.id)} (${String(task.ticket_key)}) from ${parsed.data.agent} — note ${parsed.data.note.trim().length} chars, state '${String(task.state)}' → 'working'`,
+      );
       await q(`UPDATE app.agent_tasks SET state = 'working', last_note = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
         task.id,
         parsed.data.note.trim(),
@@ -580,6 +594,7 @@ export function setupAgentRoutes(
         return;
       }
       const key = String(task.ticket_key);
+      console.log(`[agent] task ${String(task.id)} (${key}) flagged by ${agent}: ${reason.trim().slice(0, 140)}`);
       await q(`UPDATE app.agent_tasks SET flag = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
         task.id,
         reason.trim(),
@@ -612,6 +627,7 @@ export function setupAgentRoutes(
         res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
         return;
       }
+      console.log(`[agent] flag cleared on task ${String(task.id)} (${String(task.ticket_key)}) by ${parsed.data.agent}`);
       await q(`UPDATE app.agent_tasks SET flag = NULL, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [task.id]);
       await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
         String(task.ticket_key),
@@ -646,6 +662,9 @@ export function setupAgentRoutes(
       }
       const key = String(task.ticket_key);
       const engagementId = String(task.engagement_id);
+      console.log(
+        `[agent] task ${String(task.id)} (${key}) completed by ${agent}: ${outcome} — ticket → ${outcome === 'done' ? 'review' : 'backlog'}`,
+      );
       await q(
         `UPDATE app.agent_tasks SET state = $2, result = $3, result_url = $4, flag = NULL, last_heartbeat = NOW(), updated_at = NOW()
          WHERE id = $1`,
