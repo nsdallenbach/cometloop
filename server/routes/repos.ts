@@ -471,7 +471,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
     if (!ticketKey) continue;
     const status = ticketStatus.get(ticketKey);
     if (p.state === 'open' && (status === 'backlog' || status === 'progress')) {
-      await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'review']);
+      await q('UPDATE app.tickets SET status = $2, done_at = NULL WHERE key = $1', [ticketKey, 'review']);
       ticketStatus.set(ticketKey, 'review');
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
@@ -487,7 +487,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
           [conn.id, p.number],
         );
         if (status === 'backlog' || status === 'progress') {
-          await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'review']);
+          await q('UPDATE app.tickets SET status = $2, done_at = NULL WHERE key = $1', [ticketKey, 'review']);
           ticketStatus.set(ticketKey, 'review');
         }
         await q(
@@ -498,7 +498,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
       } else {
         // First sight of an already-merged PR (initial sync of a connection):
         // history, not a live event — keep the old straight-to-Done behavior.
-        await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'done']);
+        await q('UPDATE app.tickets SET status = $2, done_at = NOW() WHERE key = $1', [ticketKey, 'done']);
         ticketStatus.set(ticketKey, 'done');
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
@@ -607,7 +607,7 @@ async function settleDeploy(
     );
     return;
   }
-  await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'done']);
+  await q('UPDATE app.tickets SET status = $2, done_at = NOW() WHERE key = $1', [ticketKey, 'done']);
   const text =
     outcome === 'success'
       ? `Deploy pipeline succeeded for PR #${prNumber} — ${ticketKey} moved to Done.`
@@ -855,7 +855,7 @@ export function setupRepoRoutes(
         [conn.id, number, sha],
       );
       if (['backlog', 'progress'].includes(String(ticket.status))) {
-        await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+        await q(`UPDATE app.tickets SET status = 'review', done_at = NULL WHERE key = $1`, [key]);
       }
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)

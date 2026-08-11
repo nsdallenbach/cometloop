@@ -161,11 +161,23 @@ export default function App() {
   // ---- ticket mutations shared by board + drawer ----
   // Optimistic with rollback: the previous field values are restored on failure.
   const setTicket = useCallback((key: string, patch: { status?: TicketStatus; assignee?: string }) => {
-    let prev: { status: TicketStatus; assignee: string } | null = null;
+    let prev: { status: TicketStatus; assignee: string; doneAt: string | null } | null = null;
     setDetail((d) => {
       const t = d?.tickets.find((x) => x.key === key);
-      if (t) prev = { status: t.status, assignee: t.assignee };
-      return d ? { ...d, tickets: d.tickets.map((x) => (x.key === key ? { ...x, ...patch } : x)) } : d;
+      if (t) prev = { status: t.status, assignee: t.assignee, doneAt: t.doneAt };
+      return d
+        ? {
+            ...d,
+            tickets: d.tickets.map((x) => {
+              if (x.key !== key) return x;
+              // Mirror the server's done_at stamping so a card dropped in Done
+              // passes the lane's 24h filter before the next refresh.
+              const doneAt =
+                patch.status === undefined ? x.doneAt : patch.status === 'done' ? (x.doneAt ?? new Date().toISOString()) : null;
+              return { ...x, ...patch, doneAt };
+            }),
+          }
+        : d;
     });
     api.patchTicket(key, patch).catch((e: Error) => {
       setDetail((d) => (d && prev ? { ...d, tickets: d.tickets.map((x) => (x.key === key ? { ...x, ...prev } : x)) } : d));

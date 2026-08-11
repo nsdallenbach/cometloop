@@ -76,8 +76,13 @@ const SCHEMA_SQL = [
     description TEXT NOT NULL DEFAULT '',
     ac JSONB NOT NULL DEFAULT '[]',
     blocked BOOLEAN NOT NULL DEFAULT false,
-    seq SERIAL
+    seq SERIAL,
+    done_at TIMESTAMPTZ
   )`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ`,
+  // Pre-migration done tickets have no completion time; stamp them at first
+  // boot so they age out of the Done lane 24h from now instead of vanishing.
+  `UPDATE app.tickets SET done_at = NOW() WHERE status = 'done' AND done_at IS NULL`,
   `CREATE TABLE IF NOT EXISTS app.sources (
     id SERIAL PRIMARY KEY,
     engagement_id TEXT NOT NULL REFERENCES app.engagements(id),
@@ -173,8 +178,8 @@ async function initSchema(appkit: AppKitServices) {
   }
   for (const t of SEED_TICKETS) {
     await appkit.lakebase.query(
-      `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked)
-       VALUES ($1,'cav',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, done_at)
+       VALUES ($1,'cav',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $3 = 'done' THEN NOW() END)`,
       [t.key, t.title, t.status, t.assignee, t.est, t.workstream, t.agent, JSON.stringify(t.sources), t.description, JSON.stringify(t.ac), t.blocked],
     );
   }
@@ -631,6 +636,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         if (status !== undefined) {
           params.push(status);
           sets.push(`status = $${params.length}`);
+          // Completion time drives the Done lane's 24h auto-hide: stamped on
+          // entering 'done' (kept if already done), cleared on leaving it.
+          sets.push(`done_at = CASE WHEN $${params.length} = 'done' THEN COALESCE(done_at, NOW()) END`);
         }
         if (assignee !== undefined) {
           params.push(assignee);
@@ -842,7 +850,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           for (const engagementId of new Set(gated.map((t) => String(t.engagement_id)))) {
             if (!(await requireLead(req, res, engagementId))) return;
           }
-          await q('UPDATE app.tickets SET status = $1 WHERE key = ANY($2)', [patch.status, keys]);
+          await q(
+            `UPDATE app.tickets SET status = $1,
+                    done_at = CASE WHEN $1 = 'done' THEN COALESCE(done_at, NOW()) END
+             WHERE key = ANY($2)`,
+            [patch.status, keys],
+          );
         }
         if (patch.assignee !== undefined) {
           await q('UPDATE app.tickets SET assignee = $1 WHERE key = ANY($2)', [patch.assignee, keys]);

@@ -86,6 +86,7 @@ function mapTicket(r: Row): Ticket {
     blocked: b(r.blocked),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
+    doneAt: r.done_at == null ? null : s(r.done_at),
   };
 }
 

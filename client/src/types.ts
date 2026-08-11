@@ -63,6 +63,8 @@ export interface Ticket {
   blocked: boolean;
   deployState: DeployState | null;
   deployUrl: string | null;
+  /** When the ticket entered Done (null while in any other status). */
+  doneAt: string | null;
 }
 
 export interface ContextSource {
