@@ -4,6 +4,7 @@ import { resolveIdentity, type Identity } from './roles';
 import { listContextFiles, type FilesVolume } from './context-files';
 import { loadConnection } from './repos';
 import { installationToken } from './github-app';
+import { recordActualHours } from './estimates';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -274,6 +275,8 @@ export function setupAgentRoutes(
         'Marked done from the board.',
       ]);
       await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+      // Ready for review: log the actual LLM working time against the estimate.
+      void recordActualHours(q, key, 'board-complete');
       console.log(`[agent] task ${String(task.id)} (${key}) marked done from the board — ticket moved to review`);
       await feed(engagementId, 'YOU', `Marked agent work on ${key} done — moved to Review.`);
       res.json({ ok: true });
@@ -682,6 +685,8 @@ export function setupAgentRoutes(
       );
       if (outcome === 'done') {
         await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+        // Ready for review: log the actual LLM working time against the estimate.
+        void recordActualHours(q, key, 'agent-complete');
       } else {
         await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—' WHERE key = $1 AND assignee = $2`, [key, agent]);
         await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);

@@ -8,6 +8,7 @@ import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-wor
 import { setupPrConflictRoutes } from './pr-conflicts';
 import { setupContextFileRoutes } from './context-files';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
+import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
 import {
   SEED_ENGAGEMENTS,
   SEED_TICKETS,
@@ -136,7 +137,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -612,6 +613,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         const { status, assignee } = parsed.data;
         let review: { engagementId: string; from: string } | null = null;
+        let enteredReview = false;
         if (status !== undefined) {
           // Moving tickets in or out of the agent-review states is a lead decision;
           // everything else (board moves, assignment) is open to developers.
@@ -625,6 +627,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             if (!(await requireLead(req, res, String(current.engagement_id)))) return;
             review = { engagementId: String(current.engagement_id), from: String(current.status) };
           }
+          enteredReview = status === 'review' && String(current.status) !== 'review';
         }
         const sets: string[] = [];
         const params: unknown[] = [req.params.key];
@@ -649,6 +652,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         console.log(
           `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}`,
         );
+        if (enteredReview) {
+          // Ready for review: log the actual LLM working time against the estimate.
+          void recordActualHours(q, updated.key, 'status-patch');
+        }
         if (review && updated.status !== review.from) {
           const verb =
             updated.status === 'dismissed' ? 'Dismissed' : review.from === 'proposed' ? 'Accepted' : 'Reinstated';
@@ -706,6 +713,19 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const updated = await q(
           `UPDATE app.tickets SET title = $2, description = $3, ac = $4 WHERE key = $1 RETURNING *`,
           [key, plan.title || String(t.title), description, JSON.stringify(plan.ac.length > 0 ? plan.ac : existingAc)],
+        );
+        // The plan (and so the scope) changed — re-estimate in the background.
+        void estimateTicket(
+          q,
+          appkit.serving.bind(appkit),
+          {
+            key,
+            engagementId: String(t.engagement_id),
+            title: plan.title || String(t.title),
+            description,
+            ac: (plan.ac.length > 0 ? plan.ac : existingAc).map((a) => String(a)),
+          },
+          'revised',
         );
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -783,6 +803,14 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           ],
         );
         console.log(`[api] created ticket ${key} in ${engId} (${ac.length} AC)`);
+        // Estimate the ticket's LLM hours in the background — creation never
+        // waits on (or fails with) the estimation model.
+        void estimateTicket(
+          q,
+          appkit.serving.bind(appkit),
+          { key, engagementId: engId, title: title.trim(), description, ac },
+          'initial',
+        );
         const who = assignee?.trim();
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -843,6 +871,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             if (!(await requireLead(req, res, engagementId))) return;
           }
           await q('UPDATE app.tickets SET status = $1 WHERE key = ANY($2)', [patch.status, keys]);
+          if (patch.status === 'review') {
+            for (const t of targets.filter((t) => String(t.status) !== 'review')) {
+              void recordActualHours(q, String(t.key), 'status-patch');
+            }
+          }
         }
         if (patch.assignee !== undefined) {
           await q('UPDATE app.tickets SET assignee = $1 WHERE key = ANY($2)', [patch.assignee, keys]);
@@ -1348,6 +1381,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireLead);
     setupPrConflictRoutes(app, q);
+    setupEstimateRoutes(app, q);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
 

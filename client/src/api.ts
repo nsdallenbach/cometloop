@@ -78,6 +78,8 @@ function mapTicket(r: Row): Ticket {
     status: s(r.status) as TicketStatus,
     assignee: s(r.assignee),
     est: s(r.est),
+    estHours: r.est_hours == null ? null : n(r.est_hours),
+    actualHours: r.actual_hours == null ? null : n(r.actual_hours),
     workstream: s(r.workstream),
     agent: b(r.agent),
     sources: j(r.sources, []),
