@@ -41,6 +41,7 @@ export function TicketDrawer({
   onCancelAgent,
   onAssign,
   toast,
+  refreshDetail,
   onClose,
   onAccept,
   onDismiss,
@@ -56,6 +57,7 @@ export function TicketDrawer({
   onCancelAgent: () => void;
   onAssign: (assignee: string) => void;
   toast: (msg: string) => void;
+  refreshDetail: () => void;
   onClose: () => void;
   onAccept: () => void;
   onDismiss: () => void;
@@ -87,6 +89,7 @@ export function TicketDrawer({
   const [instructions, setInstructions] = useState('');
   const agentActive = agentTask !== null && ['queued', 'claimed', 'working'].includes(agentTask.state);
   const canQueue = lead && !agentActive && ['backlog', 'progress'].includes(ticket.status);
+  const [refining, setRefining] = useState(false);
   const [loaded, setLoaded] = useState<{ key: string; list: TicketComment[] | null; error: boolean } | null>(null);
   const [dev, setDev] = useState<{ key: string; data: TicketDev | null } | null>(null);
   const [draft, setDraft] = useState('');
@@ -253,7 +256,42 @@ export function TicketDrawer({
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.workstream}</div>
             </div>
           </div>
-          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>DESCRIPTION</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>DESCRIPTION</span>
+            {!proposed && !['done', 'dismissed'].includes(ticket.status) && (
+              <button
+                className="hv-border"
+                title="Rewrite this ticket as a planned ticket (context, approach, dependencies, acceptance criteria) via the planning model"
+                disabled={refining}
+                onClick={() => {
+                  if (refining) return;
+                  setRefining(true);
+                  api
+                    .refineTicket(ticket.key)
+                    .then(() => {
+                      toast(`${ticket.key} refined into a planned ticket`);
+                      refreshDetail();
+                    })
+                    .catch((e: Error) => toast(`Refine failed — ${e.message}`))
+                    .finally(() => setRefining(false));
+                }}
+                style={{
+                  marginLeft: 'auto',
+                  border: '1px solid var(--line2)',
+                  background: 'none',
+                  color: 'var(--tx2)',
+                  borderRadius: 3,
+                  padding: '2px 9px',
+                  fontSize: 10.5,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  opacity: refining ? 0.5 : 1,
+                }}
+              >
+                {refining ? 'Refining…' : '✦ Refine'}
+              </button>
+            )}
+          </div>
           <div style={{ margin: '0 0 16px' }}>
             <Markdown text={ticket.description} />
           </div>
