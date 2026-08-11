@@ -117,6 +117,51 @@ export function startMockRunner(q: Query): void {
   console.log('[agent] DEMO_MOCK_RUNNER active — queued tickets are claimed by sim-runner');
 }
 
+/**
+ * The prompt a runner hands to Claude Code, rendered server-side so prompt
+ * changes ship with console deploys instead of devbox fleet updates. The
+ * runner materializes work-package.json, ./context/ and ./repo/ in the
+ * working directory before launching Claude with this text.
+ */
+function renderPrompt(
+  task: Record<string, unknown>,
+  ticket: Record<string, unknown> | null,
+  engagement: Record<string, unknown> | null,
+  repo: Record<string, unknown> | null,
+  contextFiles: { name: string }[],
+): string {
+  const key = String(task.ticket_key);
+  const ac = (() => {
+    try {
+      const list = typeof ticket?.ac === 'string' ? JSON.parse(ticket.ac) : (ticket?.ac ?? []);
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  })();
+  const lines = [
+    `You are an autonomous delivery agent working ticket ${key} — "${String(ticket?.title ?? '')}" for ${String(engagement?.client ?? '')} / ${String(engagement?.name ?? '')}.`,
+    '',
+    '## Ticket',
+    String(ticket?.description ?? '').trim() || '(no description — the title is the scope)',
+    ...(ac.length > 0 ? ['', 'Acceptance criteria:', ...ac.map((a: unknown) => `- ${String(a)}`)] : []),
+    ...(String(task.instructions ?? '').trim() ? ['', '## Lead instructions', String(task.instructions).trim()] : []),
+    '',
+    '## Your working directory',
+    `- work-package.json — full task payload (task id ${String(task.id)}; you are agent "${String(task.agent ?? 'agent')}")`,
+    ...(contextFiles.length > 0 ? [`- ./context/ — engagement reference files: ${contextFiles.map((f) => f.name).join(', ')}`] : []),
+    ...(repo ? [`- ./repo/ — clone of ${String(repo.repo_name)} (default branch ${String(repo.default_branch)})`] : []),
+    '',
+    '## Delivery expectations',
+    `- Work in ./repo. Create a branch named ${key}-<short-slug> — the branch or PR title MUST contain ${key} so the console auto-links your work.`,
+    '- Commit with clear messages, push the branch, and open a PR (do NOT merge it).',
+    '- If the GIT_TOKEN environment variable is set, push with https://x-access-token:$GIT_TOKEN@github.com/<owner>/<repo>.git and open the PR via the GitHub REST API with that token; otherwise use local git credentials / gh.',
+    '- If delivery-console MCP tools are available, post report_agent_progress at plan time and before pushing, and raise flag_agent_work if you get blocked instead of guessing.',
+    '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
+  ];
+  return lines.join('\n');
+}
+
 export function setupAgentRoutes(
   app: express.Application,
   q: Query,
@@ -148,7 +193,7 @@ export function setupAgentRoutes(
         ])
       ).rows[0] ?? null;
     const contextFiles = await listContextFiles(files, engagementId);
-    return { task, ticket, engagement, comments, repo, contextFiles };
+    return { task, ticket, engagement, comments, repo, contextFiles, prompt: renderPrompt(task, ticket, engagement, repo, contextFiles) };
   };
 
   // ---------- console side (lead actions) ----------
@@ -276,6 +321,39 @@ export function setupAgentRoutes(
   });
 
   // ---------- runner side (devbox platform) ----------
+
+  /**
+   * Long-poll pickup: hold the request up to ~55s and answer the moment
+   * matching work is queued. Runners loop on this for push-like latency
+   * with outbound-only connections (no ingress, no registration).
+   */
+  app.get('/api/agent/work/wait', async (req, res) => {
+    try {
+      const engagement = typeof req.query.engagement === 'string' ? req.query.engagement : null;
+      const deadline = Date.now() + 55_000;
+      for (;;) {
+        const params: unknown[] = [];
+        let where = `state = 'queued'`;
+        if (engagement) {
+          params.push(engagement);
+          where += ` AND engagement_id = $${params.length}`;
+        }
+        const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
+        if (queued.length > 0) {
+          res.json({ queued });
+          return;
+        }
+        if (Date.now() >= deadline || req.destroyed) {
+          res.status(204).end();
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    } catch (err) {
+      console.error('agent wait failed:', err);
+      res.status(500).json({ error: 'Failed to wait for work' });
+    }
+  });
 
   app.get('/api/agent/work', async (req, res) => {
     try {
@@ -439,6 +517,36 @@ export function setupAgentRoutes(
     } catch (err) {
       console.error('progress failed:', err);
       res.status(500).json({ error: 'Failed to record progress' });
+    }
+  });
+
+  /**
+   * Silent liveness ping: updates last_heartbeat without posting a comment.
+   * Runners call this every couple of minutes during long Claude runs so the
+   * board's STALLED detector stays honest without spamming the ticket.
+   */
+  app.post('/api/agent/work/:id/heartbeat', async (req, res) => {
+    const parsed = z.object({ agent: z.string().min(1).max(80) }).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'agent is required' });
+      return;
+    }
+    try {
+      const updated = (
+        await q(
+          `UPDATE app.agent_tasks SET last_heartbeat = NOW(), updated_at = NOW()
+           WHERE id = $1 AND agent = $2 AND state IN ('claimed','working') RETURNING id`,
+          [Number(req.params.id), parsed.data.agent],
+        )
+      ).rows[0];
+      if (!updated) {
+        res.status(404).json({ error: 'No active task with this id for this agent' });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('heartbeat failed:', err);
+      res.status(500).json({ error: 'Failed to heartbeat' });
     }
   });
 
