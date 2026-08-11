@@ -6,8 +6,9 @@
 // Long-polls the console's /api/agent/work/wait endpoint (outbound-only, no
 // ingress needed), atomically claims queued work, materializes a working
 // directory (work package, context files, repo clone via a vended GitHub App
-// credential), hands the server-rendered prompt to `claude -p`, heartbeats
-// while it runs, and completes with done/failed + the agent's RESULT.md.
+// credential), hands the server-rendered prompt to `claude -p` (stream-json
+// output rendered as a compact live activity feed), heartbeats while it runs,
+// and completes with done/failed + the agent's RESULT.md.
 //
 // Env:
 //   APP_URL           console base URL
@@ -98,13 +99,54 @@ function fallbackPrompt(pkg) {
   ].join('\n');
 }
 
+/** Short one-line label for a tool_use event: file path, command, or a prefix of the input JSON. */
+function toolLabel(input) {
+  if (input && typeof input === 'object') {
+    if (typeof input.file_path === 'string') return input.file_path;
+    if (typeof input.command === 'string') return input.command;
+  }
+  return JSON.stringify(input ?? {}).slice(0, 60);
+}
+
+/** Print one NDJSON line from Claude's stream-json output as a compact live feed. */
+function printEvent(line) {
+  let evt;
+  try {
+    evt = JSON.parse(line);
+  } catch {
+    console.log(line); // malformed line — pass through raw
+    return;
+  }
+  if (evt.type === 'assistant') {
+    for (const block of evt.message?.content ?? []) {
+      if (block.type === 'text' && block.text) console.log(block.text);
+      else if (block.type === 'tool_use') console.log(`  > ${block.name} ${toolLabel(block.input)}`);
+    }
+  } else if (evt.type === 'result') {
+    console.log(JSON.stringify(evt, null, 2)); // final result event in full
+  } else if (evt.type !== 'system' && evt.type !== 'user') {
+    console.log(line); // unknown event type — pass through raw
+  }
+}
+
 function runClaude(prompt, cwd, extraEnv) {
   return new Promise((resolve) => {
-    const child = spawn(CLAUDE_BIN, ['-p', ...CLAUDE_ARGS], {
+    const child = spawn(CLAUDE_BIN, ['-p', '--output-format', 'stream-json', '--verbose', ...CLAUDE_ARGS], {
       cwd,
       env: { ...process.env, ...extraEnv },
-      stdio: ['pipe', 'inherit', 'inherit'],
+      stdio: ['pipe', 'pipe', 'inherit'],
       shell: process.platform === 'win32',
+    });
+    let buf = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      buf += chunk;
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const l of lines) if (l.trim()) printEvent(l);
+    });
+    child.stdout.on('end', () => {
+      if (buf.trim()) printEvent(buf);
     });
     child.stdin.write(prompt);
     child.stdin.end();

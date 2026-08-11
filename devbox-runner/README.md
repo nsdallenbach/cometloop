@@ -40,9 +40,13 @@ devbox install `delivery-runner.service` so the loop survives reboots.
    `work-package.json`, `./context/` files, and `./repo/` cloned via a vended
    short-lived GitHub App credential (`GIT_TOKEN` is exported into Claude's
    environment for pushing and opening the PR).
-4. `claude -p` runs with the prompt on stdin. If `MCP_SERVER` is set, a
-   `.mcp.json` in the workdir gives Claude the delivery-console tools to post
-   progress notes and raise flags itself.
+4. `claude -p` runs with the prompt on stdin, using
+   `--output-format stream-json --verbose` so the runner can render a live
+   activity feed in the terminal: assistant text as-is, one `  > Tool label`
+   line per tool call (file path, command, or a prefix of the input JSON),
+   and the final result event in full. Unparseable lines are printed raw.
+   If `MCP_SERVER` is set, a `.mcp.json` in the workdir gives Claude the
+   delivery-console tools to post progress notes and raise flags itself.
 5. A sidecar heartbeat fires every 2 minutes so the board never shows STALLED
    during long runs.
 6. On exit, the runner reads the agent's `RESULT.md` for the completion
