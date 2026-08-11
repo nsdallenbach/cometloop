@@ -195,7 +195,7 @@ export const api = {
 
   async createTicket(
     engId: string,
-    payload: { title: string; description?: string; assignee?: string; est?: string; workstream?: string },
+    payload: { title?: string; description?: string; assignee?: string; est?: string; workstream?: string },
   ): Promise<Ticket> {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
   },

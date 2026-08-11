@@ -341,13 +341,24 @@ const NewMemberBody = z.object({ name: z.string().min(1).max(80), role: z.string
 
 const CommentBody = z.object({ body: z.string().min(1).max(4000) });
 
-const CreateTicketBody = z.object({
-  title: z.string().min(1).max(200),
-  description: z.string().max(4000).optional(),
-  assignee: z.string().max(80).optional(),
-  est: z.string().max(16).optional(),
-  workstream: z.string().max(80).optional(),
-});
+const CreateTicketBody = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    description: z.string().max(4000).optional(),
+    assignee: z.string().max(80).optional(),
+    est: z.string().max(16).optional(),
+    workstream: z.string().max(80).optional(),
+  })
+  .refine((b) => b.title?.trim() || b.description?.trim(), { message: 'A title or description is required' });
+
+/** Fallback title when the model is unavailable: first line, clipped at a word boundary. */
+function fallbackTitle(description: string): string {
+  const line = description.split('\n').find((l) => l.trim()) ?? 'New ticket';
+  const clean = line.replace(/^[#*\->\s]+/, '').trim();
+  if (clean.length <= 80) return clean || 'New ticket';
+  const cut = clean.slice(0, 80);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), 40))}…`;
+}
 
 function requestAuthor(req: express.Request): string {
   const h = req.headers['x-forwarded-preferred-username'] ?? req.headers['x-forwarded-email'];
@@ -535,7 +546,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     app.post('/api/engagements/:id/tickets', async (req, res) => {
       const parsed = CreateTicketBody.safeParse(req.body);
       if (!parsed.success) {
-        res.status(400).json({ error: 'A ticket title is required' });
+        res.status(400).json({ error: 'A ticket title or description is required' });
         return;
       }
       try {
@@ -558,7 +569,30 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           if (m && Number(m[1]) >= next) next = Number(m[1]) + 1;
         }
         const key = `${prefix}-${next}`;
-        const { title, description, assignee, est, workstream } = parsed.data;
+        const { description, assignee, est, workstream } = parsed.data;
+        let title = parsed.data.title?.trim() ?? '';
+        if (!title) {
+          // Single-chatbox flow: no title supplied, so derive one from the content.
+          const content = description?.trim() ?? '';
+          try {
+            const response = await appkit.serving('default').invoke({
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    'Write a concise ticket title (max 10 words, plain text, no quotes, no trailing period) summarizing this work request:',
+                    content,
+                  ].join('\n\n'),
+                },
+              ],
+              max_tokens: 60,
+            });
+            title = extractText(response).trim().replace(/^["'\s]+|["'\s.]+$/g, '').split('\n')[0].slice(0, 200);
+          } catch (err) {
+            console.warn('[api] title derivation failed, using fallback:', (err as Error).message);
+          }
+          if (!title) title = fallbackTitle(content);
+        }
         const author = requestAuthor(req);
         const result = await q(
           `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked)

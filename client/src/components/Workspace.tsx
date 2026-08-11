@@ -1495,7 +1495,6 @@ export function Workspace({
       {newTicket && (
         <NewTicketModal
           engId={eng.id}
-          team={(detail?.team ?? []).map((m) => m.name)}
           toast={toast}
           onClose={() => setNewTicket(false)}
           onCreated={(t) => {
@@ -1509,51 +1508,26 @@ export function Workspace({
   );
 }
 
-/** Modal for creating a ticket manually — lands in Backlog alongside agent-seeded work. */
+/** Modal for creating a ticket manually — one chatbox; the title is derived from the content. */
 function NewTicketModal({
   engId,
-  team,
   toast,
   onClose,
   onCreated,
 }: {
   engId: string;
-  team: string[];
   toast: (msg: string) => void;
   onClose: () => void;
   onCreated: (t: Ticket) => void;
 }) {
-  const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [assignee, setAssignee] = useState('—');
-  const [est, setEst] = useState('');
-  const [workstream, setWorkstream] = useState('');
   const [creating, setCreating] = useState(false);
 
-  const inputStyle: React.CSSProperties = {
-    boxSizing: 'border-box',
-    width: '100%',
-    background: 'var(--bg)',
-    border: '1px solid var(--line2)',
-    borderRadius: 3,
-    color: 'var(--tx)',
-    padding: '7px 10px',
-    fontSize: 12.5,
-    fontFamily: 'inherit',
-  };
-  const labelStyle: React.CSSProperties = { ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 5 };
-
   const create = () => {
-    if (!title.trim() || creating) return;
+    if (!description.trim() || creating) return;
     setCreating(true);
     api
-      .createTicket(engId, {
-        title: title.trim(),
-        description: description.trim() || undefined,
-        assignee: assignee === '—' ? undefined : assignee,
-        est: est.trim() || undefined,
-        workstream: workstream.trim() || undefined,
-      })
+      .createTicket(engId, { description: description.trim() })
       .then(onCreated)
       .catch((e: Error) => toast(`Create failed — ${e.message}`))
       .finally(() => setCreating(false));
@@ -1592,41 +1566,27 @@ function NewTicketModal({
             ×
           </button>
         </div>
-        <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 13 }}>
-          <div>
-            <div style={labelStyle}>TITLE</div>
-            <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs to get done?" style={inputStyle} />
-          </div>
-          <div>
-            <div style={labelStyle}>DESCRIPTION</div>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-              placeholder="Context, scope, links… (optional)"
-              style={{ ...inputStyle, lineHeight: 1.5, resize: 'vertical' }}
-            />
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-            <div>
-              <div style={labelStyle}>ASSIGNEE</div>
-              <select value={assignee} onChange={(e) => setAssignee(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
-                {[...new Set(['—', ...team])].map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <div style={labelStyle}>ESTIMATE</div>
-              <input value={est} onChange={(e) => setEst(e.target.value)} placeholder="e.g. 3d" style={inputStyle} />
-            </div>
-            <div>
-              <div style={labelStyle}>WORKSTREAM</div>
-              <input value={workstream} onChange={(e) => setWorkstream(e.target.value)} placeholder="Optional" style={inputStyle} />
-            </div>
-          </div>
+        <div style={{ padding: 18 }}>
+          <textarea
+            autoFocus
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={6}
+            placeholder="Describe the work — context, scope, links… The title is derived for you."
+            style={{
+              boxSizing: 'border-box',
+              width: '100%',
+              background: 'var(--bg)',
+              border: '1px solid var(--line2)',
+              borderRadius: 3,
+              color: 'var(--tx)',
+              padding: '10px 12px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              lineHeight: 1.5,
+              resize: 'vertical',
+            }}
+          />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
           <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LANDS IN BACKLOG · ⌘↵ TO CREATE</span>
@@ -1639,7 +1599,7 @@ function NewTicketModal({
           </button>
           <button
             onClick={create}
-            disabled={!title.trim() || creating}
+            disabled={!description.trim() || creating}
             style={{
               background: 'var(--acc)',
               color: '#fff',
@@ -1649,7 +1609,7 @@ function NewTicketModal({
               fontSize: 12,
               fontWeight: 600,
               cursor: 'pointer',
-              opacity: !title.trim() || creating ? 0.45 : 1,
+              opacity: !description.trim() || creating ? 0.45 : 1,
             }}
           >
             {creating ? 'Creating…' : 'Create ticket'}
