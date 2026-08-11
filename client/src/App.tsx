@@ -283,7 +283,7 @@ export default function App() {
         >
           <span style={{ fontSize: 12 }}>Search or run a command</span>
           <span style={{ marginLeft: 'auto', ...mono(400, 10), border: '1px solid var(--line2)', borderRadius: 3, padding: '1px 5px' }}>
-            ⌘K
+            Ctrl+K
           </span>
         </div>
         {lastSync && !loadError && (
