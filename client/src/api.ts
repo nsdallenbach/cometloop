@@ -11,6 +11,7 @@ import type {
   Me,
   ParsedPlan,
   Phase,
+  ProjectStandards,
   RepoCommit,
   RepoConnection,
   RepoDetail,
@@ -403,7 +404,49 @@ export const api = {
   deleteContextFile(engId: string, name: string) {
     return http(`/api/engagements/${engId}/context-files/${encodeURIComponent(name)}`, { method: 'DELETE' });
   },
+
+  // ---- project standards ----
+
+  async standards(engId: string): Promise<ProjectStandards> {
+    return mapStandards(await http<Row>(`/api/engagements/${engId}/standards`));
+  },
+
+  async saveStandards(engId: string, content: string): Promise<ProjectStandards> {
+    return mapStandards(await http<Row>(`/api/engagements/${engId}/standards`, { method: 'PUT', ...json({ content }) }));
+  },
+
+  refineStandards(engId: string, content: string, instructions?: string): Promise<{ content: string }> {
+    return http(`/api/engagements/${engId}/standards/refine`, {
+      method: 'POST',
+      ...json({ content, instructions: instructions?.trim() || undefined }),
+    });
+  },
+
+  async standardsFiles(engId: string): Promise<ContextFile[]> {
+    const d = await http<{ files: ContextFile[] }>(`/api/engagements/${engId}/standards/files`);
+    return d.files;
+  },
+
+  uploadStandardsFile(engId: string, file: File): Promise<{ name: string; size: number }> {
+    return http(`/api/engagements/${engId}/standards/files?filename=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+  },
+
+  deleteStandardsFile(engId: string, name: string) {
+    return http(`/api/engagements/${engId}/standards/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  },
 };
+
+function mapStandards(r: Row): ProjectStandards {
+  return {
+    content: s(r.content),
+    updatedBy: s(r.updated_by),
+    updatedAt: r.updated_at == null ? null : s(r.updated_at),
+  };
+}
 
 function mapRepoConnection(r: Row): RepoConnection {
   return {

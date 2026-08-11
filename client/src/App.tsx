@@ -11,7 +11,7 @@ import { TicketDrawer } from './components/TicketDrawer';
 import { Palette, type PaletteItem } from './components/Palette';
 
 type Route = 'portfolio' | 'setup' | 'workspace' | 'admin';
-export type Tab = 'board' | 'roadmap' | 'analytics' | 'sources' | 'team' | 'feed';
+export type Tab = 'board' | 'roadmap' | 'analytics' | 'sources' | 'standards' | 'team' | 'feed';
 
 export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>(
