@@ -132,8 +132,14 @@ const SCHEMA_SQL = [
 ];
 
 async function initSchema(appkit: AppKitServices) {
+  // Statements run independently: legacy tables the app SP doesn't own can
+  // reject an ALTER without blocking migrations on the tables it does own.
   for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL]) {
-    await appkit.lakebase.query(sql);
+    try {
+      await appkit.lakebase.query(sql);
+    } catch (err) {
+      console.warn(`[api] schema statement failed (${sql.slice(0, 60).replace(/\s+/g, ' ')}…):`, (err as Error).message);
+    }
   }
   const { rows } = await appkit.lakebase.query('SELECT 1 FROM app.engagements LIMIT 1');
   if (rows.length > 0) {

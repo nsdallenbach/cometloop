@@ -25,12 +25,10 @@ export const REPO_SCHEMA_SQL = [
     status TEXT NOT NULL DEFAULT 'connected',
     last_error TEXT,
     last_sync_at TIMESTAMPTZ,
-    created_by TEXT NOT NULL DEFAULT ''
+    created_by TEXT NOT NULL DEFAULT '',
+    auth_type TEXT NOT NULL DEFAULT 'pat',
+    installation_id BIGINT
   )`,
-  // 'pat' connections keep a stored token; 'app' connections keep only an
-  // installation id and mint short-lived tokens per request.
-  `ALTER TABLE app.repo_connections ADD COLUMN IF NOT EXISTS auth_type TEXT NOT NULL DEFAULT 'pat'`,
-  `ALTER TABLE app.repo_connections ADD COLUMN IF NOT EXISTS installation_id BIGINT`,
   `CREATE TABLE IF NOT EXISTS app.repo_prs (
     id SERIAL PRIMARY KEY,
     connection_id INT NOT NULL REFERENCES app.repo_connections(id) ON DELETE CASCADE,
