@@ -63,6 +63,8 @@ export interface Ticket {
   blocked: boolean;
   deployState: DeployState | null;
   deployUrl: string | null;
+  /** Git branch for the work: manual value, else the latest linked PR's branch. */
+  branch: string | null;
 }
 
 export interface ContextSource {

@@ -86,6 +86,7 @@ function mapTicket(r: Row): Ticket {
     blocked: b(r.blocked),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
+    branch: r.branch != null && s(r.branch) !== '' ? s(r.branch) : r.pr_branch != null && s(r.pr_branch) !== '' ? s(r.pr_branch) : null,
   };
 }
 
@@ -202,7 +203,7 @@ export const api = {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
   },
 
-  patchTicket(key: string, patch: { status?: TicketStatus; assignee?: string }) {
+  patchTicket(key: string, patch: { status?: TicketStatus; assignee?: string; branch?: string }) {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },
 

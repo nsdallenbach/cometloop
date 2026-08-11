@@ -246,6 +246,14 @@ export function Workspace({
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
+      {t.branch && (
+        <div
+          title={t.branch}
+          style={{ ...mono(400, 9.5), color: 'var(--tx3)', marginBottom: 7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          ⎇ {t.branch}
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
         <span
           className="hv-border"

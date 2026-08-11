@@ -78,6 +78,7 @@ const SCHEMA_SQL = [
     blocked BOOLEAN NOT NULL DEFAULT false,
     seq SERIAL
   )`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS branch TEXT`,
   `CREATE TABLE IF NOT EXISTS app.sources (
     id SERIAL PRIMARY KEY,
     engagement_id TEXT NOT NULL REFERENCES app.engagements(id),
@@ -425,6 +426,9 @@ const ProposalPlanSchema = z.object({
 const PatchTicketBody = z.object({
   status: z.enum(['backlog', 'progress', 'review', 'done', 'proposed', 'dismissed']).optional(),
   assignee: z.string().optional(),
+  // Git refs cap out around 255 bytes; empty string clears the manual value so
+  // the card falls back to the branch of the latest linked PR.
+  branch: z.string().trim().max(255).optional(),
 });
 
 const BulkBody = z.object({
@@ -562,16 +566,24 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         const id = req.params.id;
         // Latest tracked deploy per ticket rides along so board cards can show
-        // pipeline progress while the ticket holds in Review.
+        // pipeline progress while the ticket holds in Review. The latest linked
+        // PR's branch rides along too, as the fallback when no manual branch is
+        // set on the ticket.
         const tickets = (
           await q(
-            `SELECT t.*, d.deploy_state, d.deploy_url FROM app.tickets t
+            `SELECT t.*, d.deploy_state, d.deploy_url, pb.branch AS pr_branch FROM app.tickets t
              LEFT JOIN LATERAL (
                SELECT pr.deploy_state, pr.deploy_url FROM app.repo_prs pr
                JOIN app.repo_connections c ON c.id = pr.connection_id
                WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id AND pr.deploy_state IS NOT NULL
                ORDER BY pr.updated_at DESC NULLS LAST LIMIT 1
              ) d ON true
+             LEFT JOIN LATERAL (
+               SELECT pr.branch FROM app.repo_prs pr
+               JOIN app.repo_connections c ON c.id = pr.connection_id
+               WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id AND pr.branch <> ''
+               ORDER BY pr.updated_at DESC NULLS LAST LIMIT 1
+             ) pb ON true
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
             [id],
           )
@@ -610,7 +622,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         return;
       }
       try {
-        const { status, assignee } = parsed.data;
+        const { status, assignee, branch } = parsed.data;
         let review: { engagementId: string; from: string } | null = null;
         if (status !== undefined) {
           // Moving tickets in or out of the agent-review states is a lead decision;
@@ -636,6 +648,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           params.push(assignee);
           sets.push(`assignee = $${params.length}`);
         }
+        if (branch !== undefined) {
+          params.push(branch === '' ? null : branch);
+          sets.push(`branch = $${params.length}`);
+        }
         if (sets.length === 0) {
           res.status(400).json({ error: 'Empty patch' });
           return;
@@ -647,7 +663,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         const updated = result.rows[0] as { key: string; title: string; status: string };
         console.log(
-          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}`,
+          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${branch !== undefined ? ` — branch → '${branch}'` : ''}`,
         );
         if (review && updated.status !== review.from) {
           const verb =
