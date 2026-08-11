@@ -41,36 +41,45 @@ const ONCE = process.env.ONCE === '1';
 
 const log = (msg) => console.log(`[${new Date().toISOString()}] ${msg}`);
 
+// Short TTL: workspace tokens live ~1h, so a 10-minute cache can never hand
+// out a token near death; a 401 busts the cache and retries once regardless.
 let cachedTok = null;
 function token() {
   if (process.env.DATABRICKS_TOKEN) return process.env.DATABRICKS_TOKEN;
   if (cachedTok && Date.now() < cachedTok.exp) return cachedTok.token;
   const out = execFileSync(CLI, ['auth', 'token', '--host', HOST], { encoding: 'utf8' });
-  cachedTok = { token: JSON.parse(out).access_token, exp: Date.now() + 45 * 60_000 };
+  cachedTok = { token: JSON.parse(out).access_token, exp: Date.now() + 10 * 60_000 };
   return cachedTok.token;
 }
 
 async function call(method, apiPath, body, timeoutMs = 30_000) {
-  const resp = await fetch(`${APP}${apiPath}`, {
-    method,
-    headers: { Authorization: `Bearer ${token()}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (resp.status === 204) return null;
-  const raw = await resp.text();
-  if (!resp.ok) {
-    let msg = `${resp.status}`;
-    try {
-      msg = JSON.parse(raw).error ?? msg;
-    } catch {
-      /* keep status code */
+  for (let attempt = 0; ; attempt++) {
+    const resp = await fetch(`${APP}${apiPath}`, {
+      method,
+      headers: { Authorization: `Bearer ${token()}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (resp.status === 401 && attempt === 0 && !process.env.DATABRICKS_TOKEN) {
+      cachedTok = null; // token died mid-flight — mint fresh and retry once
+      log('401 from the console — refreshing the Databricks token');
+      continue;
     }
-    const err = new Error(msg);
-    err.status = resp.status;
-    throw err;
+    if (resp.status === 204) return null;
+    const raw = await resp.text();
+    if (!resp.ok) {
+      let msg = `${resp.status}`;
+      try {
+        msg = JSON.parse(raw).error ?? msg;
+      } catch {
+        /* keep status code */
+      }
+      const err = new Error(msg);
+      err.status = resp.status;
+      throw err;
+    }
+    return raw ? JSON.parse(raw) : null;
   }
-  return raw ? JSON.parse(raw) : null;
 }
 
 async function waitForWork() {
