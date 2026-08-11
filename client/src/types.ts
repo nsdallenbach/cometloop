@@ -144,6 +144,13 @@ export interface ContextFile {
   url: string;
 }
 
+/** Per-engagement Project Standards markdown document. */
+export interface ProjectStandards {
+  content: string;
+  updatedBy: string;
+  updatedAt: string | null;
+}
+
 export interface EngagementDetail {
   tickets: Ticket[];
   sources: ContextSource[];

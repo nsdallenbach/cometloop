@@ -177,6 +177,14 @@ export function TicketDrawer({
             : { key: ticket.key, list: [c], error: false },
         );
         setDraft('');
+        // On un-picked-up tickets the planning agent may rework the plan and
+        // reply — poll a few times so both land without reopening the drawer.
+        [4000, 9000, 16000].forEach((ms) =>
+          setTimeout(() => {
+            loadComments();
+            refreshDetail();
+          }, ms),
+        );
       })
       .catch(() => toast('Comment failed to post'))
       .finally(() => setPosting(false));

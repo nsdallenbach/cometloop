@@ -23,7 +23,14 @@ settings → GitHub Apps → New GitHub App**:
 - **Permissions** (Repository):
   - Contents: **Read & write** (runners push branches)
   - Pull requests: **Read & write** (runners open PRs)
+  - Actions: **Read-only** (the deploy watch polls workflow runs to gate
+    tickets on the pipeline; without it merged tickets settle to Done
+    unverified, with a warning in the feed)
   - Metadata: Read-only (mandatory)
+
+> Already installed without Actions access? Edit the App's permissions, then
+> approve the permission update under the org's **Installations** page —
+> tokens pick up the new scope on the next sync.
 - **Where can it be installed**: Only on this account.
 
 After creating: note the **App ID**, then **Generate a private key** (.pem

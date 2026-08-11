@@ -5,6 +5,7 @@ import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, 
 import { HEALTH_COLOR, HEALTH_LABEL, initials, mono } from '../util';
 import { Analytics } from './Analytics';
 import { Roadmap } from './Roadmap';
+import { Standards } from './Standards';
 import type { Tab } from '../App';
 
 const COLS: [TicketStatus, string][] = [
@@ -50,6 +51,8 @@ export function Workspace({
   onEngagementChanged,
   refreshDetail,
   lead,
+  newTicket,
+  setNewTicket,
 }: {
   eng: Engagement;
   detail: EngagementDetail | null;
@@ -64,9 +67,10 @@ export function Workspace({
   onEngagementChanged: () => void;
   refreshDetail: () => void;
   lead: boolean;
+  newTicket: boolean;
+  setNewTicket: (open: boolean) => void;
 }) {
   const [boardMode, setBoardMode] = useState<'kanban' | 'table'>('kanban');
-  const [newTicket, setNewTicket] = useState(false);
   // Tickets being created in the background (the LLM drafts the plan, which
   // takes a while) — drives the floating progress bar instead of a frozen modal.
   const [pendingCreates, setPendingCreates] = useState(0);
@@ -138,6 +142,7 @@ export function Workspace({
     { key: 'roadmap', label: 'Roadmap' },
     { key: 'analytics', label: 'Analytics' },
     { key: 'sources', label: 'Sources' },
+    { key: 'standards', label: 'Standards' },
     { key: 'team', label: 'Team' },
     { key: 'feed', label: 'Status Feed' },
   ];
@@ -727,6 +732,7 @@ export function Workspace({
             <button
               className="hv-border"
               onClick={() => setNewTicket(true)}
+              title="Shortcut: N"
               style={{
                 border: '1px solid var(--line2)',
                 background: 'none',
@@ -1006,6 +1012,9 @@ export function Workspace({
           </table>
         </div>
       )}
+
+      {/* ===== STANDARDS ===== */}
+      {detail && tab === 'standards' && <Standards engId={eng.id} lead={lead} toast={toast} />}
 
       {/* ===== TEAM ===== */}
       {detail && tab === 'team' && (
@@ -1531,8 +1540,8 @@ function NewTicketModal({
         exit={{ opacity: 0, transform: 'translate(-50%,-50%) scale(0.98) translateY(4px)' }}
         transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose();
-          else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
+          // Escape is handled by the app-level layering (palette > modal > drawer).
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
         }}
         style={{
           position: 'fixed',
@@ -1580,7 +1589,9 @@ function NewTicketModal({
           />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
-          <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LANDS IN BACKLOG · CTRL+ENTER TO CREATE</span>
+          <span style={{ ...mono(400, 10), color: 'var(--tx3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            LANDS IN BACKLOG · CTRL+ENTER TO CREATE
+          </span>
           <div style={{ flex: 1 }} />
           <button
             onClick={onClose}
@@ -1600,6 +1611,8 @@ function NewTicketModal({
               fontSize: 12,
               fontWeight: 600,
               cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
               opacity: !description.trim() ? 0.45 : 1,
             }}
           >
