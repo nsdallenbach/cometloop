@@ -1772,7 +1772,9 @@ function NewTicketModal({
           />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
-          <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LANDS IN BACKLOG · CTRL+ENTER TO CREATE</span>
+          <span style={{ ...mono(400, 10), color: 'var(--tx3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            LANDS IN BACKLOG · CTRL+ENTER TO CREATE
+          </span>
           <div style={{ flex: 1 }} />
           <button
             onClick={onClose}
@@ -1792,6 +1794,8 @@ function NewTicketModal({
               fontSize: 12,
               fontWeight: 600,
               cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
               opacity: !description.trim() ? 0.45 : 1,
             }}
           >
