@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { LayoutGroup, motion } from 'motion/react';
+import { LayoutGroup, motion, useMotionValue } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtD, initials, mono, pct, todayIso } from '../util';
@@ -12,6 +12,11 @@ const COLS: [TicketStatus, string][] = [
 ];
 
 const SKILL_COLS = ['DBX', 'DBT', 'PY', 'BI', 'AZURE', 'PM'];
+
+/** What's being carried during a pointer drag (plus the clone's fixed width). */
+type DragPayload =
+  | { kind: 'ticket'; key: string; w: number }
+  | { kind: 'task'; key: string; taskId: number; queued: boolean; w: number };
 
 const PR_STATE_COLOR: Record<string, string> = { open: 'var(--warn)', merged: 'var(--ok)', closed: 'var(--tx3)' };
 
@@ -70,9 +75,15 @@ export function Workspace({
   const [revertConfirm, setRevertConfirm] = useState<number | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = useState<TicketStatus | 'agent' | null>(null);
-  const drag = useRef<string | null>(null);
-  // Card being dragged out of / within the agent lane.
-  const dragTask = useRef<{ id: number; ticketKey: string; queued: boolean } | null>(null);
+  // Jira-style pointer drag: the card itself follows the cursor as a floating
+  // clone (position driven by motion values — no React re-render per move).
+  const [pDrag, setPDrag] = useState<DragPayload | null>(null);
+  const pDragRef = useRef<DragPayload | null>(null);
+  const dragX = useMotionValue(0);
+  const dragY = useMotionValue(0);
+  const dragOverColRef = useRef<TicketStatus | 'agent' | null>(null);
+  const hoverQcardRef = useRef<number | null>(null);
+  const suppressClick = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
@@ -156,36 +167,27 @@ export function Workspace({
     }, 1200);
   };
 
-  const ticketCard = (t: Ticket) => {
+  const ticketCardInner = (t: Ticket, clone = false) => {
     const at = agentTaskByTicket.get(t.key);
     // Agent finished → parked in Review awaiting human sign-off (yellow).
     const agentDone = at?.state === 'done' && t.status === 'review';
     const agentFailed = at?.state === 'failed' && t.status === 'backlog';
     const isDone = t.status === 'done';
     return (
-    <motion.div
-      key={t.key}
-      layoutId={`card-${t.key}`}
-      layout
-      initial={false}
-      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-      style={{ borderRadius: 3 }}
-    >
     <div
-      draggable
-      onDragStart={() => (drag.current = t.key)}
-      onDragEnd={() => {
-        drag.current = null;
-        setDragOverCol(null);
-      }}
-      onClick={() => openTicket(t.key)}
-      className="hv-border"
+      {...(!clone && {
+        onPointerDown: (e: React.PointerEvent) => beginPress(e, { kind: 'ticket', key: t.key, w: 0 }),
+        onClick: () => {
+          if (!suppressClick.current) openTicket(t.key);
+        },
+        className: 'hv-border',
+      })}
       style={{
         border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : agentDone ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
         background: 'var(--bg2)',
         borderRadius: 3,
         padding: '9px 11px',
-        cursor: 'pointer',
+        cursor: clone ? 'grabbing' : 'pointer',
       }}
     >
       <div style={{ display: 'flex', gap: 7, alignItems: 'center', marginBottom: 4 }}>
@@ -253,18 +255,35 @@ export function Workspace({
         </span>
       </div>
     </div>
-    </motion.div>
     );
   };
+
+  const ticketCard = (t: Ticket) => (
+    <motion.div
+      key={t.key}
+      layoutId={`card-${t.key}`}
+      layout
+      initial={false}
+      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+      // While dragging, the in-lane card dims to a placeholder; the floating
+      // clone under the cursor is the thing that moves.
+      style={{ borderRadius: 3, opacity: pDrag?.kind === 'ticket' && pDrag.key === t.key ? 0.3 : 1 }}
+    >
+      {ticketCardInner(t)}
+    </motion.div>
+  );
 
   // ---- Deploy-to-Agent lane ----
 
   const hasActiveAgentWork = laneTasks.running.length > 0 || laneTasks.queued.length > 0;
   useEffect(() => {
     // Live board: poll so agent cards update in place and newly queued work
-    // appears without a manual refresh.
+    // appears without a manual refresh. Paused mid-drag so cards don't shift
+    // under the cursor.
     if (tab !== 'board') return;
-    const iv = setInterval(refreshDetail, 8000);
+    const iv = setInterval(() => {
+      if (!pDragRef.current) refreshDetail();
+    }, 8000);
     return () => clearInterval(iv);
   }, [tab, refreshDetail]);
 
@@ -328,7 +347,112 @@ export function Workspace({
     });
   };
 
-  const agentCard = (at: AgentTask, qPos: number | null) => {
+  // ---- pointer drag engine (Jira-style: the card rides the cursor) ----
+
+  /**
+   * Arms a drag on pointerdown; it only becomes a drag after 5px of travel so
+   * plain clicks still open the drawer. While dragging, a floating clone
+   * follows the cursor via motion values (zero re-renders per move), lanes are
+   * hit-tested with elementFromPoint (the clone is pointer-events: none), and
+   * the drop resolves against the hovered lane / queued card on release.
+   */
+  const beginPress = (e: React.PointerEvent, payload: DragPayload) => {
+    if (e.button !== 0) return;
+    // Interactive children (assign avatar handles its own clicks via buttons) keep their behavior.
+    if ((e.target as HTMLElement).closest('button,a,select,input,textarea')) return;
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let started = false;
+
+    const setLane = (lane: TicketStatus | 'agent' | null) => {
+      if (dragOverColRef.current === lane) return;
+      dragOverColRef.current = lane;
+      setDragOverCol(lane);
+    };
+
+    const move = (ev: PointerEvent) => {
+      if (!started) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
+        started = true;
+        suppressClick.current = true;
+        document.body.style.userSelect = 'none';
+        const d = { ...payload, w: rect.width };
+        pDragRef.current = d;
+        setPDrag(d);
+      }
+      dragX.set(ev.clientX - (startX - rect.left));
+      dragY.set(ev.clientY - (startY - rect.top));
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const laneEl = under?.closest('[data-lane]');
+      setLane(laneEl ? (laneEl.getAttribute('data-lane') as TicketStatus | 'agent') : null);
+      const qEl = under?.closest('[data-qcard]');
+      hoverQcardRef.current = qEl ? Number(qEl.getAttribute('data-qcard')) : null;
+    };
+
+    const finish = (drop: boolean) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      document.body.style.userSelect = '';
+      if (!started) return;
+      const lane = dragOverColRef.current;
+      const overQcard = hoverQcardRef.current;
+      pDragRef.current = null;
+      setPDrag(null);
+      setLane(null);
+      hoverQcardRef.current = null;
+      // Click fires right after pointerup — release the guard a tick later.
+      setTimeout(() => (suppressClick.current = false), 0);
+      if (drop) dropCard(payload, lane, overQcard);
+    };
+    const up = () => finish(true);
+    const cancel = () => finish(false);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+  };
+
+  const dropCard = (payload: DragPayload, lane: TicketStatus | 'agent' | null, overQcard: number | null) => {
+    if (payload.kind === 'task') {
+      if (!lead) return;
+      // Dropping a queued card on another queued card slots it above.
+      if (payload.queued && overQcard != null && overQcard !== payload.taskId) {
+        reorderQueue(payload.taskId, overQcard);
+        return;
+      }
+      if (lane === 'agent') {
+        // Lane background: send to the back of the queue.
+        if (payload.queued) reorderQueue(payload.taskId, null);
+        return;
+      }
+      if (lane == null) return;
+      // Status lane: Review means "the run is done"; anywhere else recalls.
+      if (lane === 'review') {
+        completeTask(payload.key);
+        return;
+      }
+      const t = tickets.find((x) => x.key === payload.key);
+      recallTask(payload.key, t && t.status !== lane && lane !== 'backlog' ? lane : undefined);
+      return;
+    }
+    if (lane === 'agent') {
+      if (agentLaneKeys.has(payload.key)) return;
+      if (!lead) {
+        toast('Lead access is required to deploy tickets to agents');
+        return;
+      }
+      deployTicket(payload.key);
+      return;
+    }
+    if (lane == null) return;
+    const t = tickets.find((x) => x.key === payload.key);
+    if (!t || t.status === lane) return;
+    setTicket(payload.key, { status: lane });
+  };
+
+  const agentCardInner = (at: AgentTask, qPos: number | null, clone = false) => {
     const t = tickets.find((x) => x.key === at.ticketKey);
     const running = at.state !== 'queued';
     // Warning states: an explicit runner-raised flag, or a silent heartbeat.
@@ -353,42 +477,24 @@ export function Workspace({
       />
     );
     return (
-      <motion.div
-        key={`at-${at.id}`}
-        layoutId={`card-${at.ticketKey}`}
-        layout
-        initial={false}
-        transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-        style={{ borderRadius: 3 }}
-      >
       <div
-        draggable={lead}
-        onDragStart={() => (dragTask.current = { id: at.id, ticketKey: at.ticketKey, queued: !running })}
-        onDragEnd={() => {
-          dragTask.current = null;
-          setDragOverCol(null);
-        }}
-        onDragOver={(e) => {
-          if (dragTask.current?.queued && !running) e.preventDefault();
-        }}
-        onDrop={(e) => {
-          // Reorder: dropping a queued card on another queued card slots it above.
-          const dt = dragTask.current;
-          if (!dt || !dt.queued || running || dt.id === at.id) return;
-          e.preventDefault();
-          e.stopPropagation();
-          dragTask.current = null;
-          setDragOverCol(null);
-          reorderQueue(dt.id, at.id);
-        }}
-        onClick={() => openTicket(at.ticketKey)}
-        className="hv-border"
+        {...(!clone && {
+          ...(!running && { 'data-qcard': at.id }),
+          ...(lead && {
+            onPointerDown: (e: React.PointerEvent) =>
+              beginPress(e, { kind: 'task', key: at.ticketKey, taskId: at.id, queued: !running, w: 0 }),
+          }),
+          onClick: () => {
+            if (!suppressClick.current) openTicket(at.ticketKey);
+          },
+          className: 'hv-border',
+        })}
         style={{
           border: `1px ${running ? 'solid' : 'dashed'} ${flagged ? 'var(--warn)' : 'var(--agent)'}`,
           background: running ? 'var(--agentsoft)' : 'var(--bg2)',
           borderRadius: 3,
           padding: '9px 11px',
-          cursor: lead && !running ? 'grab' : 'pointer',
+          cursor: clone ? 'grabbing' : lead && !running ? 'grab' : 'pointer',
         }}
       >
         <div style={{ display: 'flex', gap: 7, alignItems: 'center', marginBottom: 4 }}>
@@ -447,37 +553,26 @@ export function Workspace({
           </div>
         )}
       </div>
-      </motion.div>
     );
   };
+
+  const agentCard = (at: AgentTask, qPos: number | null) => (
+    <motion.div
+      key={`at-${at.id}`}
+      layoutId={`card-${at.ticketKey}`}
+      layout
+      initial={false}
+      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+      style={{ borderRadius: 3, opacity: pDrag?.kind === 'task' && pDrag.taskId === at.id ? 0.3 : 1 }}
+    >
+      {agentCardInner(at, qPos)}
+    </motion.div>
+  );
 
   const agentLane = (
     <div
       key="agent-lane"
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragOverCol('agent');
-      }}
-      onDragLeave={() => setDragOverCol((c) => (c === 'agent' ? null : c))}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragOverCol(null);
-        const dt = dragTask.current;
-        if (dt) {
-          // Dropped on lane background: send to the back of the queue.
-          dragTask.current = null;
-          if (dt.queued) reorderQueue(dt.id, null);
-          return;
-        }
-        const key = drag.current;
-        drag.current = null;
-        if (!key || agentLaneKeys.has(key)) return;
-        if (!lead) {
-          toast('Lead access is required to deploy tickets to agents');
-          return;
-        }
-        deployTicket(key);
-      }}
+      data-lane="agent"
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -728,35 +823,7 @@ export function Workspace({
                     <Fragment key={k}>
                     {k === 'review' && agentLane}
                     <div
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        setDragOverCol(k);
-                      }}
-                      onDragLeave={() => setDragOverCol((c) => (c === k ? null : c))}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        setDragOverCol(null);
-                        const dt = dragTask.current;
-                        if (dt) {
-                          // Agent card dragged onto a status lane: Review means
-                          // "the run is done"; anywhere else recalls the task.
-                          dragTask.current = null;
-                          if (!lead) return;
-                          if (k === 'review') {
-                            completeTask(dt.ticketKey);
-                          } else {
-                            const t = tickets.find((x) => x.key === dt.ticketKey);
-                            recallTask(dt.ticketKey, t && t.status !== k && k !== 'backlog' ? k : undefined);
-                          }
-                          return;
-                        }
-                        const key = drag.current;
-                        drag.current = null;
-                        if (!key) return;
-                        const t = tickets.find((x) => x.key === key);
-                        if (!t || t.status === k) return;
-                        setTicket(key, { status: k });
-                      }}
+                      data-lane={k}
                       style={{
                         display: 'flex',
                         flexDirection: 'column',
@@ -1503,6 +1570,38 @@ export function Workspace({
             toast(`${t.key} created`);
           }}
         />
+      )}
+
+      {/* Floating drag clone: rides the cursor with a slight lift + tilt (Jira-style).
+          pointer-events: none so elementFromPoint hit-tests the lanes beneath it. */}
+      {pDrag && (
+        <motion.div
+          initial={{ scale: 1, rotate: 0 }}
+          animate={{ scale: 1.04, rotate: 2.5 }}
+          transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+          style={{
+            position: 'fixed',
+            left: 0,
+            top: 0,
+            x: dragX,
+            y: dragY,
+            width: pDrag.w,
+            zIndex: 90,
+            pointerEvents: 'none',
+            filter: 'drop-shadow(0 14px 28px rgba(0,0,0,.35))',
+          }}
+        >
+          {pDrag.kind === 'ticket'
+            ? (() => {
+                const t = tickets.find((x) => x.key === pDrag.key);
+                return t ? ticketCardInner(t, true) : null;
+              })()
+            : (() => {
+                const at = (detail?.agentTasks ?? []).find((a) => a.id === pDrag.taskId);
+                const qPos = at ? laneTasks.queued.findIndex((a) => a.id === at.id) : -1;
+                return at ? agentCardInner(at, qPos >= 0 ? qPos + 1 : null, true) : null;
+              })()}
+        </motion.div>
       )}
     </div>
   );
