@@ -123,6 +123,11 @@ export function startMockRunner(q: Query): void {
  * runner materializes work-package.json, ./context/ and ./repo/ in the
  * working directory before launching Claude with this text.
  */
+/** Lint-safe coercion for unknown row values (never [object Object]). */
+function txt(v: unknown): string {
+  return typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '';
+}
+
 function renderPrompt(
   task: Record<string, unknown>,
   ticket: Record<string, unknown> | null,
@@ -130,27 +135,27 @@ function renderPrompt(
   repo: Record<string, unknown> | null,
   contextFiles: { name: string }[],
 ): string {
-  const key = String(task.ticket_key);
+  const key = txt(task.ticket_key);
   const ac = (() => {
     try {
-      const list = typeof ticket?.ac === 'string' ? JSON.parse(ticket.ac) : (ticket?.ac ?? []);
-      return Array.isArray(list) ? list : [];
+      const raw: unknown = typeof ticket?.ac === 'string' ? JSON.parse(ticket.ac) : (ticket?.ac ?? []);
+      return Array.isArray(raw) ? raw.map((a) => txt(a)) : [];
     } catch {
       return [];
     }
   })();
   const lines = [
-    `You are an autonomous delivery agent working ticket ${key} — "${String(ticket?.title ?? '')}" for ${String(engagement?.client ?? '')} / ${String(engagement?.name ?? '')}.`,
+    `You are an autonomous delivery agent working ticket ${key} — "${txt(ticket?.title)}" for ${txt(engagement?.client)} / ${txt(engagement?.name)}.`,
     '',
     '## Ticket',
-    String(ticket?.description ?? '').trim() || '(no description — the title is the scope)',
-    ...(ac.length > 0 ? ['', 'Acceptance criteria:', ...ac.map((a: unknown) => `- ${String(a)}`)] : []),
-    ...(String(task.instructions ?? '').trim() ? ['', '## Lead instructions', String(task.instructions).trim()] : []),
+    txt(ticket?.description).trim() || '(no description — the title is the scope)',
+    ...(ac.length > 0 ? ['', 'Acceptance criteria:', ...ac.map((a) => `- ${a}`)] : []),
+    ...(txt(task.instructions).trim() ? ['', '## Lead instructions', txt(task.instructions).trim()] : []),
     '',
     '## Your working directory',
-    `- work-package.json — full task payload (task id ${String(task.id)}; you are agent "${String(task.agent ?? 'agent')}")`,
+    `- work-package.json — full task payload (task id ${txt(task.id)}; you are agent "${txt(task.agent) || 'agent'}")`,
     ...(contextFiles.length > 0 ? [`- ./context/ — engagement reference files: ${contextFiles.map((f) => f.name).join(', ')}`] : []),
-    ...(repo ? [`- ./repo/ — clone of ${String(repo.repo_name)} (default branch ${String(repo.default_branch)})`] : []),
+    ...(repo ? [`- ./repo/ — clone of ${txt(repo.repo_name)} (default branch ${txt(repo.default_branch)})`] : []),
     '',
     '## Delivery expectations',
     `- Work in ./repo. Create a branch named ${key}-<short-slug> — the branch or PR title MUST contain ${key} so the console auto-links your work.`,

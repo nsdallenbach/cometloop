@@ -19,8 +19,9 @@ export default tseslint.config(
       'tests/**',
       '**/.smoke-test/**',
       'scripts/**',
-      // Standalone MCP subpackage — plain JS outside the TS project service.
+      // Standalone subpackages — plain JS outside the TS project service.
       'mcp/**',
+      'devbox-runner/**',
     ],
   },
 
