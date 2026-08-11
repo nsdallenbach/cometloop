@@ -65,6 +65,9 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 | `POST` | `/api/agent/work/:id/git-credential` | Short-lived clone/push token (GitHub App connections only) |
 | `POST` | `/api/agent/work/:id/flag` | Raise a warning (stuck/erroring/needs input) — yellow on the board, no lane change |
 | `DELETE` | `/api/agent/work/:id/flag` | Clear the warning after recovering |
+| `POST` | `/api/agent/work/:id/pr/:number/conflicts` | Merge-conflict analysis for a PR the agent opened (see below) |
+| `POST` | `/api/agent/work/:id/pr/:number/escalate` | Flag a conflicted PR for developer review (comment + label + reviewers + board flag) |
+| `POST` | `/api/agent/work/:id/pr/:number/comment` | Post a PR comment (e.g. document an auto-resolved conflict) |
 | `POST` | `/api/agent/work/:id/complete` | Finish with `done` or `failed` |
 | `GET` | `/api/engagements/:id/context-files` | List context files for an engagement |
 | `GET` | `/api/engagements/:id/context-files/:name` | Download one context file |
@@ -101,6 +104,42 @@ curl -s -X POST "$APP/api/agent/work/$TASK_ID/complete" -H "$AUTH" -H 'Content-T
 
 `outcome: "failed"` returns the ticket to the backlog; put the reason in
 `summary` so the lead sees it on the ticket.
+
+## Merge conflicts on agent PRs
+
+The server-rendered prompt tells the agent to check its freshly opened PR for
+merge conflicts against the base branch and act on what it finds. The division
+of labor: the agent has the clone (it computes the conflicted files locally
+with `git merge-tree`), the console has the provider token and the PR↔ticket
+links (it knows whose work overlaps).
+
+```bash
+curl -s -X POST "$APP/api/agent/work/$TASK_ID/pr/$PR/conflicts" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"agent": "devbox-1", "conflict_files": ["server/routes/api.ts"]}'
+```
+
+The response reports the provider's mergeability verdict, every other open PR
+(and recently merged PR) touching the same files with the ticket each is
+linked to, and an `assessment`: `auto-resolve` when nothing overlapping is in
+flight and no other ticket is impacted, otherwise `developer-review` with
+reasons. The threshold for "impacts another ticket" is a shared file: an open
+PR touching a conflicted file, or a recently merged PR from a different ticket
+having changed one.
+
+- **Auto-resolve path** — the agent merges the base branch into its PR branch,
+  resolves, re-tests, pushes, and documents the resolution via
+  `POST …/pr/:number/comment`.
+- **Escalation path** — `POST …/pr/:number/escalate` with a `reason` and the
+  overlapping `conflicting_prs`. The console comments on the PR naming the
+  conflicting PR(s) and ticket(s), adds a `merge-conflict` label, requests
+  review from the developers who authored the conflicting PRs (GitHub; on ADO
+  the comment mention is the notification), flags the agent task on the board,
+  and posts a heads-up comment on each impacted ticket. The agent then
+  completes normally and notes the flag in `RESULT.md`.
+
+All three endpoints are also exposed as MCP tools (`check_pr_conflicts`,
+`escalate_pr_conflict`, `comment_on_pr`) when the runner wires up
+`mcp/server.mjs`.
 
 ## Minimal runner loop (devbox)
 

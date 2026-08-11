@@ -152,7 +152,7 @@ export class ProviderHttpError extends Error {
   }
 }
 
-async function jsonFetch(url: string, headers: Record<string, string>, init?: { method?: string; body?: unknown }): Promise<unknown> {
+export async function jsonFetch(url: string, headers: Record<string, string>, init?: { method?: string; body?: unknown }): Promise<unknown> {
   const resp = await fetch(url, {
     method: init?.method ?? 'GET',
     headers: init?.body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' },
@@ -179,7 +179,7 @@ async function jsonFetch(url: string, headers: Record<string, string>, init?: { 
 
 const GITHUB_URL = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git|\/)?$/;
 
-function githubHeaders(token: string) {
+export function githubHeaders(token: string) {
   return {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
@@ -188,7 +188,7 @@ function githubHeaders(token: string) {
   };
 }
 
-function githubPath(conn: Connection): string {
+export function githubPath(conn: Connection): string {
   const m = GITHUB_URL.exec(conn.repo_url);
   if (!m) throw new Error('invalid GitHub URL');
   return `${m[1]}/${m[2]}`;
@@ -282,7 +282,7 @@ const github: Provider = {
 
 const ADO_URL = /^https:\/\/dev\.azure\.com\/([^/\s]+)\/([^/\s]+)\/_git\/([^/\s]+?)\/?$/;
 
-function adoHeaders(token: string) {
+export function adoHeaders(token: string) {
   return {
     Authorization: `Basic ${Buffer.from(`:${token}`).toString('base64')}`,
     Accept: 'application/json',
@@ -295,7 +295,7 @@ function adoParts(url: string): { org: string; project: string; repo: string } {
   return { org: m[1], project: m[2], repo: m[3] };
 }
 
-function adoApi(url: string): string {
+export function adoApi(url: string): string {
   const { org, project, repo } = adoParts(url);
   return `https://dev.azure.com/${org}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repo)}`;
 }
@@ -403,7 +403,7 @@ function providerFor(url: string): { key: 'github' | 'ado'; impl: Provider } | n
 
 const TICKET_KEY = /\b[A-Z][A-Z0-9]{1,9}-\d{1,5}\b/;
 
-function findTicketKey(...texts: string[]): string | null {
+export function findTicketKey(...texts: string[]): string | null {
   for (const t of texts) {
     const m = TICKET_KEY.exec(t);
     if (m) return m[0];
@@ -420,7 +420,7 @@ export function publicConnection(row: Record<string, unknown> | Connection) {
   return { ...rest, token_hint: rest.auth_type === 'app' ? 'GitHub App' : maskToken(token) };
 }
 
-async function syncConnection(q: Query, rawConn: Connection): Promise<{ commits: number; prs: number }> {
+export async function syncConnection(q: Query, rawConn: Connection): Promise<{ commits: number; prs: number }> {
   const conn = await withLiveToken(rawConn);
   const impl = conn.provider === 'github' ? github : ado;
 
