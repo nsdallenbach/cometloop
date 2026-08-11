@@ -605,8 +605,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           res.status(409).json({ error: 'Refine is for active tickets' });
           return;
         }
-        const original = String(t.description ?? '').trim() || String(t.title);
-        const content = [String(t.title), String(t.description ?? '').trim()].filter(Boolean).join('\n\n');
+        const desc = typeof t.description === 'string' ? t.description.trim() : '';
+        const original = desc || String(t.title);
+        const content = [String(t.title), desc].filter(Boolean).join('\n\n');
         const plan = await refinePlan(appkit, content);
         if (!plan) {
           res.status(502).json({ error: 'The planning model is unavailable — try again shortly' });
@@ -618,7 +619,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const existingAc = (() => {
           try {
             const raw: unknown = typeof t.ac === 'string' ? JSON.parse(t.ac) : (t.ac ?? []);
-            return Array.isArray(raw) ? raw : [];
+            return Array.isArray(raw) ? (raw as unknown[]).filter((x): x is string => typeof x === 'string') : [];
           } catch {
             return [];
           }
