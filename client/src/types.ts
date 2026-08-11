@@ -45,6 +45,9 @@ export interface TicketSource {
   label: string;
 }
 
+/** Deployment pipeline progress for a merged PR ('none' = no pipeline found). */
+export type DeployState = 'pending' | 'running' | 'success' | 'failed' | 'none';
+
 export interface Ticket {
   key: string;
   engagementId: string;
@@ -58,6 +61,8 @@ export interface Ticket {
   description: string;
   ac: string[];
   blocked: boolean;
+  deployState: DeployState | null;
+  deployUrl: string | null;
 }
 
 export interface ContextSource {
@@ -190,6 +195,8 @@ export interface RepoPr {
   branch: string;
   url: string;
   ticketKey: string | null;
+  deployState: DeployState | null;
+  deployUrl: string | null;
 }
 
 export interface RepoCommit {

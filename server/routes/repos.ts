@@ -7,8 +7,11 @@ import { githubAppConfigured, installationToken, verifyWebhookSignature, WEBHOOK
  * Git repository integration: one repo per engagement, GitHub or Azure DevOps.
  * Synced commits and pull requests are linked to tickets by detecting ticket
  * keys (e.g. NAC-104) in branch names, PR titles and commit messages. Linked
- * PRs drive ticket automation: opening a PR moves the ticket to Review,
- * merging it moves the ticket to Done (both logged to the feed).
+ * PRs drive ticket automation: opening a PR moves the ticket to Review;
+ * merging it (from the drawer's Merge button or externally) starts a deploy
+ * watch — the ticket holds in Review while the CI pipeline for the merge
+ * commit runs, and moves to Done only when the pipeline succeeds (or straight
+ * to Done when no pipeline is configured). All transitions log to the feed.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -42,6 +45,10 @@ export const REPO_SCHEMA_SQL = [
     updated_at TIMESTAMPTZ,
     UNIQUE (connection_id, number)
   )`,
+  `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS merge_sha TEXT`,
+  `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_state TEXT`,
+  `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_url TEXT`,
+  `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_started_at TIMESTAMPTZ`,
   `CREATE TABLE IF NOT EXISTS app.repo_commits (
     sha TEXT NOT NULL,
     connection_id INT NOT NULL REFERENCES app.repo_connections(id) ON DELETE CASCADE,
@@ -117,6 +124,13 @@ interface PrItem {
   branch: string;
   url: string;
   updatedAt: string | null;
+  mergeSha: string | null;
+}
+
+/** Aggregate CI status for one commit: 'none' = no pipeline triggered (yet). */
+interface PipelineStatus {
+  state: 'none' | 'running' | 'success' | 'failed';
+  url: string | null;
 }
 
 interface Provider {
@@ -124,19 +138,30 @@ interface Provider {
   validate(url: string, token: string): Promise<RepoInfo>;
   commits(conn: Connection, sinceIso: string | null): Promise<CommitItem[]>;
   prs(conn: Connection): Promise<PrItem[]>;
+  merge(conn: Connection, number: number): Promise<{ sha: string | null }>;
+  pipeline(conn: Connection, sha: string): Promise<PipelineStatus>;
 }
 
-async function jsonFetch(url: string, headers: Record<string, string>): Promise<unknown> {
-  const resp = await fetch(url, { headers, signal: AbortSignal.timeout(20_000) });
+async function jsonFetch(url: string, headers: Record<string, string>, init?: { method?: string; body?: unknown }): Promise<unknown> {
+  const resp = await fetch(url, {
+    method: init?.method ?? 'GET',
+    headers: init?.body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' },
+    body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+    signal: AbortSignal.timeout(20_000),
+  });
   if (!resp.ok) {
+    const body = (await resp.json().catch(() => null)) as { message?: string } | null;
+    // Provider messages ("Pull Request is not mergeable", …) beat generic text.
+    const msg = body?.message && body.message !== 'Not Found' ? body.message : null;
     const detail =
       resp.status === 401 || resp.status === 403
-        ? 'token rejected — check the token and its scopes'
+        ? (msg ?? 'token rejected — check the token and its scopes')
         : resp.status === 404
-          ? 'repository not found — check the URL (and that the token can see it)'
-          : `provider returned ${resp.status}`;
+          ? (msg ?? 'repository not found — check the URL (and that the token can see it)')
+          : (msg ?? `provider returned ${resp.status}`);
     throw new Error(detail);
   }
+  if (resp.status === 204) return null;
   return resp.json();
 }
 
@@ -193,6 +218,7 @@ const github: Provider = {
       title: string;
       state: string;
       merged_at: string | null;
+      merge_commit_sha: string | null;
       updated_at: string;
       html_url: string;
       user?: { login?: string };
@@ -206,7 +232,39 @@ const github: Provider = {
       branch: p.head?.ref ?? '',
       url: p.html_url,
       updatedAt: p.updated_at ?? null,
+      // For unmerged PRs merge_commit_sha is a test-merge ref — only trust it once merged.
+      mergeSha: p.merged_at ? (p.merge_commit_sha ?? null) : null,
     }));
+  },
+  async merge(conn, number) {
+    const url = `https://api.github.com/repos/${githubPath(conn)}/pulls/${number}/merge`;
+    const attempt = (method?: string) =>
+      jsonFetch(url, githubHeaders(conn.token), { method: 'PUT', body: method ? { merge_method: method } : {} }) as Promise<{
+        sha?: string;
+        merged?: boolean;
+      }>;
+    let result: { sha?: string; merged?: boolean };
+    try {
+      result = await attempt();
+    } catch (err) {
+      // Repo may forbid plain merge commits (squash-only settings).
+      if (/not allowed/i.test((err as Error).message)) result = await attempt('squash');
+      else throw err;
+    }
+    if (!result?.merged) throw new Error('GitHub did not confirm the merge');
+    return { sha: result.sha ?? null };
+  },
+  async pipeline(conn, sha) {
+    const data = (await jsonFetch(
+      `https://api.github.com/repos/${githubPath(conn)}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=20`,
+      githubHeaders(conn.token),
+    )) as { workflow_runs?: { status: string; conclusion: string | null; html_url?: string }[] };
+    const runs = data.workflow_runs ?? [];
+    if (runs.length === 0) return { state: 'none', url: null };
+    const url = runs[0].html_url ?? null;
+    if (runs.some((r) => r.status !== 'completed')) return { state: 'running', url };
+    const bad = runs.find((r) => !['success', 'skipped', 'neutral'].includes(r.conclusion ?? ''));
+    return bad ? { state: 'failed', url: bad.html_url ?? url } : { state: 'success', url };
   },
 };
 
@@ -230,6 +288,11 @@ function adoParts(url: string): { org: string; project: string; repo: string } {
 function adoApi(url: string): string {
   const { org, project, repo } = adoParts(url);
   return `https://dev.azure.com/${org}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(repo)}`;
+}
+
+function adoProjectApi(url: string): string {
+  const { org, project } = adoParts(url);
+  return `https://dev.azure.com/${org}/${encodeURIComponent(project)}/_apis`;
 }
 
 const ado: Provider = {
@@ -272,6 +335,7 @@ const ado: Provider = {
         createdBy?: { displayName?: string };
         closedDate?: string;
         creationDate?: string;
+        lastMergeCommit?: { commitId?: string };
       }[];
     };
     return (data.value ?? []).map((p) => ({
@@ -282,7 +346,40 @@ const ado: Provider = {
       branch: (p.sourceRefName ?? '').replace(/^refs\/heads\//, ''),
       url: `${conn.repo_url}/pullrequest/${p.pullRequestId}`,
       updatedAt: p.closedDate ?? p.creationDate ?? null,
+      mergeSha: p.status === 'completed' ? (p.lastMergeCommit?.commitId ?? null) : null,
     }));
+  },
+  async merge(conn, number) {
+    const base = adoApi(conn.repo_url);
+    const pr = (await jsonFetch(`${base}/pullrequests/${number}?api-version=7.1`, adoHeaders(conn.token))) as {
+      lastMergeSourceCommit?: { commitId?: string };
+    };
+    if (!pr.lastMergeSourceCommit?.commitId) throw new Error('could not resolve the PR head commit');
+    const done = (await jsonFetch(`${base}/pullrequests/${number}?api-version=7.1`, adoHeaders(conn.token), {
+      method: 'PATCH',
+      body: {
+        status: 'completed',
+        lastMergeSourceCommit: pr.lastMergeSourceCommit,
+        completionOptions: { deleteSourceBranch: false },
+      },
+    })) as { status?: string; mergeStatus?: string; lastMergeCommit?: { commitId?: string } };
+    // ADO completes merges asynchronously; 'completed' or a queued merge both count.
+    if (done.status !== 'completed' && done.mergeStatus !== 'queued') {
+      throw new Error(`Azure DevOps did not complete the merge (status: ${done.status ?? 'unknown'})`);
+    }
+    return { sha: done.lastMergeCommit?.commitId ?? null };
+  },
+  async pipeline(conn, sha) {
+    const data = (await jsonFetch(
+      `${adoProjectApi(conn.repo_url)}/build/builds?$top=50&queryOrder=queueTimeDescending&api-version=7.1`,
+      adoHeaders(conn.token),
+    )) as { value?: { sourceVersion?: string; status?: string; result?: string; _links?: { web?: { href?: string } } }[] };
+    const builds = (data.value ?? []).filter((b) => b.sourceVersion === sha);
+    if (builds.length === 0) return { state: 'none', url: null };
+    const url = builds[0]._links?.web?.href ?? null;
+    if (builds.some((b) => b.status !== 'completed')) return { state: 'running', url };
+    const bad = builds.find((b) => b.result !== 'succeeded' && b.result !== 'partiallySucceeded');
+    return bad ? { state: 'failed', url: bad._links?.web?.href ?? url } : { state: 'success', url };
   },
 };
 
@@ -348,17 +445,19 @@ async function syncConnection(q: Query, rawConn: Connection): Promise<{ commits:
       await q('SELECT state FROM app.repo_prs WHERE connection_id = $1 AND number = $2', [conn.id, p.number])
     ).rows[0];
     await q(
-      `INSERT INTO app.repo_prs (connection_id, number, title, author, state, branch, url, ticket_key, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO app.repo_prs (connection_id, number, title, author, state, branch, url, ticket_key, updated_at, merge_sha)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (connection_id, number)
-       DO UPDATE SET title = $3, author = $4, state = $5, branch = $6, url = $7, ticket_key = $8, updated_at = $9`,
-      [conn.id, p.number, p.title.slice(0, 500), p.author, p.state, p.branch, p.url, ticketKey, p.updatedAt],
+       DO UPDATE SET title = $3, author = $4, state = $5, branch = $6, url = $7, ticket_key = $8, updated_at = $9,
+                     merge_sha = COALESCE(EXCLUDED.merge_sha, app.repo_prs.merge_sha)`,
+      [conn.id, p.number, p.title.slice(0, 500), p.author, p.state, p.branch, p.url, ticketKey, p.updatedAt, p.mergeSha],
     );
     const prevState = prev ? String(prev.state) : null;
     if (prevState === p.state) continue;
     changedPrs++;
 
-    // Automation: linked PR opened → ticket to Review; linked PR merged → Done.
+    // Automation: linked PR opened → ticket to Review; linked PR merged →
+    // deploy watch (Done comes once the pipeline succeeds, see checkDeployments).
     if (!ticketKey) continue;
     const status = ticketStatus.get(ticketKey);
     if (p.state === 'open' && (status === 'backlog' || status === 'progress')) {
@@ -370,18 +469,133 @@ async function syncConnection(q: Query, rawConn: Connection): Promise<{ commits:
         [conn.engagement_id, `PR #${p.number} opened for ${ticketKey} — moved to Review.`, conn.repo_name],
       );
     } else if (p.state === 'merged' && status && status !== 'done' && status !== 'dismissed') {
-      await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'done']);
-      ticketStatus.set(ticketKey, 'done');
-      await q(
-        `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
-         VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
-        [conn.engagement_id, `PR #${p.number} merged — ${ticketKey} moved to Done.`, conn.repo_name],
-      );
+      if (prev) {
+        // Live merge transition: hold in Review and watch the deploy pipeline.
+        await q(
+          `UPDATE app.repo_prs SET deploy_state = 'pending', deploy_started_at = NOW()
+           WHERE connection_id = $1 AND number = $2 AND deploy_state IS NULL`,
+          [conn.id, p.number],
+        );
+        if (status === 'backlog' || status === 'progress') {
+          await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'review']);
+          ticketStatus.set(ticketKey, 'review');
+        }
+        await q(
+          `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
+           VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
+          [conn.engagement_id, `PR #${p.number} merged — ${ticketKey} holds in Review while the deploy pipeline runs.`, conn.repo_name],
+        );
+      } else {
+        // First sight of an already-merged PR (initial sync of a connection):
+        // history, not a live event — keep the old straight-to-Done behavior.
+        await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'done']);
+        ticketStatus.set(ticketKey, 'done');
+        await q(
+          `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
+           VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
+          [conn.engagement_id, `PR #${p.number} merged — ${ticketKey} moved to Done.`, conn.repo_name],
+        );
+      }
     }
   }
 
   await q(`UPDATE app.repo_connections SET status = 'connected', last_error = NULL, last_sync_at = NOW() WHERE id = $1`, [conn.id]);
+  await checkDeployments(q, conn);
   return { commits: newCommits, prs: changedPrs };
+}
+
+// ---------- deployment pipeline tracking ----------
+
+/** If no CI run appears for the merge commit within this window, assume the repo has no pipeline. */
+const NO_PIPELINE_GRACE_MS = 5 * 60_000;
+
+/**
+ * Advance tracked deployments: for every merged PR with an in-flight deploy
+ * watch, poll the provider's CI status for the merge commit and settle the
+ * linked ticket — Done on success (or when no pipeline exists), stays in
+ * Review with a feed warning on failure.
+ */
+export async function checkDeployments(q: Query, rawConn: Connection): Promise<void> {
+  // 'failed' deploys stay watched while their ticket is still open, so a
+  // re-run pipeline that passes still completes the ticket.
+  const pending = (
+    await q(
+      `SELECT pr.number, pr.ticket_key, pr.merge_sha, pr.deploy_started_at, pr.deploy_state FROM app.repo_prs pr
+       JOIN app.tickets t ON t.key = pr.ticket_key
+       WHERE pr.connection_id = $1 AND pr.deploy_state IN ('pending','running','failed')
+         AND t.status NOT IN ('done','dismissed')`,
+      [rawConn.id],
+    )
+  ).rows;
+  if (pending.length === 0) return;
+  const conn = await withLiveToken(rawConn); // no-op for PATs; app tokens are cached
+  const impl = conn.provider === 'github' ? github : ado;
+  for (const row of pending) {
+    const number = Number(row.number);
+    const ticketKey = typeof row.ticket_key === 'string' && row.ticket_key ? row.ticket_key : null;
+    const sha = typeof row.merge_sha === 'string' && row.merge_sha ? row.merge_sha : null;
+    const prevDeploy = typeof row.deploy_state === 'string' ? row.deploy_state : '';
+    if (!sha) continue; // the next sync pass backfills the merge commit
+    try {
+      const p = await impl.pipeline(conn, sha);
+      if (p.state === 'running') {
+        await q(
+          `UPDATE app.repo_prs SET deploy_state = 'running', deploy_url = COALESCE($3, deploy_url)
+           WHERE connection_id = $1 AND number = $2`,
+          [conn.id, number, p.url],
+        );
+      } else if (p.state === 'success' || p.state === 'failed') {
+        await q(
+          `UPDATE app.repo_prs SET deploy_state = $3, deploy_url = COALESCE($4, deploy_url)
+           WHERE connection_id = $1 AND number = $2`,
+          [conn.id, number, p.state, p.url],
+        );
+        // Feed the failure once, not on every re-check of a still-failed run.
+        if (p.state !== prevDeploy) await settleDeploy(q, conn, number, ticketKey, p.state);
+      } else {
+        const raw = row.deploy_started_at;
+        const started = raw instanceof Date ? raw.getTime() : typeof raw === 'string' && raw ? new Date(raw).getTime() : 0;
+        if (Date.now() - started > NO_PIPELINE_GRACE_MS) {
+          await q(`UPDATE app.repo_prs SET deploy_state = 'none' WHERE connection_id = $1 AND number = $2`, [conn.id, number]);
+          await settleDeploy(q, conn, number, ticketKey, 'none');
+        }
+      }
+    } catch (err) {
+      console.warn(`[repos] deploy check failed for PR #${number} (${conn.repo_name}):`, (err as Error).message);
+    }
+  }
+}
+
+async function settleDeploy(
+  q: Query,
+  conn: Connection,
+  prNumber: number,
+  ticketKey: string | null,
+  outcome: 'success' | 'failed' | 'none',
+): Promise<void> {
+  if (!ticketKey) return;
+  const ticket = (await q('SELECT status FROM app.tickets WHERE key = $1', [ticketKey])).rows[0];
+  if (!ticket) return;
+  const status = String(ticket.status);
+  if (status === 'done' || status === 'dismissed') return;
+  if (outcome === 'failed') {
+    await q(
+      `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
+       VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
+      [conn.engagement_id, `⚠ Deploy pipeline failed for PR #${prNumber} — ${ticketKey} stays in Review.`, conn.repo_name],
+    );
+    return;
+  }
+  await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'done']);
+  const text =
+    outcome === 'success'
+      ? `Deploy pipeline succeeded for PR #${prNumber} — ${ticketKey} moved to Done.`
+      : `PR #${prNumber} merged (no deploy pipeline detected) — ${ticketKey} moved to Done.`;
+  await q(
+    `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
+     VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
+    [conn.engagement_id, text, conn.repo_name],
+  );
 }
 
 export async function loadConnection(q: Query, engagementId: string): Promise<Connection | null> {
@@ -505,7 +719,7 @@ export function setupRepoRoutes(
         return;
       }
       const prs = (
-        await q('SELECT number, title, author, state, branch, url, ticket_key, updated_at FROM app.repo_prs WHERE connection_id = $1 ORDER BY updated_at DESC NULLS LAST LIMIT 25', [conn.id])
+        await q('SELECT number, title, author, state, branch, url, ticket_key, deploy_state, deploy_url, updated_at FROM app.repo_prs WHERE connection_id = $1 ORDER BY updated_at DESC NULLS LAST LIMIT 25', [conn.id])
       ).rows;
       const commits = (
         await q(
@@ -576,12 +790,92 @@ export function setupRepoRoutes(
     }
   });
 
+  // Merge a linked PR straight from the ticket drawer (leads only). Kicks off
+  // the deploy watch: the ticket holds in Review until the pipeline succeeds.
+  app.post('/api/tickets/:key/prs/:number/merge', async (req, res) => {
+    try {
+      const key = req.params.key;
+      const number = Number(req.params.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        res.status(400).json({ error: 'Invalid PR number' });
+        return;
+      }
+      const ticket = (await q('SELECT engagement_id, status FROM app.tickets WHERE key = $1', [key])).rows[0];
+      if (!ticket) {
+        res.status(404).json({ error: 'Ticket not found' });
+        return;
+      }
+      const engagementId = String(ticket.engagement_id);
+      const lead = await requireLead(req, res, engagementId);
+      if (!lead) return;
+      const conn = await loadConnection(q, engagementId);
+      if (!conn) {
+        res.status(404).json({ error: 'No repository connected' });
+        return;
+      }
+      const prRow = (await q('SELECT state, ticket_key FROM app.repo_prs WHERE connection_id = $1 AND number = $2', [conn.id, number])).rows[0];
+      if (!prRow || String(prRow.ticket_key) !== key) {
+        res.status(404).json({ error: 'That PR is not linked to this ticket' });
+        return;
+      }
+      if (String(prRow.state) !== 'open') {
+        res.status(409).json({ error: 'PR is not open' });
+        return;
+      }
+      const live = await withLiveToken(conn);
+      const impl = conn.provider === 'github' ? github : ado;
+      const { sha } = await impl.merge(live, number);
+      await q(
+        `UPDATE app.repo_prs
+         SET state = 'merged', merge_sha = COALESCE($3, merge_sha), deploy_state = 'pending', deploy_started_at = NOW(), updated_at = NOW()
+         WHERE connection_id = $1 AND number = $2`,
+        [conn.id, number, sha],
+      );
+      if (['backlog', 'progress'].includes(String(ticket.status))) {
+        await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+      }
+      await q(
+        `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
+         VALUES ($1, 'YOU', $2, 'JUST NOW', $3, false)`,
+        [engagementId, `Merged PR #${number} for ${key} — holding in Review until the deploy pipeline succeeds.`, conn.repo_name],
+      );
+      // Immediate first check so fast pipelines register without waiting for the poller.
+      await checkDeployments(q, conn).catch(() => {});
+      const updated = (
+        await q(
+          'SELECT number, title, author, state, branch, url, ticket_key, deploy_state, deploy_url FROM app.repo_prs WHERE connection_id = $1 AND number = $2',
+          [conn.id, number],
+        )
+      ).rows[0];
+      res.json({ ok: true, pr: updated });
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.warn('PR merge failed:', msg);
+      res.status(502).json({ error: `Merge failed — ${msg}` });
+    }
+  });
+
+  // Drawer polls this while a deploy is in flight; throttle live provider checks.
+  const lastDeployPoll = new Map<number, number>();
   app.get('/api/tickets/:key/dev', async (req, res) => {
     try {
-      const prs = (
-        await q('SELECT number, title, author, state, branch, url FROM app.repo_prs WHERE ticket_key = $1 ORDER BY updated_at DESC NULLS LAST', [
+      const inflight = (
+        await q(`SELECT DISTINCT connection_id FROM app.repo_prs WHERE ticket_key = $1 AND deploy_state IN ('pending','running','failed')`, [
           req.params.key,
         ])
+      ).rows;
+      for (const r of inflight) {
+        const connId = Number(r.connection_id);
+        if (Date.now() - (lastDeployPoll.get(connId) ?? 0) < 12_000) continue;
+        lastDeployPoll.set(connId, Date.now());
+        const row = (await q('SELECT * FROM app.repo_connections WHERE id = $1', [connId])).rows[0];
+        if (row) await checkDeployments(q, toConnection(row)).catch(() => {});
+      }
+      const prs = (
+        await q(
+          'SELECT number, title, author, state, branch, url, ticket_key, deploy_state, deploy_url FROM app.repo_prs WHERE ticket_key = $1 ORDER BY updated_at DESC NULLS LAST',
+          [req.params.key],
+        )
       ).rows;
       const commits = (
         await q('SELECT sha, message, author, committed_at, url FROM app.repo_commits WHERE ticket_key = $1 ORDER BY committed_at DESC NULLS LAST LIMIT 15', [

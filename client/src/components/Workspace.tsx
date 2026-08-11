@@ -204,6 +204,14 @@ export function Workspace({
         {isDone && (
           <span style={{ ...mono(500, 9), color: 'var(--ok)', border: '1px solid var(--ok)', borderRadius: 2, padding: '1px 4px' }}>✓ DONE</span>
         )}
+        {!isDone && (t.deployState === 'pending' || t.deployState === 'running') && (
+          <span style={{ ...mono(500, 9), color: 'var(--acc)', border: '1px solid var(--acc)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
+            ◌ DEPLOYING
+          </span>
+        )}
+        {!isDone && t.deployState === 'failed' && (
+          <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ DEPLOY FAILED</span>
+        )}
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
@@ -1814,7 +1822,8 @@ function RepoCard({
         <div style={{ padding: '14px 16px' }}>
           <div style={{ fontSize: 12.5, color: 'var(--tx2)', marginBottom: 10, lineHeight: 1.5 }}>
             Connect the delivery repo to link commits and PRs to tickets by key (e.g. <span className="mono">ABC-104</span> in a branch or PR
-            title). Opening a linked PR moves its ticket to Review; merging moves it to Done.
+            title). Opening a linked PR moves its ticket to Review; merging holds it in Review while the deploy pipeline runs, then Done
+            once the pipeline succeeds.
           </div>
           {Array.isArray(appRepos) && appRepos.length > 0 && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>

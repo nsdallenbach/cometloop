@@ -4,6 +4,7 @@ import type {
   AgentTaskState,
   ContextFile,
   ContextSource,
+  DeployState,
   Engagement,
   EngagementDetail,
   FeedItem,
@@ -82,6 +83,8 @@ function mapTicket(r: Row): Ticket {
     description: s(r.description),
     ac: j(r.ac, []),
     blocked: b(r.blocked),
+    deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
+    deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
   };
 }
 
@@ -354,6 +357,11 @@ export const api = {
     return { prs: d.prs.map(mapRepoPr), commits: d.commits.map(mapRepoCommit) };
   },
 
+  async mergePr(ticketKey: string, number: number): Promise<RepoPr> {
+    const d = await http<{ pr: Row }>(`/api/tickets/${ticketKey}/prs/${number}/merge`, { method: 'POST', ...json({}) });
+    return mapRepoPr(d.pr);
+  },
+
   // ---- agent work queue ----
 
   async queueTicket(key: string, instructions?: string): Promise<AgentTask> {
@@ -416,6 +424,8 @@ function mapRepoPr(r: Row): RepoPr {
     branch: s(r.branch),
     url: s(r.url),
     ticketKey: r.ticket_key == null ? null : s(r.ticket_key),
+    deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
+    deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
   };
 }
 

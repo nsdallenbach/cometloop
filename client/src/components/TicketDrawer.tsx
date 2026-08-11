@@ -14,6 +14,22 @@ const AGENT_STATE_LABEL: Record<AgentTask['state'], string> = {
 
 const PR_STATE_COLOR: Record<string, string> = { open: 'var(--warn)', merged: 'var(--ok)', closed: 'var(--tx3)' };
 
+const DEPLOY_BADGE: Record<string, { label: string; color: string; pulse?: boolean }> = {
+  pending: { label: '◌ DEPLOY QUEUED', color: 'var(--warn)', pulse: true },
+  running: { label: '◌ DEPLOYING…', color: 'var(--acc)', pulse: true },
+  success: { label: '✓ DEPLOYED', color: 'var(--ok)' },
+  failed: { label: '✕ DEPLOY FAILED', color: 'var(--bad)' },
+  none: { label: '— NO PIPELINE', color: 'var(--tx3)' },
+};
+
+const DEPLOY_NOTE: Record<string, string> = {
+  pending: 'Waiting for the pipeline to pick up the merge — the ticket moves to Done when it succeeds.',
+  running: 'Pipeline running — the ticket moves to Done when it succeeds.',
+  success: 'Pipeline succeeded — the ticket moved to Done.',
+  failed: 'Pipeline failed — the ticket stays in Review until a passing run.',
+  none: 'No deploy pipeline detected — the ticket moved straight to Done.',
+};
+
 export function TicketDrawer({
   theme,
   ticket,
@@ -84,17 +100,45 @@ export function TicketDrawer({
 
   useEffect(loadComments, [loadComments]);
 
-  useEffect(() => {
+  const loadDev = useCallback(() => {
     void api
       .ticketDev(ticket.key)
       .then((data) => setDev({ key: ticket.key, data }))
       .catch(() => setDev({ key: ticket.key, data: null }));
   }, [ticket.key]);
 
+  useEffect(loadDev, [loadDev]);
+
   // Stale results from a previously opened ticket render as "loading".
   const comments = loaded && loaded.key === ticket.key && !loaded.error ? loaded.list : null;
   const commentsError = loaded !== null && loaded.key === ticket.key && loaded.error;
   const devData = dev && dev.key === ticket.key ? dev.data : null;
+
+  // Live dev activity: while a PR is open or its deploy pipeline is in flight,
+  // poll so merges and pipeline progress show up without reopening the drawer.
+  // ('failed' stays watched too — a re-run pipeline can still turn it green.)
+  const watchDev =
+    devData?.prs.some((p) => p.state === 'open' || ['pending', 'running', 'failed'].includes(p.deployState ?? '')) ?? false;
+  useEffect(() => {
+    if (!watchDev) return;
+    const iv = setInterval(loadDev, 8000);
+    return () => clearInterval(iv);
+  }, [watchDev, loadDev]);
+
+  const [mergeArm, setMergeArm] = useState<number | null>(null);
+  const [merging, setMerging] = useState<number | null>(null);
+  const mergePr = (number: number) => {
+    setMergeArm(null);
+    setMerging(number);
+    api
+      .mergePr(ticket.key, number)
+      .then(() => {
+        toast(`PR #${number} merged — watching the deploy pipeline`);
+        loadDev();
+      })
+      .catch((e: Error) => toast(`Merge failed — ${e.message}`))
+      .finally(() => setMerging(null));
+  };
 
   const postComment = () => {
     const body = draft.trim();
@@ -338,24 +382,89 @@ export function TicketDrawer({
             <>
               <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>DEVELOPMENT</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
-                {devData.prs.map((pr) => (
-                  <a
-                    key={`pr${pr.number}`}
-                    href={pr.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="hv-agent"
-                    style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px', textDecoration: 'none', color: 'inherit' }}
-                  >
-                    <span style={{ ...mono(500, 9), color: PR_STATE_COLOR[pr.state], border: `1px solid ${PR_STATE_COLOR[pr.state]}`, borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
-                      PR {pr.state.toUpperCase()}
-                    </span>
-                    <span style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      #{pr.number} {pr.title}
-                    </span>
-                    {pr.branch && <span style={{ ...mono(400, 9), color: 'var(--tx3)', maxWidth: 110, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pr.branch}</span>}
-                  </a>
-                ))}
+                {devData.prs.map((pr) => {
+                  const dep = pr.deployState ? DEPLOY_BADGE[pr.deployState] : null;
+                  return (
+                  <div key={`pr${pr.number}`} style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                    <a
+                      href={pr.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="hv-agent"
+                      onMouseLeave={() => setMergeArm((cur) => (cur === pr.number ? null : cur))}
+                      style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: dep ? '3px 3px 0 0' : 3, padding: '8px 11px', textDecoration: 'none', color: 'inherit' }}
+                    >
+                      <span style={{ ...mono(500, 9), color: PR_STATE_COLOR[pr.state], border: `1px solid ${PR_STATE_COLOR[pr.state]}`, borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
+                        PR {pr.state.toUpperCase()}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        #{pr.number} {pr.title}
+                      </span>
+                      {pr.branch && <span style={{ ...mono(400, 9), color: 'var(--tx3)', maxWidth: 110, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pr.branch}</span>}
+                      {lead && pr.state === 'open' && (
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (merging !== null) return;
+                            if (mergeArm === pr.number) mergePr(pr.number);
+                            else setMergeArm(pr.number);
+                          }}
+                          title={mergeArm === pr.number ? 'Click again to merge' : `Merge PR #${pr.number}`}
+                          style={{
+                            flex: 'none',
+                            border: `1px solid ${mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)'}`,
+                            background: 'none',
+                            color: mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)',
+                            borderRadius: 2,
+                            padding: '2px 8px',
+                            ...mono(500, 9),
+                            letterSpacing: '.06em',
+                            cursor: merging !== null ? 'default' : 'pointer',
+                            opacity: merging !== null && merging !== pr.number ? 0.5 : 1,
+                          }}
+                        >
+                          {merging === pr.number ? 'MERGING…' : mergeArm === pr.number ? 'CONFIRM MERGE?' : 'MERGE'}
+                        </button>
+                      )}
+                    </a>
+                    {dep && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 9,
+                          border: '1px solid var(--line)',
+                          borderTop: 'none',
+                          borderRadius: '0 0 3px 3px',
+                          padding: '6px 11px',
+                          background: 'var(--bg)',
+                        }}
+                      >
+                        <span
+                          style={{
+                            ...mono(500, 9),
+                            color: dep.color,
+                            border: `1px solid ${dep.color}`,
+                            borderRadius: 2,
+                            padding: '1px 5px',
+                            letterSpacing: '.06em',
+                            animation: dep.pulse ? 'eec-pulse 2.4s infinite' : 'none',
+                          }}
+                        >
+                          {dep.label}
+                        </span>
+                        <span style={{ fontSize: 11, color: 'var(--tx3)', flex: 1, minWidth: 0 }}>{DEPLOY_NOTE[pr.deployState ?? '']}</span>
+                        {pr.deployUrl && (
+                          <a href={pr.deployUrl} target="_blank" rel="noreferrer" style={{ ...mono(400, 9), color: 'var(--acc)', flex: 'none' }}>
+                            VIEW RUN ↗
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  );
+                })}
                 {devData.commits.map((c) => (
                   <a
                     key={c.sha}
