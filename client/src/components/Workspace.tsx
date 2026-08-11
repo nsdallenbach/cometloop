@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { LayoutGroup, motion, useMotionValue } from 'motion/react';
+import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtD, initials, mono, pct, todayIso } from '../util';
+import { Analytics } from './Analytics';
 import type { Tab } from '../App';
 
 const COLS: [TicketStatus, string][] = [
@@ -84,6 +85,17 @@ export function Workspace({
   const dragOverColRef = useRef<TicketStatus | 'agent' | null>(null);
   const hoverQcardRef = useRef<number | null>(null);
   const suppressClick = useRef(false);
+  // A card the user just dropped skips the layout spring and slots straight
+  // into its new lane — without this it re-appears in the source slot and
+  // visibly springs across. Springs stay for automation-driven moves. The
+  // window covers async drops (agent deploy/complete land after an API round
+  // trip, not in the drop's render).
+  const justDropped = useRef<{ key: string; until: number } | null>(null);
+  const markDropped = (key: string) => (justDropped.current = { key, until: Date.now() + 700 });
+  const isJustDropped = (key: string) => {
+    const j = justDropped.current;
+    return j !== null && j.key === key && Date.now() < j.until;
+  };
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
@@ -118,6 +130,7 @@ export function Workspace({
   const tabs: { key: Tab; label: string }[] = [
     { key: 'board', label: 'Board' },
     { key: 'roadmap', label: 'Roadmap' },
+    { key: 'analytics', label: 'Analytics' },
     { key: 'sources', label: 'Sources' },
     { key: 'team', label: 'Team' },
     { key: 'feed', label: 'Status Feed' },
@@ -183,7 +196,7 @@ export function Workspace({
         className: 'hv-border',
       })}
       style={{
-        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : agentDone ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
+        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : t.status === 'review' ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
         background: 'var(--bg2)',
         borderRadius: 3,
         padding: '9px 11px',
@@ -264,7 +277,9 @@ export function Workspace({
       layoutId={`card-${t.key}`}
       layout
       initial={false}
-      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+      // Cards the user just dropped slot straight into place; springs are for
+      // moves the user didn't make (agent claims, poll-driven updates).
+      transition={isJustDropped(t.key) ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
       // While dragging, the in-lane card dims to a placeholder; the floating
       // clone under the cursor is the thing that moves.
       style={{ borderRadius: 3, opacity: pDrag?.kind === 'ticket' && pDrag.key === t.key ? 0.3 : 1 }}
@@ -415,6 +430,7 @@ export function Workspace({
   };
 
   const dropCard = (payload: DragPayload, lane: TicketStatus | 'agent' | null, overQcard: number | null) => {
+    markDropped(payload.key);
     if (payload.kind === 'task') {
       if (!lead) return;
       // Dropping a queued card on another queued card slots it above.
@@ -562,7 +578,7 @@ export function Workspace({
       layoutId={`card-${at.ticketKey}`}
       layout
       initial={false}
-      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+      transition={isJustDropped(at.ticketKey) ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
       style={{ borderRadius: 3, opacity: pDrag?.kind === 'task' && pDrag.taskId === at.id ? 0.3 : 1 }}
     >
       {agentCardInner(at, qPos)}
@@ -643,9 +659,9 @@ export function Workspace({
               className="hv-tx"
               onClick={() => setTab(t.key)}
               style={{
+                position: 'relative',
                 background: 'none',
                 border: 'none',
-                borderBottom: `2px solid ${tab === t.key ? 'var(--acc)' : 'transparent'}`,
                 color: tab === t.key ? 'var(--tx)' : 'var(--tx2)',
                 padding: '8px 13px',
                 fontSize: 12.5,
@@ -658,6 +674,13 @@ export function Workspace({
                 <span style={{ marginLeft: 6, ...mono(500, 10), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 5px' }}>
                   ◆ {proposedTickets.length}
                 </span>
+              )}
+              {tab === t.key && (
+                <motion.span
+                  layoutId="eec-tab-underline"
+                  transition={{ type: 'spring', stiffness: 550, damping: 42 }}
+                  style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 2, background: 'var(--acc)' }}
+                />
               )}
             </button>
           ))}
@@ -682,7 +705,7 @@ export function Workspace({
 
       {/* ===== BOARD ===== */}
       {detail && tab === 'board' && (
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <div className="tab-pane" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 22px' }}>
             <div style={{ display: 'flex', border: '1px solid var(--line2)', borderRadius: 3, overflow: 'hidden' }}>
               <button
@@ -829,7 +852,9 @@ export function Workspace({
                         flexDirection: 'column',
                         minHeight: 0,
                         background: 'var(--bg)',
-                        border: `1px solid ${dragOverCol === k ? 'var(--acc)' : 'var(--line)'}`,
+                        // Drag-over highlight matches the lane's card accent:
+                        // Review yellow, Done green, Backlog blue.
+                        border: `1px solid ${dragOverCol === k ? (k === 'review' ? 'var(--warn)' : k === 'done' ? 'var(--ok)' : 'var(--acc)') : 'var(--line)'}`,
                         borderRadius: 4,
                       }}
                     >
@@ -951,7 +976,7 @@ export function Workspace({
 
       {/* ===== ROADMAP ===== */}
       {detail && tab === 'roadmap' && (
-        <div style={{ flex: 1, overflow: 'auto', padding: 22 }}>
+        <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: 22 }}>
           <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', padding: '20px 24px 26px' }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 20 }}>
               <span style={{ fontSize: 14, fontWeight: 600 }}>Roadmap</span>
@@ -1130,8 +1155,11 @@ export function Workspace({
       )}
 
       {/* ===== SOURCES ===== */}
+      {/* ===== ANALYTICS ===== */}
+      {detail && tab === 'analytics' && <Analytics eng={eng} detail={detail} />}
+
       {detail && tab === 'sources' && (
-        <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
+        <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
           <RepoCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
           <ContextFilesCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
           <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid var(--line)', background: 'var(--bg2)' }}>
@@ -1170,7 +1198,7 @@ export function Workspace({
 
       {/* ===== TEAM ===== */}
       {detail && tab === 'team' && (
-        <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px', display: 'grid', gridTemplateColumns: '1fr 360px', gap: 14, alignItems: 'start' }}>
+        <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px', display: 'grid', gridTemplateColumns: '1fr 360px', gap: 14, alignItems: 'start' }}>
           <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', overflow: 'hidden' }}>
             <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line)', ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
               SKILL MATRIX × CURRENT LOAD
@@ -1215,7 +1243,7 @@ export function Workspace({
                       <td style={tdBase}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <div style={{ flex: 1, height: 5, background: 'var(--bg3)', borderRadius: 2, overflow: 'hidden' }}>
-                            <div style={{ height: '100%', width: `${p.load}%`, background: loadColor }} />
+                            <div className="bar-anim" style={{ height: '100%', width: `${p.load}%`, background: loadColor }} />
                           </div>
                           <span style={{ ...mono(400, 10), color: loadColor }}>{p.load}%</span>
                         </div>
@@ -1297,7 +1325,7 @@ export function Workspace({
 
       {/* ===== STATUS FEED ===== */}
       {detail && tab === 'feed' && (
-        <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px', display: 'grid', gridTemplateColumns: '1fr 400px', gap: 14, alignItems: 'start' }}>
+        <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px', display: 'grid', gridTemplateColumns: '1fr 400px', gap: 14, alignItems: 'start' }}>
           <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', overflow: 'hidden' }}>
             <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line)', ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
               ACTIVITY — EVERY AGENT ACTION IS ATTRIBUTABLE AND REVERSIBLE
@@ -1490,7 +1518,10 @@ export function Workspace({
           return (
             <>
               <div onClick={() => setAssignPop(null)} style={{ position: 'fixed', inset: 0, zIndex: 44 }} />
-              <div
+              <motion.div
+                initial={{ opacity: 0, transform: 'scale(0.96) translateY(-4px)' }}
+                animate={{ opacity: 1, transform: 'scale(1) translateY(0px)' }}
+                transition={{ duration: 0.14, ease: 'easeOut' }}
                 style={{
                   position: 'fixed',
                   left: Math.min(assignPop.x, window.innerWidth - 200),
@@ -1498,13 +1529,13 @@ export function Workspace({
                   width: 184,
                   maxHeight: 244,
                   overflowY: 'auto',
+                  transformOrigin: 'top left',
                   background: 'var(--bg2)',
                   border: '1px solid var(--line2)',
                   borderRadius: 4,
                   zIndex: 45,
                   boxShadow: '0 8px 30px rgba(0,0,0,.4)',
                   padding: 4,
-                  animation: 'eec-fadeUp .12s ease',
                 }}
               >
                 <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', padding: '5px 8px 4px' }}>ASSIGN {t.key}</div>
@@ -1554,23 +1585,26 @@ export function Workspace({
                     {name === t.assignee && <span style={{ color: 'var(--ok)', fontSize: 11 }}>✓</span>}
                   </button>
                 ))}
-              </div>
+              </motion.div>
             </>
           );
         })()}
 
-      {newTicket && (
-        <NewTicketModal
-          engId={eng.id}
-          toast={toast}
-          onClose={() => setNewTicket(false)}
-          onCreated={(t) => {
-            setNewTicket(false);
-            setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
-            toast(`${t.key} created`);
-          }}
-        />
-      )}
+      <AnimatePresence>
+        {newTicket && (
+          <NewTicketModal
+            key="new-ticket-modal"
+            engId={eng.id}
+            toast={toast}
+            onClose={() => setNewTicket(false)}
+            onCreated={(t) => {
+              setNewTicket(false);
+              setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
+              toast(`${t.key} created`);
+            }}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Floating drag clone: rides the cursor with a slight lift + tilt (Jira-style).
           pointer-events: none so elementFromPoint hit-tests the lanes beneath it. */}
@@ -1634,8 +1668,19 @@ function NewTicketModal({
 
   return (
     <>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 40 }} />
-      <div
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.15, ease: 'easeOut' }}
+        onClick={onClose}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 40 }}
+      />
+      <motion.div
+        initial={{ opacity: 0, transform: 'translate(-50%,-50%) scale(0.97) translateY(6px)' }}
+        animate={{ opacity: 1, transform: 'translate(-50%,-50%) scale(1) translateY(0px)' }}
+        exit={{ opacity: 0, transform: 'translate(-50%,-50%) scale(0.98) translateY(4px)' }}
+        transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') onClose();
           else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
@@ -1644,7 +1689,6 @@ function NewTicketModal({
           position: 'fixed',
           top: '50%',
           left: '50%',
-          transform: 'translate(-50%,-50%)',
           width: 460,
           maxWidth: 'calc(100vw - 40px)',
           background: 'var(--bg2)',
@@ -1652,7 +1696,6 @@ function NewTicketModal({
           borderRadius: 4,
           zIndex: 41,
           boxShadow: '0 12px 40px rgba(0,0,0,.45)',
-          animation: 'eec-fadeUp .15s ease',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', padding: '13px 18px', borderBottom: '1px solid var(--line)' }}>
@@ -1714,7 +1757,7 @@ function NewTicketModal({
             {creating ? 'Creating…' : 'Create ticket'}
           </button>
         </div>
-      </div>
+      </motion.div>
     </>
   );
 }

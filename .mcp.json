@@ -3,6 +3,14 @@
     "delivery-console": {
       "command": "node",
       "args": ["mcp/server.mjs"]
+    },
+    "motion": {
+      "type": "http",
+      "url": "https://mcp.motion.dev"
+    },
+    "motion-plus": {
+      "type": "http",
+      "url": "https://mcp.motion.dev/plus"
     }
   }
 }

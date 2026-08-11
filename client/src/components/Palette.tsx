@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { motion } from 'motion/react';
 import { mono } from '../util';
 
 export interface PaletteItem {
@@ -30,15 +31,23 @@ export function Palette({
 
   return (
     <>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 50 }} />
-      <div
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.12, ease: 'easeOut' }}
+        onClick={onClose}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 50 }}
+      />
+      <motion.div
         data-theme={theme}
         className="eec"
+        initial={{ opacity: 0, transform: 'translateX(-50%) scale(0.98) translateY(-6px)' }}
+        animate={{ opacity: 1, transform: 'translateX(-50%) scale(1) translateY(0px)' }}
+        transition={{ type: 'spring', visualDuration: 0.22, bounce: 0.1 }}
         style={{
           position: 'fixed',
           top: 110,
           left: '50%',
-          transform: 'translateX(-50%)',
           width: 560,
           background: 'var(--bg2)',
           border: '1px solid var(--line2)',
@@ -46,7 +55,6 @@ export function Palette({
           zIndex: 51,
           overflow: 'hidden',
           boxShadow: '0 24px 60px rgba(0,0,0,.5)',
-          animation: 'eec-fadeUp .15s ease',
           color: 'var(--tx)',
           fontFamily: "'DM Sans', sans-serif",
         }}
@@ -122,7 +130,7 @@ export function Palette({
             </div>
           ))}
         </div>
-      </div>
+      </motion.div>
     </>
   );
 }
