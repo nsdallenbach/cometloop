@@ -602,6 +602,41 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
     });
 
+    // Cross-project reads backing the /tickets and /tickets/:key routes: the
+    // client resolves a deep-linked ticket to its engagement via these.
+    app.get('/api/tickets', async (_req, res) => {
+      try {
+        const { rows } = await q(
+          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
+           JOIN app.engagements e ON e.id = t.engagement_id
+           ORDER BY e.created_at, e.id, t.seq`,
+        );
+        res.json(rows);
+      } catch (err) {
+        console.error('list tickets failed:', err);
+        res.status(500).json({ error: 'Failed to load tickets' });
+      }
+    });
+
+    app.get('/api/tickets/:key', async (req, res) => {
+      try {
+        const { rows } = await q(
+          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
+           JOIN app.engagements e ON e.id = t.engagement_id
+           WHERE t.key = $1`,
+          [req.params.key],
+        );
+        if (rows.length === 0) {
+          res.status(404).json({ error: 'Ticket not found' });
+          return;
+        }
+        res.json(rows[0]);
+      } catch (err) {
+        console.error('ticket lookup failed:', err);
+        res.status(500).json({ error: 'Failed to load ticket' });
+      }
+    });
+
     // ---- ticket mutations ----
     app.patch('/api/tickets/:key', async (req, res) => {
       const parsed = PatchTicketBody.safeParse(req.body);

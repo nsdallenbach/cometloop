@@ -65,6 +65,12 @@ export interface Ticket {
   deployUrl: string | null;
 }
 
+/** Ticket joined with its engagement, for cross-project views (/tickets). */
+export interface TicketWithEngagement extends Ticket {
+  client: string;
+  engagementName: string;
+}
+
 export interface ContextSource {
   id: number;
   name: string;
