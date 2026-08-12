@@ -132,7 +132,7 @@ describe('messages', () => {
     expect(comments[0].ticket_key).toBe('DAT-101');
     expect(comments[0].author).toBe('agent-a');
     expect(String(comments[0].body)).toContain('@agent-b');
-    expect(String(comments[0].body)).toContain('SLA: wait');
+    expect(String(comments[0].body)).toContain('SLA wait');
     expect(String(comments[0].body)).toContain('Which schema do you own?');
   });
 

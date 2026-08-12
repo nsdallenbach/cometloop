@@ -76,6 +76,52 @@ function requestAuthor(req: express.Request): string {
   return v && v.trim() ? v.trim() : 'You';
 }
 
+export type AddLinkResult = { ok: true; id: number; engagementId: string; described: string } | { ok: false; status: number; error: string };
+
+/**
+ * Create a link between two tickets — the logic behind POST /links, shared
+ * with the scoping agent's link_tickets tool. `feedActor` attributes the feed
+ * item ('YOU' for the API route, 'AGENT' for the scoping agent).
+ */
+export async function addTicketLink(
+  q: Query,
+  key: string,
+  otherKey: string,
+  type: LinkInput,
+  createdBy: string,
+  feedActor = 'YOU',
+): Promise<AddLinkResult> {
+  if (otherKey === key) return { ok: false, status: 400, error: 'A ticket cannot link to itself' };
+  // IN over ANY($1): identical on Postgres, and pg-mem (tests) can bind it.
+  const rows = (await q('SELECT key, engagement_id FROM app.tickets WHERE key IN ($1, $2)', [key, otherKey])).rows;
+  const self = rows.find((r) => String(r.key) === key);
+  const other = rows.find((r) => String(r.key) === otherKey);
+  if (!self || !other) return { ok: false, status: 404, error: 'Ticket not found' };
+  if (String(self.engagement_id) !== String(other.engagement_id)) {
+    return { ok: false, status: 400, error: 'Tickets can only link within the same engagement' };
+  }
+  const { from, to, type: storedType } = normalizeLink(key, otherKey, type);
+  // `relates` is symmetric — an existing reverse row is the same link.
+  if (storedType === 'relates') {
+    const dup = (await q(`SELECT 1 FROM app.ticket_links WHERE ticket_key = $1 AND linked_key = $2 AND type = 'relates'`, [to, from])).rows;
+    if (dup.length > 0) return { ok: false, status: 409, error: 'These tickets are already linked' };
+  }
+  const inserted = await q(
+    `INSERT INTO app.ticket_links (ticket_key, linked_key, type, created_by)
+     VALUES ($1,$2,$3,$4) ON CONFLICT (ticket_key, linked_key, type) DO NOTHING RETURNING id`,
+    [from, to, storedType, createdBy],
+  );
+  if (inserted.rows.length === 0) return { ok: false, status: 409, error: 'These tickets are already linked' };
+  const described = `${key} ${LINK_VERB[type]} ${otherKey}`;
+  console.log(`[links] ${described} (stored ${from} blocks/relates ${to})`);
+  await q(
+    `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
+     VALUES ($1, $2, $3, 'JUST NOW', false)`,
+    [String(self.engagement_id), feedActor, `Linked tickets: ${described}.`],
+  );
+  return { ok: true, id: Number(inserted.rows[0].id), engagementId: String(self.engagement_id), described };
+}
+
 export function setupTicketLinkRoutes(app: express.Application, q: Query) {
   // Linked tickets + linked git branches, from :key's point of view.
   app.get('/api/tickets/:key/links', async (req, res) => {
@@ -150,50 +196,12 @@ export function setupTicketLinkRoutes(app: express.Application, q: Query) {
       return;
     }
     try {
-      const key = req.params.key;
-      const otherKey = parsed.data.key;
-      if (otherKey === key) {
-        res.status(400).json({ error: 'A ticket cannot link to itself' });
+      const result = await addTicketLink(q, req.params.key, parsed.data.key, parsed.data.type, requestAuthor(req));
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
         return;
       }
-      const rows = (await q('SELECT key, engagement_id FROM app.tickets WHERE key = ANY($1)', [[key, otherKey]])).rows;
-      const self = rows.find((r) => String(r.key) === key);
-      const other = rows.find((r) => String(r.key) === otherKey);
-      if (!self || !other) {
-        res.status(404).json({ error: 'Ticket not found' });
-        return;
-      }
-      if (String(self.engagement_id) !== String(other.engagement_id)) {
-        res.status(400).json({ error: 'Tickets can only link within the same engagement' });
-        return;
-      }
-      const { from, to, type } = normalizeLink(key, otherKey, parsed.data.type);
-      // `relates` is symmetric — an existing reverse row is the same link.
-      if (type === 'relates') {
-        const dup = (
-          await q(`SELECT 1 FROM app.ticket_links WHERE ticket_key = $1 AND linked_key = $2 AND type = 'relates'`, [to, from])
-        ).rows;
-        if (dup.length > 0) {
-          res.status(409).json({ error: 'These tickets are already linked' });
-          return;
-        }
-      }
-      const inserted = await q(
-        `INSERT INTO app.ticket_links (ticket_key, linked_key, type, created_by)
-         VALUES ($1,$2,$3,$4) ON CONFLICT (ticket_key, linked_key, type) DO NOTHING RETURNING id`,
-        [from, to, type, requestAuthor(req)],
-      );
-      if (inserted.rows.length === 0) {
-        res.status(409).json({ error: 'These tickets are already linked' });
-        return;
-      }
-      console.log(`[links] ${key} ${LINK_VERB[parsed.data.type]} ${otherKey} (stored ${from} blocks/relates ${to})`);
-      await q(
-        `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
-         VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
-        [String(self.engagement_id), `Linked tickets: ${key} ${LINK_VERB[parsed.data.type]} ${otherKey}.`],
-      );
-      res.status(201).json({ id: Number(inserted.rows[0].id) });
+      res.status(201).json({ id: result.id });
     } catch (err) {
       console.error('add ticket link failed:', err);
       res.status(500).json({ error: 'Failed to link tickets' });
