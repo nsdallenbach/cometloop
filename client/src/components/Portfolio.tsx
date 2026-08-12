@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
+import { AnimatePresence } from 'motion/react';
 import { api } from '../api';
 import type { Engagement } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, mono } from '../util';
+import { ImportProjectModal } from './ImportProject';
 
 function Chips({ label, options, value, onChange }: { label: string; options: string[]; value: string; onChange: (v: string) => void }) {
   return (
@@ -55,6 +57,7 @@ export function Portfolio({
   const [fPhase, setFPhase] = useState('All');
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const doDelete = (e: Engagement) => {
     if (deletingId) return;
@@ -90,22 +93,40 @@ export function Portfolio({
         </span>
         <div style={{ flex: 1 }} />
         {canCreate && (
-          <button
-            className="hv-bright"
-            onClick={onNew}
-            style={{
-              background: 'var(--acc)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 3,
-              padding: '7px 14px',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            New engagement
-          </button>
+          <>
+            <button
+              className="hv-border"
+              onClick={() => setImportOpen(true)}
+              style={{
+                border: '1px solid var(--line2)',
+                background: 'none',
+                color: 'var(--tx)',
+                borderRadius: 3,
+                padding: '6px 14px',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Import project
+            </button>
+            <button
+              className="hv-bright"
+              onClick={onNew}
+              style={{
+                background: 'var(--acc)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 3,
+                padding: '7px 14px',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              New engagement
+            </button>
+          </>
         )}
       </div>
       {engagements.length > 1 && (
@@ -128,13 +149,22 @@ export function Portfolio({
             {canCreate ? 'Create the first one from a SOW or a written project brief.' : 'An engagement lead or admin can create one.'}
           </div>
           {canCreate && (
-            <button
-              className="hv-bright"
-              onClick={onNew}
-              style={{ background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 3, padding: '7px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
-            >
-              New engagement
-            </button>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 10 }}>
+              <button
+                className="hv-bright"
+                onClick={onNew}
+                style={{ background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 3, padding: '7px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+              >
+                New engagement
+              </button>
+              <button
+                className="hv-border"
+                onClick={() => setImportOpen(true)}
+                style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx)', borderRadius: 3, padding: '6px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+              >
+                Import project
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -284,6 +314,9 @@ export function Portfolio({
           );
         })}
       </div>
+      <AnimatePresence>
+        {importOpen && <ImportProjectModal onClose={() => setImportOpen(false)} toast={toast} />}
+      </AnimatePresence>
     </div>
   );
 }
