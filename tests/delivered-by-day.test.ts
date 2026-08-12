@@ -30,6 +30,7 @@ function ticket(
     deployUrl: null,
     roadmapItem: null,
     branch: null,
+    runner: null,
     doneAt: null,
     waitingOn: 0,
     activePr: null,

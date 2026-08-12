@@ -92,8 +92,13 @@ export interface Ticket {
   deployUrl: string | null;
   /** Roadmap item (phase name) this ticket is linked to; null = unscheduled. */
   roadmapItem: string | null;
-  /** Git branch for the work: manual value, else the latest linked PR's branch. */
+  /** Git branch for the work: manual value, else the branch a runner announced
+   *  for in-flight work, else the latest linked PR's branch. */
   branch: string | null;
+  /** Runner id when the assignee is the runner that claimed the latest agent
+   *  task (cross-project reads only; the board derives this live from
+   *  agentTasks). Null for human assignees and unclaimed tickets. */
+  runner: string | null;
   /** When the ticket entered Done (null while in any other status). */
   doneAt: string | null;
   /** When the ticket body/description was last edited (null = never edited). */
