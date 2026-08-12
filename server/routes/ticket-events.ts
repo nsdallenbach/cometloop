@@ -77,7 +77,9 @@ export async function setTicketStatus(
     params.push(opts.onlyIfAssignee);
     conds.push(`assignee = $${params.length}`);
   }
-  let set = 'status = $2';
+  // done_at stamps on entering Done and clears on leaving it (CASE without
+  // ELSE yields NULL) — centralized here so every status path agrees.
+  let set = `status = $2, done_at = CASE WHEN $2 = 'done' THEN COALESCE(t.done_at, NOW()) END`;
   if (opts.assignee !== undefined) {
     params.push(opts.assignee);
     set += `, assignee = $${params.length}`;

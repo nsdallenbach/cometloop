@@ -104,6 +104,14 @@ export function Workspace({
     return j !== null && j.key === key && Date.now() < j.until;
   };
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Minute tick so Done cards crossing the 24h age-out threshold drop off the
+  // lane without a refresh.
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
@@ -896,9 +904,17 @@ export function Workspace({
                 {COLS.map(([k, label]) => {
                   // No In Progress lane: human-active tickets sit in Backlog
                   // until they reach Review; agent-active ones sit in the lane.
-                  const colTickets = tickets.filter(
+                  let colTickets = tickets.filter(
                     (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key),
                   );
+                  if (k === 'done') {
+                    // Done auto-hides work completed more than 24h ago (tickets
+                    // without a completion time age out too) and shows the rest
+                    // newest-first.
+                    const cutoff = now - 24 * 60 * 60 * 1000;
+                    const doneTs = (t: Ticket) => (t.doneAt ? Date.parse(t.doneAt) : NaN);
+                    colTickets = colTickets.filter((t) => doneTs(t) >= cutoff).sort((a, b) => doneTs(b) - doneTs(a));
+                  }
                   return (
                     <Fragment key={k}>
                     {k === 'review' && agentLane}
