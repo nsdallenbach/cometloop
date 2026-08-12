@@ -1678,7 +1678,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupToolCallRoutes(app, q);
     setupCoordinationRoutes(app, q);
     setupPrConflictRoutes(app, q);
-    setupEstimateRoutes(app, q);
+    setupEstimateRoutes(app, q, appkit.serving.bind(appkit), requireLead);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
     setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
