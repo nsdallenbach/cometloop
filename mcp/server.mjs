@@ -288,6 +288,78 @@ tool(
   async ({ task_id, agent }) => call('POST', `/api/agent/work/${task_id}/git-credential`, { agent }),
 );
 
+// ---- inter-agent coordination (Lakebase-backed) ----
+
+const MESSAGE_TYPES = ['status_update', 'conflict_warning', 'request_for_info', 'handoff', 'poke', 'response'];
+
+tool(
+  'post_coordination_message',
+  'Post a message on the shared inter-agent channel (Lakebase Postgres). Omit recipient to broadcast to every agent; targeted messages are mirrored as an @-tagged comment on the ticket the recipient is working, so humans can review the exchange.',
+  {
+    sender: z.string().describe('Your agent id (runner name)'),
+    type: z.enum(MESSAGE_TYPES),
+    body: z.string().min(1).describe('Human-readable message'),
+    recipient: z.string().optional().describe('Target agent id; omit to broadcast'),
+    branch: z.string().optional().describe('Branch this message is about'),
+    ticket: z.string().optional().describe('Ticket key context'),
+    sla: z.enum(['interrupt', 'wait']).optional().describe("How urgently the recipient should react: 'interrupt' = before continuing, 'wait' = before completing their ticket"),
+    data: z.record(z.string(), z.unknown()).optional().describe('Structured payload (stored as JSONB)'),
+  },
+  async (args) => call('POST', '/api/agent/coordination/messages', args),
+);
+
+tool(
+  'get_coordination_messages',
+  'Fetch new inter-agent messages since your last cursor: broadcasts plus messages addressed to you (your own excluded). Pass the returned next_since_id back on the next call.',
+  {
+    agent: z.string().describe('Your agent id'),
+    since_id: z.number().int().min(0).optional().describe('Last next_since_id you saw (0 or omit for everything)'),
+    branch: z.string().optional().describe('Only messages about this branch'),
+    limit: z.number().int().min(1).max(500).optional(),
+  },
+  async ({ agent, since_id, branch, limit }) => {
+    const qs = new URLSearchParams({ agent });
+    if (since_id) qs.set('since_id', String(since_id));
+    if (branch) qs.set('branch', branch);
+    if (limit) qs.set('limit', String(limit));
+    return call('GET', `/api/agent/coordination/messages?${qs}`);
+  },
+);
+
+tool(
+  'poke_agent',
+  "Get another agent's attention (deadlock-breaker): posts a targeted poke with an SLA and mirrors it onto their active ticket. Use sla 'interrupt' only when you are blocked on them; 'wait' means answer before they complete their ticket.",
+  {
+    sender: z.string().describe('Your agent id'),
+    recipient: z.string().describe('Agent id to poke'),
+    body: z.string().min(1).describe('What you need from them'),
+    sla: z.enum(['interrupt', 'wait']),
+    branch: z.string().optional(),
+  },
+  async ({ sender, recipient, body, sla, branch }) =>
+    call('POST', '/api/agent/coordination/messages', { sender, recipient, body, sla, branch, type: 'poke' }),
+);
+
+tool(
+  'announce_branch_activity',
+  'Announce (or heartbeat) that you are working a branch — upserts app.branch_activity in Lakebase so other agents see your in-progress work before they start overlapping changes. Set status completed when you stop.',
+  {
+    branch: z.string().describe('Branch name, e.g. DAT-149-my-change'),
+    agent: z.string().describe('Your agent id'),
+    ticket: z.string().optional().describe('Ticket key you are working'),
+    description: z.string().optional().describe('One-line task description'),
+    status: z.enum(['active', 'completed']).optional(),
+  },
+  async (args) => call('POST', '/api/agent/coordination/branches', args),
+);
+
+tool(
+  'list_active_branches',
+  'List branches other agents are actively working (agent, ticket, task description, last heartbeat). Check this before starting work that could overlap.',
+  { status: z.enum(['active', 'completed']).optional().describe('Defaults to active') },
+  async ({ status }) => call('GET', `/api/agent/coordination/branches${status ? `?status=${status}` : ''}`),
+);
+
 // ---- context files ----
 
 tool('list_context_files', 'List an engagement\'s uploaded context files.', { engagement_id: z.string() }, async ({ engagement_id }) =>

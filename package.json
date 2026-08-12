@@ -88,6 +88,7 @@
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.0.1",
     "eslint-plugin-react-refresh": "0.4.24",
+    "pg-mem": "^3.0.14",
     "prettier": "3.6.2",
     "sharp": "0.34.5",
     "tailwindcss": "4.0.14",

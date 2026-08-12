@@ -5,6 +5,7 @@ import { listContextFiles, type FilesVolume } from './context-files';
 import { listTicketAttachments } from './ticket-attachments';
 import { loadConnection } from './repos';
 import { installationToken } from './github-app';
+import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
@@ -173,6 +174,15 @@ function renderPrompt(
     '- If the GIT_TOKEN environment variable is set, push with https://x-access-token:$GIT_TOKEN@github.com/<owner>/<repo>.git and open the PR via the GitHub REST API with that token; otherwise use local git credentials / gh.',
     '- If delivery-console MCP tools are available, post report_agent_progress at plan time and before pushing, and raise flag_agent_work if you get blocked instead of guessing.',
     '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
+    '',
+    '## Coordinating with other agents',
+    `Other agents may be working other branches of the same repo right now. Your agent id is "${txt(task.agent) || 'agent'}". Use the delivery-console MCP coordination tools (or the /api/agent/coordination REST endpoints) to avoid colliding with them:`,
+    '- Before creating your branch, call list_active_branches and check whether an active branch/task overlaps your scope; if it does, message that agent (request_for_info) before duplicating or contradicting its work.',
+    '- As soon as you create your branch, announce it with announce_branch_activity (branch, your agent id, ticket key, one-line task description). Re-announce to heartbeat if you work for a long time.',
+    '- Check get_coordination_messages (pass your agent id and the last next_since_id you saw) at natural checkpoints: after planning, before pushing, and before finishing. All targeted messages are also mirrored as comments on the relevant ticket so humans can follow along.',
+    "- If another agent pokes you or asks for info: SLA 'interrupt' means answer (post_coordination_message type response) before continuing your work; SLA 'wait' means answer before you complete your ticket. Never finish a task while an unanswered 'interrupt' request addressed to you is pending.",
+    "- If you discover you are touching the same files as another active branch, post a conflict_warning naming the files. If you need another agent's attention, use poke_agent with an SLA chosen by real urgency — 'interrupt' only when you are blocked.",
+    '- Post a final status_update (your branch, PR URL) before completing, so waiting agents are released.',
     ...(repo
       ? [
           '',
@@ -704,6 +714,26 @@ export function setupAgentRoutes(
          WHERE id = $1`,
         [task.id, outcome, summary.trim(), url ?? null],
       );
+      // Coordination channel: close the agent's branch announcements and tell
+      // the other agents this run is over, so nobody waits on it (best-effort).
+      try {
+        const closed = await completeAgentBranches(q, agent, key);
+        // The complete endpoint already posts its own ticket comment — log the
+        // broadcast without mirroring it a second time.
+        await postCoordinationMessage(
+          q,
+          {
+            sender: agent,
+            type: 'status_update',
+            body: `Finished ${key} (${outcome}).${url ? ` ${url}` : ''}`,
+            ticket: key,
+            branch: closed[0] ?? null,
+          },
+          { mirror: false },
+        );
+      } catch (err) {
+        console.warn('[agent] coordination close-out failed:', (err as Error).message);
+      }
       archive(Number(task.id));
       if (outcome === 'done') {
         await setTicketStatus(q, key, 'review');

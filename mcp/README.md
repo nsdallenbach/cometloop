@@ -47,6 +47,11 @@ capped at 25 MB and executable file types are rejected)
 **Runner lifecycle (devbox)**: `get_agent_queue`, `claim_agent_work`,
 `report_agent_progress`, `finish_agent_work`, `get_git_credential`
 
+**Inter-agent coordination** (Lakebase-backed shared channel — see
+[docs/agent-coordination.md](../docs/agent-coordination.md)):
+`post_coordination_message`, `get_coordination_messages`, `poke_agent`,
+`announce_branch_activity`, `list_active_branches`
+
 Permissions are enforced server-side by the console (lead-gated actions fail
 with a clear error for non-leads); the MCP server adds no privileges of its
 own — it acts as whoever the Databricks token belongs to.
