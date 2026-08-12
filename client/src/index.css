@@ -427,6 +427,44 @@ tr.hv-row:hover td {
   letter-spacing: 0.06em;
   color: var(--tx3);
 }
+/* Mermaid inlines its own <style> with id-prefixed selectors, so these token
+   overrides need !important to win. Goal: diagrams read like the console —
+   quiet edge labels instead of grey chips, visible hairline node borders,
+   app type throughout. */
+.md-diagram svg {
+  font-family: 'DM Sans', sans-serif !important;
+}
+.md-diagram .edgeLabel rect,
+.md-diagram .edgeLabel .labelBkg,
+.md-diagram .labelBkg {
+  fill: var(--bg2) !important;
+  opacity: 0.92 !important;
+}
+.md-diagram .edgeLabel text,
+.md-diagram .edgeLabel tspan {
+  fill: var(--tx2) !important;
+}
+.md-diagram .node rect,
+.md-diagram .node polygon,
+.md-diagram .node circle,
+.md-diagram .node path {
+  stroke: var(--line2) !important;
+  stroke-width: 1.2px !important;
+}
+.md-diagram .node text,
+.md-diagram .node tspan,
+.md-diagram .nodeLabel {
+  fill: var(--tx) !important;
+}
+.md-diagram .edgePath path,
+.md-diagram .flowchart-link,
+.md-diagram path.transition {
+  stroke: var(--tx3) !important;
+}
+.md-diagram marker path {
+  fill: var(--tx3) !important;
+  stroke: none !important;
+}
 .md blockquote {
   margin: 0 0 10px;
   padding: 2px 12px;

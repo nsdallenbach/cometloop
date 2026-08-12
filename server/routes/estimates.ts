@@ -360,7 +360,68 @@ export async function recordActualHours(q: Query, ticketKey: string, source: str
 
 // ---------- routes ----------
 
-export function setupEstimateRoutes(app: express.Application, q: Query) {
+export function setupEstimateRoutes(
+  app: express.Application,
+  q: Query,
+  serving?: Serving,
+  requireLead?: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<unknown>,
+) {
+  /**
+   * Backfill sweep (DAT-195/DAT-197 follow-up): re-estimate every board
+   * ticket whose human estimate is missing — or is the 4× ratio artifact
+   * from the DAT-175 migration rather than a content-based figure. Runs in
+   * the background (sequential model calls); progress lands in the server
+   * log and a feed item announces the result.
+   */
+  if (serving && requireLead) {
+    app.post('/api/engagements/:id/estimates/backfill', async (req, res) => {
+      try {
+        const engagementId = req.params.id;
+        if (!(await requireLead(req, res, engagementId))) return;
+        const rows = (
+          await q(
+            `SELECT key, title, description, ac FROM app.tickets
+             WHERE engagement_id = $1 AND status <> 'dismissed'
+               AND (human_est_hours IS NULL OR est_hours IS NULL
+                    OR abs(human_est_hours - LEAST(999, round((est_hours * 4)::numeric, 1))) < 0.01)
+             ORDER BY key`,
+            [engagementId],
+          )
+        ).rows;
+        res.json({ ok: true, started: rows.length });
+        if (rows.length === 0) return;
+        void (async () => {
+          let done = 0;
+          for (const r of rows) {
+            const ac = (() => {
+              try {
+                const raw: unknown = typeof r.ac === 'string' ? JSON.parse(r.ac) : (r.ac ?? []);
+                return Array.isArray(raw) ? raw.map((a) => txt(a)).filter(Boolean) : [];
+              } catch {
+                return [];
+              }
+            })();
+            const est = await estimateTicket(
+              q,
+              serving,
+              { key: txt(r.key), engagementId, title: txt(r.title), description: txt(r.description), ac },
+              'revised',
+            );
+            if (est !== null) done++;
+          }
+          console.log(`[estimate] backfill for ${engagementId}: ${done}/${rows.length} tickets re-estimated`);
+          await q(
+            `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
+             VALUES ($1, 'AGENT', $2, 'JUST NOW', false)`,
+            [engagementId, `Estimate backfill complete — ${done} of ${rows.length} tickets got content-based agent + human estimates.`],
+          ).catch(() => {});
+        })();
+      } catch (err) {
+        console.error('estimate backfill failed:', err);
+        res.status(500).json({ error: 'Failed to start estimate backfill' });
+      }
+    });
+  }
   /**
    * Estimation accuracy for an engagement: every estimate with a recorded
    * actual, plus the summary stats and the calibration factor new estimates
