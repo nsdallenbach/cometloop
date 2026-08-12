@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
 import { STATUS_LABEL, initials, mono } from '../util';
+import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
 import { CoordCommentBody, parseCoordComment } from './AgentComment';
 
@@ -769,7 +770,15 @@ export function TicketDrawer({
                       <span style={{ ...mono(500, 9), color: 'var(--agent)', border: '1px solid var(--agent)', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
                         ◆ {AGENT_STATE_LABEL[agentTask.state]}
                       </span>
-                      {agentTask.agent && <span style={{ ...mono(400, 10), color: 'var(--tx2)' }}>{agentTask.agent}</span>}
+                      {agentTask.agent && (
+                        <span
+                          title={`${agentTask.agent} (${runnerBrand(agentTask.agent).label} runner)`}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 5, ...mono(400, 10), color: 'var(--tx2)' }}
+                        >
+                          {runnerBrand(agentTask.agent).mark(11)}
+                          {agentTask.agent}
+                        </span>
+                      )}
                       {agentActive && lead && (
                         <button
                           className="hv-bad"
@@ -1212,9 +1221,15 @@ export function TicketDrawer({
                     ...mono(500, 10),
                     color: 'var(--agent)',
                   }}
-                  title={planningActive ? 'Planning Agent' : (agentTask?.agent ?? 'Agent')}
+                  title={
+                    planningActive
+                      ? 'Planning Agent'
+                      : agentTask?.agent
+                        ? `${agentTask.agent} (${runnerBrand(agentTask.agent).label} runner)`
+                        : 'Agent'
+                  }
                 >
-                  ◆
+                  {!planningActive && agentTask?.agent ? runnerBrand(agentTask.agent).mark(13) : '◆'}
                 </span>
                 <div
                   style={{
