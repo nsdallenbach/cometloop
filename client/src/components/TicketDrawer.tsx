@@ -396,6 +396,12 @@ export function TicketDrawer({
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>ESTIMATE</div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.est}</div>
+              {ticket.actualHours != null && (
+                <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 2 }}>
+                  actual {ticket.actualHours}h
+                  {ticket.estHours != null && ticket.estHours > 0 && ` (${Math.round((ticket.actualHours / ticket.estHours) * 100)}%)`}
+                </div>
+              )}
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>WORKSTREAM</div>

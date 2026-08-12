@@ -4,6 +4,7 @@ import { resolveIdentity, type Identity } from './roles';
 import { listContextFiles, type FilesVolume } from './context-files';
 import { loadConnection } from './repos';
 import { installationToken } from './github-app';
+import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
 
@@ -279,6 +280,8 @@ export function setupAgentRoutes(
         'Marked done from the board.',
       ]);
       await setTicketStatus(q, key, 'review');
+      // Ready for review: log the actual LLM working time against the estimate.
+      void recordActualHours(q, key, 'board-complete');
       console.log(`[agent] task ${String(task.id)} (${key}) marked done from the board — ticket moved to review`);
       archive(Number(task.id));
       await feed(engagementId, 'YOU', `Marked agent work on ${key} done — moved to Review.`);
@@ -687,6 +690,8 @@ export function setupAgentRoutes(
       archive(Number(task.id));
       if (outcome === 'done') {
         await setTicketStatus(q, key, 'review');
+        // Ready for review: log the actual LLM working time against the estimate.
+        void recordActualHours(q, key, 'agent-complete');
       } else {
         await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: agent });
         await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });

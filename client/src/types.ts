@@ -64,6 +64,10 @@ export interface Ticket {
   status: TicketStatus;
   assignee: string;
   est: string;
+  /** Latest LLM-hours estimate from the estimation model (1 decimal), null before it runs. */
+  estHours: number | null;
+  /** Actual agent working hours, logged when the ticket reached Review. */
+  actualHours: number | null;
   workstream: string;
   agent: boolean;
   sources: TicketSource[];
