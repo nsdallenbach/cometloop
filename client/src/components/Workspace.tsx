@@ -104,6 +104,14 @@ export function Workspace({
     return j !== null && j.key === key && Date.now() < j.until;
   };
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Minute tick so Done cards crossing the 24h age-out threshold drop off the
+  // lane without a refresh.
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
@@ -244,6 +252,14 @@ export function Workspace({
           <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ DEPLOY FAILED</span>
         )}
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
+        {!isDone && t.waitingOn > 0 && (
+          <span
+            title={`Waiting on ${t.waitingOn} linked ticket${t.waitingOn === 1 ? '' : 's'} — see Linked work in the ticket`}
+            style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}
+          >
+            ⧗ WAITING ON {t.waitingOn}
+          </span>
+        )}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
       {t.tags.length > 0 && (
@@ -259,6 +275,46 @@ export function Workspace({
             </span>
           )}
         </div>
+      )}
+      {t.activePr && (
+        <a
+          href={t.activePr.url}
+          target="_blank"
+          rel="noreferrer"
+          title={`PR #${t.activePr.number}: ${t.activePr.title} — ${t.activePr.state}`}
+          className="hv-border"
+          // Keep the link from starting a card drag or opening the drawer.
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            marginBottom: 7,
+            border: '1px solid var(--line)',
+            borderRadius: 2,
+            padding: '3px 7px',
+            background: 'var(--bg)',
+            textDecoration: 'none',
+          }}
+        >
+          <span
+            style={{
+              ...mono(500, 8.5),
+              flex: 'none',
+              color: PR_STATE_COLOR[t.activePr.state],
+              border: `1px solid ${PR_STATE_COLOR[t.activePr.state]}`,
+              borderRadius: 2,
+              padding: '0 4px',
+              letterSpacing: '.06em',
+            }}
+          >
+            PR {t.activePr.state.toUpperCase()}
+          </span>
+          <span style={{ ...mono(400, 9.5), color: 'var(--tx2)', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            ⎇ {t.activePr.branch || `#${t.activePr.number}`}
+          </span>
+        </a>
       )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
         <span
@@ -862,9 +918,17 @@ export function Workspace({
                 {COLS.map(([k, label]) => {
                   // No In Progress lane: human-active tickets sit in Backlog
                   // until they reach Review; agent-active ones sit in the lane.
-                  const colTickets = tickets.filter(
+                  let colTickets = tickets.filter(
                     (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key),
                   );
+                  if (k === 'done') {
+                    // Done auto-hides work completed more than 24h ago (tickets
+                    // without a completion time age out too) and shows the rest
+                    // newest-first.
+                    const cutoff = now - 24 * 60 * 60 * 1000;
+                    const doneTs = (t: Ticket) => (t.doneAt ? Date.parse(t.doneAt) : NaN);
+                    colTickets = colTickets.filter((t) => doneTs(t) >= cutoff).sort((a, b) => doneTs(b) - doneTs(a));
+                  }
                   return (
                     <Fragment key={k}>
                     {k === 'review' && agentLane}
@@ -1630,15 +1694,19 @@ export function Workspace({
         {newTicket && (
           <NewTicketModal
             key="new-ticket-modal"
+            lead={lead}
             onClose={() => setNewTicket(false)}
-            onCreate={(description) => {
+            onCreate={(description, deploy) => {
               setNewTicket(false);
               setPendingCreates((n) => n + 1);
               api
                 .createTicket(eng.id, { description })
                 .then((t) => {
                   setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
-                  toast(`${t.key} created`);
+                  // Deploy path: the ticket exists either way — if queueing
+                  // fails it simply stays in Backlog and the error is toasted.
+                  if (deploy) deployTicket(t.key);
+                  else toast(`${t.key} created`);
                 })
                 .catch((e: Error) => toast(`Create failed — ${e.message}`))
                 .finally(() => setPendingCreates((n) => n - 1));
@@ -1724,20 +1792,26 @@ export function Workspace({
   );
 }
 
-/** Modal for creating a ticket manually — one chatbox; the title is derived from the content.
- * Creation itself runs in the parent so the modal can close immediately. */
+/**
+ * Modal for creating a ticket manually — one chatbox; the title is derived
+ * from the content. Creation runs in the parent so the modal closes
+ * immediately. Two ways out: "Create ticket" lands it in Backlog, and
+ * (for leads) "Create & deploy" queues it straight to an agent in one click.
+ */
 function NewTicketModal({
+  lead,
   onClose,
   onCreate,
 }: {
+  lead: boolean;
   onClose: () => void;
-  onCreate: (description: string) => void;
+  onCreate: (description: string, deploy: boolean) => void;
 }) {
   const [description, setDescription] = useState('');
 
-  const create = () => {
+  const create = (deploy: boolean) => {
     if (!description.trim()) return;
-    onCreate(description.trim());
+    onCreate(description.trim(), deploy);
   };
 
   return (
@@ -1757,7 +1831,9 @@ function NewTicketModal({
         transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
         onKeyDown={(e) => {
           // Escape is handled by the app-level layering (palette > modal > drawer).
-          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
+          // Ctrl+Enter → Backlog; Ctrl+Shift+Enter → create & deploy (leads —
+          // for everyone else the shift is ignored and it lands in Backlog).
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create(lead && e.shiftKey);
         }}
         style={{
           position: 'fixed',
@@ -1806,7 +1882,7 @@ function NewTicketModal({
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
           <span style={{ ...mono(400, 10), color: 'var(--tx3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            LANDS IN BACKLOG · CTRL+ENTER TO CREATE
+            {lead ? 'CTRL+ENTER → BACKLOG · CTRL+SHIFT+ENTER → DEPLOY' : 'LANDS IN BACKLOG · CTRL+ENTER TO CREATE'}
           </span>
           <div style={{ flex: 1 }} />
           <button
@@ -1816,8 +1892,9 @@ function NewTicketModal({
             Cancel
           </button>
           <button
-            onClick={create}
+            onClick={() => create(false)}
             disabled={!description.trim()}
+            title="Create in Backlog (Ctrl+Enter)"
             style={{
               background: 'var(--acc)',
               color: '#fff',
@@ -1834,6 +1911,28 @@ function NewTicketModal({
           >
             Create ticket
           </button>
+          {lead && (
+            <button
+              onClick={() => create(true)}
+              disabled={!description.trim()}
+              title="Create and deploy straight to the agent queue (Ctrl+Shift+Enter)"
+              style={{
+                background: 'var(--agent)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 3,
+                padding: '7px 16px',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                opacity: !description.trim() ? 0.45 : 1,
+              }}
+            >
+              ◆ Create &amp; deploy
+            </button>
+          )}
         </div>
       </motion.div>
     </>
