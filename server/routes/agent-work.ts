@@ -2,9 +2,13 @@ import { z } from 'zod';
 import type express from 'express';
 import { resolveIdentity, type Identity } from './roles';
 import { listContextFiles, type FilesVolume } from './context-files';
+import { listTicketAttachments } from './ticket-attachments';
 import { loadConnection } from './repos';
 import { installationToken } from './github-app';
 import { completeAgentBranches, postCoordinationMessage } from './coordination';
+import { recordActualHours } from './estimates';
+import { archiveToolCalls } from './tool-calls';
+import { setTicketStatus } from './ticket-events';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -100,7 +104,7 @@ export function startMockRunner(q: Query): void {
         )
       ).rows;
       for (const t of claimed) {
-        await q(`UPDATE app.tickets SET status = 'progress', assignee = $2 WHERE key = $1`, [String(t.ticket_key), AGENT]);
+        await setTicketStatus(q, String(t.ticket_key), 'progress', { assignee: AGENT });
       }
       await q(
         `UPDATE app.agent_tasks
@@ -135,6 +139,7 @@ function renderPrompt(
   engagement: Record<string, unknown> | null,
   repo: Record<string, unknown> | null,
   contextFiles: { name: string }[],
+  attachments: { filename: string; size: number }[],
 ): string {
   const key = txt(task.ticket_key);
   const ac = (() => {
@@ -157,6 +162,11 @@ function renderPrompt(
     `- work-package.json — full task payload (task id ${txt(task.id)}; you are agent "${txt(task.agent) || 'agent'}")`,
     ...(contextFiles.length > 0 ? [`- ./context/ — engagement reference files: ${contextFiles.map((f) => f.name).join(', ')}`] : []),
     ...(repo ? [`- ./repo/ — clone of ${txt(repo.repo_name)} (default branch ${txt(repo.default_branch)})`] : []),
+    ...(attachments.length > 0
+      ? [
+          `- Ticket attachments (fetch via the list_ticket_attachments / read_ticket_attachment MCP tools or GET /api/tickets/${key}/attachments): ${attachments.map((a) => `${a.filename} (${Math.ceil(a.size / 1024)} KB)`).join(', ')}`,
+        ]
+      : []),
     '',
     '## Delivery expectations',
     `- Work in ./repo. Create a branch named ${key}-<short-slug> — the branch or PR title MUST contain ${key} so the console auto-links your work.`,
@@ -192,7 +202,10 @@ export function setupAgentRoutes(
   q: Query,
   files: FilesVolume,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  telemetry: FilesVolume | null = null,
 ) {
+  /** Fire-and-forget: archive a finished run's tool-call log to the telemetry volume. */
+  const archive = (taskId: number) => void archiveToolCalls(q, telemetry, taskId);
   const feed = (engagementId: string, actor: string, text: string) =>
     q(
       `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -218,7 +231,17 @@ export function setupAgentRoutes(
         ])
       ).rows[0] ?? null;
     const contextFiles = await listContextFiles(files, engagementId);
-    return { task, ticket, engagement, comments, repo, contextFiles, prompt: renderPrompt(task, ticket, engagement, repo, contextFiles) };
+    const attachments = await listTicketAttachments(q, ticketKey).catch(() => []);
+    return {
+      task,
+      ticket,
+      engagement,
+      comments,
+      repo,
+      contextFiles,
+      attachments,
+      prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, attachments),
+    };
   };
 
   // ---------- console side (lead actions) ----------
@@ -283,8 +306,11 @@ export function setupAgentRoutes(
         task.id,
         'Marked done from the board.',
       ]);
-      await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+      await setTicketStatus(q, key, 'review');
+      // Ready for review: log the actual LLM working time against the estimate.
+      void recordActualHours(q, key, 'board-complete');
       console.log(`[agent] task ${String(task.id)} (${key}) marked done from the board — ticket moved to review`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Marked agent work on ${key} done — moved to Review.`);
       res.json({ ok: true });
     } catch (err) {
@@ -308,13 +334,11 @@ export function setupAgentRoutes(
       await q(`UPDATE app.agent_tasks SET state = 'cancelled', updated_at = NOW() WHERE id = $1`, [task.id]);
       // A claimed ticket goes back to the backlog; drop the agent as assignee.
       if (task.state !== 'queued') {
-        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—' WHERE key = $1 AND assignee = $2`, [
-          key,
-          typeof task.agent === 'string' ? task.agent : '',
-        ]);
-        await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
+        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: typeof task.agent === 'string' ? task.agent : '' });
+        await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       console.log(`[agent] task ${String(task.id)} (${key}) cancelled from state '${String(task.state)}'`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Cancelled agent work on ${key}.`);
       res.json({ ok: true });
     } catch (err) {
@@ -447,7 +471,7 @@ export function setupAgentRoutes(
       }
       const key = String(claimed.ticket_key);
       console.log(`[agent] ${agent} claimed task ${String(claimed.id)} (${key}) — ticket moved to progress`);
-      await q(`UPDATE app.tickets SET status = 'progress', assignee = $2 WHERE key = $1`, [key, agent]);
+      await setTicketStatus(q, key, 'progress', { assignee: agent });
       await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work.`);
       res.json(await workPackage(claimed));
     } catch (err) {
@@ -710,11 +734,14 @@ export function setupAgentRoutes(
       } catch (err) {
         console.warn('[agent] coordination close-out failed:', (err as Error).message);
       }
+      archive(Number(task.id));
       if (outcome === 'done') {
-        await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+        await setTicketStatus(q, key, 'review');
+        // Ready for review: log the actual LLM working time against the estimate.
+        void recordActualHours(q, key, 'agent-complete');
       } else {
-        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—' WHERE key = $1 AND assignee = $2`, [key, agent]);
-        await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
+        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: agent });
+        await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
         key,

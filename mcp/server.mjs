@@ -18,21 +18,38 @@ const APP_URL = (process.env.DELIVERY_CONSOLE_URL ?? 'https://delivery-console-7
 const HOST = process.env.DATABRICKS_HOST ?? 'https://dbc-96494b8f-6b86.cloud.databricks.com';
 const CLI = process.env.DATABRICKS_CLI ?? 'databricks';
 
+// Short TTL: workspace tokens live ~1h, so a 10-minute cache never hands out
+// a token near death; a 401 busts the cache and retries once regardless.
 let cachedTok = null; // { token, exp }
 function token() {
   if (process.env.DATABRICKS_TOKEN) return process.env.DATABRICKS_TOKEN;
   if (cachedTok && Date.now() < cachedTok.exp) return cachedTok.token;
   const out = execFileSync(CLI, ['auth', 'token', '--host', HOST], { encoding: 'utf8' });
-  cachedTok = { token: JSON.parse(out).access_token, exp: Date.now() + 45 * 60_000 };
+  cachedTok = { token: JSON.parse(out).access_token, exp: Date.now() + 10 * 60_000 };
   return cachedTok.token;
 }
 
+/** Authorized fetch with one transparent token refresh on 401. */
+async function authedFetch(url, init = {}) {
+  for (let attempt = 0; ; attempt++) {
+    const resp = await fetch(url, {
+      ...init,
+      headers: { Authorization: `Bearer ${token()}`, ...(init.headers ?? {}) },
+      signal: AbortSignal.timeout(init.timeoutMs ?? 30_000),
+    });
+    if (resp.status === 401 && attempt === 0 && !process.env.DATABRICKS_TOKEN) {
+      cachedTok = null; // token died mid-flight — mint fresh and retry once
+      continue;
+    }
+    return resp;
+  }
+}
+
 async function call(method, path, body) {
-  const resp = await fetch(`${APP_URL}${path}`, {
+  const resp = await authedFetch(`${APP_URL}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${token()}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
   });
   const raw = await resp.text();
   if (!resp.ok) {
@@ -354,8 +371,70 @@ tool(
   'Read a context file as text (up to 200 KB; binary files are refused).',
   { engagement_id: z.string(), name: z.string() },
   async ({ engagement_id, name }) => {
-    const resp = await fetch(
+    const resp = await authedFetch(
       `${APP_URL}/api/engagements/${encodeURIComponent(engagement_id)}/context-files/${encodeURIComponent(name)}`,
+    );
+    if (!resp.ok) throw new Error(`Download failed (${resp.status})`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length > 200 * 1024) throw new Error(`File is ${Math.round(buf.length / 1024)} KB — over the 200 KB read limit`);
+    if (buf.includes(0)) throw new Error('File looks binary — download it via the console instead');
+    return buf.toString('utf8');
+  },
+);
+
+// ---- ticket attachments ----
+
+tool(
+  'list_ticket_attachments',
+  "List a ticket's file attachments (id, filename, size, uploader, sha256).",
+  { key: z.string() },
+  async ({ key }) => call('GET', `/api/tickets/${encodeURIComponent(key)}/attachments`),
+);
+
+tool(
+  'attach_file_to_ticket',
+  'Attach a file to a ticket. Provide content as text, or content_base64 for binary data (max 25 MB; executable file types are rejected).',
+  {
+    key: z.string(),
+    filename: z.string().min(1),
+    content: z.string().optional().describe('UTF-8 text content'),
+    content_base64: z.string().optional().describe('Base64-encoded binary content'),
+    content_type: z.string().optional().describe('MIME type, e.g. image/png'),
+  },
+  async ({ key, filename, content, content_base64, content_type }) => {
+    if ((content == null) === (content_base64 == null)) throw new Error('Provide exactly one of content or content_base64');
+    const body = content != null ? Buffer.from(content, 'utf8') : Buffer.from(content_base64, 'base64');
+    const resp = await fetch(`${APP_URL}/api/tickets/${encodeURIComponent(key)}/attachments?filename=${encodeURIComponent(filename)}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token()}`,
+        'Content-Type': 'application/octet-stream',
+        ...(content_type ? { 'X-Attachment-Content-Type': content_type } : {}),
+      },
+      body,
+      signal: AbortSignal.timeout(60_000),
+    });
+    const raw = await resp.text();
+    if (!resp.ok) {
+      let msg = `${resp.status}`;
+      try {
+        msg = JSON.parse(raw).error ?? msg;
+      } catch {
+        /* non-JSON error body — keep the status code */
+      }
+      throw new Error(msg);
+    }
+    return JSON.parse(raw);
+  },
+);
+
+tool(
+  'read_ticket_attachment',
+  'Read a ticket attachment as text (up to 200 KB; binary files are refused — note the download URL instead).',
+  { key: z.string(), attachment_id: z.string() },
+  async ({ key, attachment_id }) => {
+    const resp = await fetch(
+      `${APP_URL}/api/tickets/${encodeURIComponent(key)}/attachments/${encodeURIComponent(attachment_id)}`,
       { headers: { Authorization: `Bearer ${token()}` }, signal: AbortSignal.timeout(30_000) },
     );
     if (!resp.ok) throw new Error(`Download failed (${resp.status})`);
@@ -364,6 +443,14 @@ tool(
     if (buf.includes(0)) throw new Error('File looks binary — download it via the console instead');
     return buf.toString('utf8');
   },
+);
+
+tool(
+  'delete_ticket_attachment',
+  'Delete a ticket attachment (lead only). Removes the file from storage and the attachment list.',
+  { key: z.string(), attachment_id: z.string() },
+  async ({ key, attachment_id }) =>
+    call('DELETE', `/api/tickets/${encodeURIComponent(key)}/attachments/${encodeURIComponent(attachment_id)}`),
 );
 
 await server.connect(new StdioServerTransport());

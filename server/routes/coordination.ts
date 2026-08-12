@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
+import { resolveIdentity } from './roles';
 
 /**
  * Inter-agent coordination channel (DAT-149).
@@ -248,10 +249,25 @@ const BranchBody = z.object({
 
 /**
  * Runner-facing endpoints, authenticated through the Databricks Apps OAuth
- * proxy like the rest of /api/agent — any workspace-authenticated agent can
- * post and read, which is the point of a shared channel.
+ * proxy like the rest of /api/agent. Acting as an agent name additionally
+ * requires owning an active claim under that name: the claim records the
+ * caller's workspace identity (agent_identity), so senders can't be spoofed,
+ * targeted inboxes can't be read by other principals, and branch
+ * announcements can't be taken over.
  */
 export function setupCoordinationRoutes(app: express.Application, q: Query) {
+  /** True while the caller's workspace identity owns an active claim as `agent`. */
+  async function callerOwnsAgent(req: express.Request, agent: string): Promise<boolean> {
+    const who = await resolveIdentity(req);
+    const rows = (
+      await q(
+        `SELECT 1 FROM app.agent_tasks WHERE agent = $1 AND agent_identity = $2 AND state IN ('claimed','working') LIMIT 1`,
+        [agent, who.email],
+      )
+    ).rows;
+    return rows.length > 0;
+  }
+
   app.post('/api/agent/coordination/messages', async (req, res) => {
     const parsed = MessageBody.safeParse(req.body);
     if (!parsed.success) {
@@ -260,6 +276,10 @@ export function setupCoordinationRoutes(app: express.Application, q: Query) {
     }
     try {
       const m = parsed.data;
+      if (!(await callerOwnsAgent(req, m.sender))) {
+        res.status(403).json({ error: 'sender must own an active claimed task under that agent name' });
+        return;
+      }
       const row = await postCoordinationMessage(q, m);
       console.log(
         `[coordination] ${m.sender} → ${m.recipient ?? 'all'}: ${m.type}${m.sla ? ` (SLA ${m.sla})` : ''}${m.branch ? ` on ${m.branch}` : ''} (message ${String(row.id)})`,
@@ -274,15 +294,23 @@ export function setupCoordinationRoutes(app: express.Application, q: Query) {
   app.get('/api/agent/coordination/messages', async (req, res) => {
     try {
       const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+      const forAgent = str(req.query.agent);
+      // Reading a named inbox requires owning that agent's active claim;
+      // anonymous reads see broadcasts only, never targeted messages.
+      if (forAgent && !(await callerOwnsAgent(req, forAgent))) {
+        res.status(403).json({ error: 'reading an agent inbox requires an active claimed task under that name' });
+        return;
+      }
       const sinceRaw = Number(str(req.query.since_id) ?? 0);
       const result = await fetchCoordinationMessages(q, {
         sinceId: Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : 0,
-        forAgent: str(req.query.agent),
+        forAgent,
         branch: str(req.query.branch),
         type: str(req.query.type),
         limit: Number(str(req.query.limit)) || undefined,
       });
-      res.json({ messages: result.messages, next_since_id: result.nextSinceId });
+      const messages = forAgent ? result.messages : result.messages.filter((m) => m.recipient == null);
+      res.json({ messages, next_since_id: result.nextSinceId });
     } catch (err) {
       console.error('coordination fetch failed:', err);
       res.status(500).json({ error: 'Failed to fetch coordination messages' });
@@ -296,6 +324,19 @@ export function setupCoordinationRoutes(app: express.Application, q: Query) {
       return;
     }
     try {
+      if (!(await callerOwnsAgent(req, parsed.data.agent))) {
+        res.status(403).json({ error: 'announcing requires an active claimed task under that agent name' });
+        return;
+      }
+      // A branch actively announced by another agent can't be taken over or
+      // marked completed on its behalf.
+      const existing = (
+        await q('SELECT agent_id, status FROM app.branch_activity WHERE branch = $1', [parsed.data.branch])
+      ).rows[0];
+      if (existing && String(existing.status) === 'active' && String(existing.agent_id) !== parsed.data.agent) {
+        res.status(409).json({ error: `Branch is actively announced by ${String(existing.agent_id)}` });
+        return;
+      }
       const row = await announceBranchActivity(q, parsed.data);
       console.log(`[coordination] ${parsed.data.agent} announced ${parsed.data.branch} (${String(row.status)})`);
       res.json(row);
