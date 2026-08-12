@@ -35,6 +35,9 @@ export const PROJECT_AGENTS_SCHEMA_SQL = [
     created_by TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  // Upsert identity for the sync pass (observed runners + auto-registered
+  // serving endpoints): one row per engagement × agent name.
+  `CREATE UNIQUE INDEX IF NOT EXISTS project_agents_eng_name ON app.project_agents (engagement_id, lower(name))`,
 ];
 
 /** Node kinds the map renders; only 'runner' has a real deploy path today. */
@@ -81,6 +84,135 @@ const HARNESS_PROVIDER: Record<string, string> = {
   cursor: 'anysphere',
 };
 
+// ---------- live model-serving state (DAT-203) ----------
+
+/** The planning agent IS this endpoint; its name comes from the app resource env. */
+const SERVING_ENDPOINT = process.env.DATABRICKS_SERVING_ENDPOINT_NAME ?? '';
+
+interface ServingState {
+  ready: boolean;
+  configUpdate: string;
+  task: string | null;
+  servedModel: string | null;
+}
+
+let servingCache: { at: number; state: ServingState | null } | null = null;
+const SERVING_CACHE_MS = 60_000;
+
+function workspaceBase(): string | null {
+  const host = process.env.DATABRICKS_HOST;
+  if (!host) return null;
+  return host.startsWith('http') ? host.replace(/\/+$/, '') : `https://${host.replace(/\/+$/, '')}`;
+}
+
+/** M2M token for the app's service principal (Databricks Apps inject the OAuth pair). */
+async function workspaceToken(): Promise<string | null> {
+  const base = workspaceBase();
+  const id = process.env.DATABRICKS_CLIENT_ID;
+  const secret = process.env.DATABRICKS_CLIENT_SECRET;
+  if (!base || !id || !secret) return null;
+  const resp = await fetch(`${base}/oidc/v1/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${id}:${secret}`).toString('base64')}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials&scope=all-apis',
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!resp.ok) return null;
+  const data = (await resp.json()) as { access_token?: string };
+  return data.access_token ?? null;
+}
+
+/** Live endpoint state from the workspace serving API, cached ~60s; null = unknown. */
+async function fetchServingState(): Promise<ServingState | null> {
+  if (!SERVING_ENDPOINT) return null;
+  if (servingCache && Date.now() - servingCache.at < SERVING_CACHE_MS) return servingCache.state;
+  try {
+    const base = workspaceBase();
+    const token = await workspaceToken();
+    if (!base || !token) throw new Error('workspace credentials unavailable');
+    const resp = await fetch(`${base}/api/2.0/serving-endpoints/${encodeURIComponent(SERVING_ENDPOINT)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) throw new Error(`serving api returned ${resp.status}`);
+    const d = (await resp.json()) as {
+      state?: { ready?: string; config_update?: string };
+      task?: string;
+      config?: { served_entities?: { entity_name?: string; name?: string }[] };
+    };
+    const state: ServingState = {
+      ready: d.state?.ready === 'READY',
+      configUpdate: d.state?.config_update ?? 'UNKNOWN',
+      task: d.task ?? null,
+      servedModel: d.config?.served_entities?.[0]?.entity_name ?? d.config?.served_entities?.[0]?.name ?? null,
+    };
+    servingCache = { at: Date.now(), state };
+    return state;
+  } catch (err) {
+    console.warn('[agents] serving endpoint state fetch failed:', (err as Error).message);
+    servingCache = { at: Date.now(), state: null };
+    return null;
+  }
+}
+
+/**
+ * Persist the map into app.project_agents so agents are stored records, not
+ * request-time inference (DAT-203): every observed runner upserts with its
+ * live status/task counts, and the planning model-serving endpoint registers
+ * per engagement with real workspace state.
+ */
+export async function syncProjectAgents(q: Query): Promise<void> {
+  const observed = (
+    await q(
+      `SELECT engagement_id, agent,
+              COUNT(*)::int AS tasks,
+              SUM(CASE WHEN state IN ('claimed','working') THEN 1 ELSE 0 END)::int AS active_tasks,
+              MAX(COALESCE(last_heartbeat, updated_at, created_at)) AS last_seen
+       FROM app.agent_tasks
+       WHERE agent IS NOT NULL AND agent <> ''
+       GROUP BY engagement_id, agent`,
+    )
+  ).rows;
+  for (const r of observed) {
+    const name = txt(r.agent);
+    const harness = inferHarness(name);
+    const status = num(r.active_tasks) > 0 ? 'active' : 'idle';
+    const config = JSON.stringify({ tasks: num(r.tasks), activeTasks: num(r.active_tasks), lastSeen: iso(r.last_seen) });
+    await q(
+      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, status, config, created_by)
+       VALUES ($1,$2,'runner',$3,$4,$5,$6,'system:observed')
+       ON CONFLICT (engagement_id, lower(name))
+       DO UPDATE SET status = $5, config = $6, harness = COALESCE(app.project_agents.harness, $3),
+                     model_provider = COALESCE(app.project_agents.model_provider, $4)`,
+      [txt(r.engagement_id), name, harness, HARNESS_PROVIDER[harness] ?? null, status, config],
+    );
+  }
+
+  if (!SERVING_ENDPOINT) return;
+  const state = await fetchServingState();
+  const status = state === null ? 'configured' : state.ready ? 'active' : 'idle';
+  const config = JSON.stringify({
+    endpoint: SERVING_ENDPOINT,
+    servedModel: state?.servedModel ?? null,
+    task: state?.task ?? null,
+    configUpdate: state?.configUpdate ?? null,
+    checkedAt: new Date().toISOString(),
+  });
+  const engagements = (await q('SELECT id FROM app.engagements')).rows;
+  for (const e of engagements) {
+    await q(
+      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, endpoint_type, status, config, created_by)
+       VALUES ($1,'planning-agent','serving-endpoint',NULL,'databricks',$2,'model-serving',$3,$4,'system:serving')
+       ON CONFLICT (engagement_id, lower(name))
+       DO UPDATE SET model = $2, status = $3, config = $4`,
+      [txt(e.id), state?.servedModel ?? SERVING_ENDPOINT, status, config],
+    );
+  }
+}
+
 export interface OverviewAgent {
   id: string;
   engagementId: string;
@@ -118,22 +250,34 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
     phase: txt(r.phase),
   }));
 
-  const configured: OverviewAgent[] = (await q('SELECT * FROM app.project_agents ORDER BY id')).rows.map((r) => ({
-    id: `cfg-${num(r.id)}`,
-    engagementId: txt(r.engagement_id),
-    name: txt(r.name),
-    agentType: txt(r.agent_type) || 'runner',
-    harness: r.harness == null ? null : txt(r.harness),
-    modelProvider: r.model_provider == null ? null : txt(r.model_provider),
-    model: r.model == null ? null : txt(r.model),
-    endpointType: r.endpoint_type == null ? null : txt(r.endpoint_type),
-    status: txt(r.status) || 'configured',
-    source: 'configured',
-    tasks: 0,
-    activeTasks: 0,
-    lastSeen: null,
-    createdAt: iso(r.created_at),
-  }));
+  const configured: OverviewAgent[] = (await q('SELECT * FROM app.project_agents ORDER BY id')).rows.map((r) => {
+    // Synced rows carry live facts in config (task counts, last-seen or the
+    // serving endpoint's checked-at) — surface them on the node.
+    const cfg = (() => {
+      try {
+        const raw: unknown = typeof r.config === 'string' ? JSON.parse(r.config) : (r.config ?? {});
+        return raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    })();
+    return {
+      id: `cfg-${num(r.id)}`,
+      engagementId: txt(r.engagement_id),
+      name: txt(r.name),
+      agentType: txt(r.agent_type) || 'runner',
+      harness: r.harness == null ? null : txt(r.harness),
+      modelProvider: r.model_provider == null ? null : txt(r.model_provider),
+      model: r.model == null ? null : txt(r.model),
+      endpointType: r.endpoint_type == null ? null : txt(r.endpoint_type),
+      status: txt(r.status) || 'configured',
+      source: 'configured' as const,
+      tasks: num(cfg.tasks),
+      activeTasks: num(cfg.activeTasks),
+      lastSeen: typeof cfg.lastSeen === 'string' ? cfg.lastSeen : typeof cfg.checkedAt === 'string' ? cfg.checkedAt : null,
+      createdAt: iso(r.created_at),
+    };
+  });
 
   // Real runner history: one node per (engagement, runner) that has ever
   // claimed work there. Active = currently holding a claimed/working task.
@@ -186,6 +330,10 @@ export function setupProjectAgentRoutes(
 ) {
   app.get('/api/agents/overview', async (_req, res) => {
     try {
+      // Persist before reading: the table is the record of truth, refreshed
+      // from runner history + live serving state on every overview load. A
+      // sync failure must not blank the map.
+      await syncProjectAgents(q).catch((err) => console.warn('[agents] sync failed:', (err as Error).message));
       res.json(await loadAgentsOverview(q));
     } catch (err) {
       console.error('agents overview failed:', err);

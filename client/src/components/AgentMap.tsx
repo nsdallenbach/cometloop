@@ -95,7 +95,9 @@ function FutureSpoke({ x, y }: { x: number; y: number }) {
 function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number; y: number; onSelect: (agent: ProjectAgent) => void }) {
   const brand = agentBrand(agent);
   const future = agent.agentType !== 'runner';
-  const staged = agent.source === 'configured';
+  // Table rows with live status (synced runners, READY serving endpoints)
+  // are not "staged" — dashed treatment is only for rollout-pending configs.
+  const staged = agent.source === 'configured' && !['active', 'idle'].includes(agent.status);
   const statusColor = agent.status === 'active' ? 'var(--ok)' : staged ? 'var(--warn)' : 'var(--tx3)';
   const sub = future
     ? (FUTURE_LABEL[agent.agentType] ?? agent.agentType.toUpperCase())
@@ -156,7 +158,7 @@ function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number;
       </div>
       <div style={{ ...mono(400, 8), color: 'var(--tx3)', letterSpacing: '.08em', textTransform: 'uppercase' }}>
         {sub}
-        {agent.source === 'observed' ? ` · ${agent.status.toUpperCase()}` : ' · STAGED'}
+        {staged ? ' · STAGED' : ` · ${agent.status.toUpperCase()}`}
       </div>
     </motion.div>
   );
@@ -185,7 +187,7 @@ function ProjectCluster({
         {spots.map((p, i) => {
           const agent = agents[i];
           const ghost = !agent;
-          const staged = agent?.source === 'configured';
+          const staged = agent?.source === 'configured' && !['active', 'idle'].includes(agent?.status ?? '');
           const active = agent?.status === 'active';
           return (
             <line
@@ -458,7 +460,7 @@ function DeployModal({
 /** Click-through detail for any node on the map (DAT-197 follow-up). */
 function AgentDetailModal({ agent, projectName, onClose }: { agent: ProjectAgent; projectName: string; onClose: () => void }) {
   const brand = agentBrand(agent);
-  const staged = agent.source === 'configured';
+  const staged = agent.source === 'configured' && !['active', 'idle'].includes(agent.status);
   const statusColor = agent.status === 'active' ? 'var(--ok)' : staged ? 'var(--warn)' : 'var(--tx3)';
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -473,7 +475,7 @@ function AgentDetailModal({ agent, projectName, onClose }: { agent: ProjectAgent
     ['HARNESS', brand?.label ?? agent.harness ?? '—'],
     ['MODEL PROVIDER', agent.modelProvider ?? '—'],
     ['MODEL', agent.model ?? '—'],
-    ['SOURCE', agent.source === 'observed' ? 'Observed — real runner from task history' : 'Configured — rollout pending'],
+    ['SOURCE', agent.source === 'observed' ? 'Observed — real runner from task history' : staged ? 'Configured — rollout pending' : 'Stored record · live status synced'],
     ['TASKS WORKED', agent.source === 'observed' ? `${agent.tasks} total · ${agent.activeTasks} active now` : '—'],
     ['LAST SEEN', agent.lastSeen ? relTime(agent.lastSeen) : '—'],
     ['FIRST SEEN', agent.createdAt ? relTime(agent.createdAt) : '—'],
