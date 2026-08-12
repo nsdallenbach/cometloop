@@ -4,6 +4,8 @@ import { resolveIdentity, type Identity } from './roles';
 import { listContextFiles, type FilesVolume } from './context-files';
 import { loadConnection } from './repos';
 import { installationToken } from './github-app';
+import { archiveToolCalls } from './tool-calls';
+import { setTicketStatus } from './ticket-events';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -99,7 +101,7 @@ export function startMockRunner(q: Query): void {
         )
       ).rows;
       for (const t of claimed) {
-        await q(`UPDATE app.tickets SET status = 'progress', assignee = $2, done_at = NULL WHERE key = $1`, [String(t.ticket_key), AGENT]);
+        await setTicketStatus(q, String(t.ticket_key), 'progress', { assignee: AGENT });
       }
       await q(
         `UPDATE app.agent_tasks
@@ -182,7 +184,10 @@ export function setupAgentRoutes(
   q: Query,
   files: FilesVolume,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  telemetry: FilesVolume | null = null,
 ) {
+  /** Fire-and-forget: archive a finished run's tool-call log to the telemetry volume. */
+  const archive = (taskId: number) => void archiveToolCalls(q, telemetry, taskId);
   const feed = (engagementId: string, actor: string, text: string) =>
     q(
       `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -273,8 +278,9 @@ export function setupAgentRoutes(
         task.id,
         'Marked done from the board.',
       ]);
-      await q(`UPDATE app.tickets SET status = 'review', done_at = NULL WHERE key = $1`, [key]);
+      await setTicketStatus(q, key, 'review');
       console.log(`[agent] task ${String(task.id)} (${key}) marked done from the board — ticket moved to review`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Marked agent work on ${key} done — moved to Review.`);
       res.json({ ok: true });
     } catch (err) {
@@ -298,13 +304,11 @@ export function setupAgentRoutes(
       await q(`UPDATE app.agent_tasks SET state = 'cancelled', updated_at = NOW() WHERE id = $1`, [task.id]);
       // A claimed ticket goes back to the backlog; drop the agent as assignee.
       if (task.state !== 'queued') {
-        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—', done_at = NULL WHERE key = $1 AND assignee = $2`, [
-          key,
-          typeof task.agent === 'string' ? task.agent : '',
-        ]);
-        await q(`UPDATE app.tickets SET status = 'backlog', done_at = NULL WHERE key = $1 AND status = 'progress'`, [key]);
+        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: typeof task.agent === 'string' ? task.agent : '' });
+        await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       console.log(`[agent] task ${String(task.id)} (${key}) cancelled from state '${String(task.state)}'`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Cancelled agent work on ${key}.`);
       res.json({ ok: true });
     } catch (err) {
@@ -437,7 +441,7 @@ export function setupAgentRoutes(
       }
       const key = String(claimed.ticket_key);
       console.log(`[agent] ${agent} claimed task ${String(claimed.id)} (${key}) — ticket moved to progress`);
-      await q(`UPDATE app.tickets SET status = 'progress', assignee = $2, done_at = NULL WHERE key = $1`, [key, agent]);
+      await setTicketStatus(q, key, 'progress', { assignee: agent });
       await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work.`);
       res.json(await workPackage(claimed));
     } catch (err) {
@@ -680,11 +684,12 @@ export function setupAgentRoutes(
          WHERE id = $1`,
         [task.id, outcome, summary.trim(), url ?? null],
       );
+      archive(Number(task.id));
       if (outcome === 'done') {
-        await q(`UPDATE app.tickets SET status = 'review', done_at = NULL WHERE key = $1`, [key]);
+        await setTicketStatus(q, key, 'review');
       } else {
-        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—', done_at = NULL WHERE key = $1 AND assignee = $2`, [key, agent]);
-        await q(`UPDATE app.tickets SET status = 'backlog', done_at = NULL WHERE key = $1 AND status = 'progress'`, [key]);
+        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: agent });
+        await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
         key,

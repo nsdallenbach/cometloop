@@ -2,6 +2,7 @@ import { z } from 'zod';
 import express from 'express';
 import type { Identity } from './roles';
 import { githubAppConfigured, installationToken, verifyWebhookSignature, WEBHOOK_SECRET } from './github-app';
+import { setTicketStatus } from './ticket-events';
 
 /**
  * Git repository integration: one repo per engagement, GitHub or Azure DevOps.
@@ -471,7 +472,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
     if (!ticketKey) continue;
     const status = ticketStatus.get(ticketKey);
     if (p.state === 'open' && (status === 'backlog' || status === 'progress')) {
-      await q('UPDATE app.tickets SET status = $2, done_at = NULL WHERE key = $1', [ticketKey, 'review']);
+      await setTicketStatus(q, ticketKey, 'review');
       ticketStatus.set(ticketKey, 'review');
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
@@ -487,7 +488,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
           [conn.id, p.number],
         );
         if (status === 'backlog' || status === 'progress') {
-          await q('UPDATE app.tickets SET status = $2, done_at = NULL WHERE key = $1', [ticketKey, 'review']);
+          await setTicketStatus(q, ticketKey, 'review');
           ticketStatus.set(ticketKey, 'review');
         }
         await q(
@@ -498,7 +499,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
       } else {
         // First sight of an already-merged PR (initial sync of a connection):
         // history, not a live event — keep the old straight-to-Done behavior.
-        await q('UPDATE app.tickets SET status = $2, done_at = NOW() WHERE key = $1', [ticketKey, 'done']);
+        await setTicketStatus(q, ticketKey, 'done');
         ticketStatus.set(ticketKey, 'done');
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
@@ -607,7 +608,7 @@ async function settleDeploy(
     );
     return;
   }
-  await q('UPDATE app.tickets SET status = $2, done_at = NOW() WHERE key = $1', [ticketKey, 'done']);
+  await setTicketStatus(q, ticketKey, 'done');
   const text =
     outcome === 'success'
       ? `Deploy pipeline succeeded for PR #${prNumber} — ${ticketKey} moved to Done.`
@@ -624,6 +625,24 @@ async function settleDeploy(
 export async function loadConnection(q: Query, engagementId: string): Promise<Connection | null> {
   const { rows } = await q('SELECT * FROM app.repo_connections WHERE engagement_id = $1', [engagementId]);
   return rows.length > 0 ? toConnection(rows[0]) : null;
+}
+
+/**
+ * Webhook idempotency: GitHub retries deliveries and each retry carries the
+ * same X-GitHub-Delivery GUID. Remember recently seen ids so a redelivery
+ * acks immediately instead of racing a second sync (concurrent syncs read
+ * prev-state before the other's write and can double-post feed items).
+ */
+const DELIVERY_TTL_MS = 15 * 60_000;
+const seenDeliveries = new Map<string, number>();
+
+export function rememberDelivery(id: string, now = Date.now()): boolean {
+  for (const [k, at] of seenDeliveries) {
+    if (now - at > DELIVERY_TTL_MS) seenDeliveries.delete(k);
+  }
+  if (seenDeliveries.has(id)) return false;
+  seenDeliveries.set(id, now);
+  return true;
 }
 
 const ConnectBody = z.object({
@@ -802,6 +821,11 @@ export function setupRepoRoutes(
         res.json({ ok: true, ignored: true });
         return;
       }
+      const deliveryId = String(req.headers['x-github-delivery'] ?? '');
+      if (deliveryId && !rememberDelivery(deliveryId)) {
+        res.json({ ok: true, duplicate: true });
+        return;
+      }
       const { rows } = await q(`SELECT * FROM app.repo_connections WHERE provider = 'github' AND repo_name = $1`, [fullName]);
       for (const row of rows) {
         await syncConnection(q, toConnection(row)).catch((err) => console.warn('[repos] webhook sync failed:', (err as Error).message));
@@ -855,7 +879,7 @@ export function setupRepoRoutes(
         [conn.id, number, sha],
       );
       if (['backlog', 'progress'].includes(String(ticket.status))) {
-        await q(`UPDATE app.tickets SET status = 'review', done_at = NULL WHERE key = $1`, [key]);
+        await setTicketStatus(q, key, 'review');
       }
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
@@ -913,13 +937,35 @@ export function setupRepoRoutes(
   });
 }
 
-/** Poll all connected repositories; failures are recorded per connection. */
-export function startRepoPolling(q: Query, intervalMs = 10 * 60_000): void {
+/**
+ * Poll all connected repositories; failures are recorded per connection.
+ *
+ * Adaptive cadence: every connection syncs at least every `intervalMs`, but a
+ * "hot" connection — one with an open PR linked to an active ticket, or a
+ * deploy watch in flight — syncs every `hotIntervalMs` so an external merge
+ * lands on the board well inside a minute without hammering the provider API
+ * for idle repos.
+ */
+export function startRepoPolling(q: Query, intervalMs = 90_000, hotIntervalMs = 30_000): void {
+  const lastSynced = new Map<number, number>();
   const tick = async () => {
     try {
       const { rows } = await q('SELECT * FROM app.repo_connections');
+      const hot = new Set(
+        (
+          await q(
+            `SELECT DISTINCT pr.connection_id FROM app.repo_prs pr
+             JOIN app.tickets t ON t.key = pr.ticket_key
+             WHERE t.status NOT IN ('done','dismissed')
+               AND (pr.state = 'open' OR pr.deploy_state IN ('pending','running','failed'))`,
+          )
+        ).rows.map((r) => Number(r.connection_id)),
+      );
       for (const row of rows) {
         const conn = toConnection(row);
+        const due = Date.now() - (lastSynced.get(conn.id) ?? 0) >= (hot.has(conn.id) ? hotIntervalMs : intervalMs);
+        if (!due) continue;
+        lastSynced.set(conn.id, Date.now());
         try {
           await syncConnection(q, conn);
         } catch (err) {
@@ -934,5 +980,5 @@ export function startRepoPolling(q: Query, intervalMs = 10 * 60_000): void {
       console.warn('[repos] poll failed:', (err as Error).message);
     }
   };
-  setInterval(() => void tick(), intervalMs).unref?.();
+  setInterval(() => void tick(), hotIntervalMs).unref?.();
 }
