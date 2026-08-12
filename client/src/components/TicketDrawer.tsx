@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
@@ -118,6 +118,14 @@ export function TicketDrawer({
   const [dev, setDev] = useState<{ key: string; data: TicketDev | null } | null>(null);
   const [draft, setDraft] = useState('');
   const [posting, setPosting] = useState(false);
+  // Waiting on the planning agent: a comment on a never-picked-up ticket makes
+  // the server rework the plan and reply as "Planning Agent". Track the post so
+  // the thread can show a typing indicator until the reply lands (or times out).
+  const [planning, setPlanning] = useState<{ key: string; afterId: number; at: number } | null>(null);
+  // Client mirror of the server's eligibility check (status + never claimed).
+  const planningEligible =
+    ['backlog', 'progress', 'proposed'].includes(ticket.status) &&
+    (agentTask === null || ['queued', 'cancelled'].includes(agentTask.state));
   const [tagDraft, setTagDraft] = useState('');
 
   const addTag = () => {
@@ -320,13 +328,51 @@ export function TicketDrawer({
     return () => clearInterval(iv);
   }, [watchDev, loadDev]);
 
-  // Agent replies land as comments: poll while the drawer is open — fast while
-  // an agent is actively on the ticket, relaxed otherwise — so responses appear
-  // without reopening the drawer.
+  // The indicator lives while the post's reply is still outstanding on the
+  // same ticket; the expiry timer below covers the failure path (the server
+  // logs rework failures and moves on without replying).
+  const planningReplied =
+    planning !== null && (loaded?.list ?? []).some((c) => c.id > planning.afterId && c.author === 'Planning Agent');
+  const planningActive = planning !== null && planning.key === ticket.key && !planningReplied;
+
   useEffect(() => {
-    const iv = setInterval(loadComments, agentActive ? 5000 : 15000);
+    if (!planningActive || planning === null) return;
+    const timer = setTimeout(() => setPlanning(null), Math.max(0, planning.at + 45_000 - Date.now()));
+    return () => clearTimeout(timer);
+  }, [planningActive, planning]);
+
+  // Agent replies land as comments: poll while the drawer is open — fast while
+  // an agent is actively on the ticket or a planning reply is due, relaxed
+  // otherwise — so responses appear without reopening the drawer.
+  useEffect(() => {
+    const iv = setInterval(loadComments, agentActive || planningActive ? 5000 : 15000);
     return () => clearInterval(iv);
-  }, [agentActive, loadComments]);
+  }, [agentActive, planningActive, loadComments]);
+
+  // The planning rework replaces the title/description/AC that sit above the
+  // comment thread, which destroys the browser's scroll anchor and yanks the
+  // drawer to the top. When the user is in the lower half (at the thread),
+  // re-anchor to bottom-distance across the content swap instead.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const bodyScroll = useRef({ bottomDist: 0, nearBottom: false });
+  const onBodyScroll = () => {
+    const el = bodyRef.current;
+    if (!el) return;
+    bodyScroll.current = {
+      bottomDist: el.scrollHeight - el.scrollTop,
+      nearBottom: el.scrollTop + el.clientHeight > el.scrollHeight * 0.55,
+    };
+  };
+  const planContent = `${ticket.key} ${ticket.title} ${ticket.description} ${ticket.ac.join('|')}`;
+  const prevPlanContent = useRef(planContent);
+  useLayoutEffect(() => {
+    if (prevPlanContent.current === planContent) return;
+    const keyChanged = !prevPlanContent.current.startsWith(`${ticket.key} `);
+    prevPlanContent.current = planContent;
+    if (keyChanged) return; // switching tickets is a real navigation, not a rework
+    const el = bodyRef.current;
+    if (el && bodyScroll.current.nearBottom) el.scrollTop = el.scrollHeight - bodyScroll.current.bottomDist;
+  }, [planContent, ticket.key]);
 
   const [mergeArm, setMergeArm] = useState<number | null>(null);
   const [merging, setMerging] = useState<number | null>(null);
@@ -357,7 +403,9 @@ export function TicketDrawer({
         );
         setDraft('');
         // On un-picked-up tickets the planning agent may rework the plan and
-        // reply — poll a few times so both land without reopening the drawer.
+        // reply — show the typing indicator and poll a few times so both land
+        // without reopening the drawer.
+        if (planningEligible) setPlanning({ key: ticket.key, afterId: c.id, at: Date.now() });
         [4000, 9000, 16000].forEach((ms) =>
           setTimeout(() => {
             loadComments();
@@ -423,7 +471,7 @@ export function TicketDrawer({
             ×
           </button>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
+        <div ref={bodyRef} onScroll={onBodyScroll} style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
           <h2 style={{ margin: '0 0 14px', fontSize: 15, fontWeight: 600, lineHeight: 1.4 }}>{ticket.title}</h2>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
@@ -1103,7 +1151,7 @@ export function TicketDrawer({
                 </div>
               </motion.div>
             ))}
-            {agentTask && ['claimed', 'working'].includes(agentTask.state) && (
+            {(planningActive || (agentTask !== null && ['claimed', 'working'].includes(agentTask.state))) && (
               <motion.div
                 key="agent-typing"
                 initial={{ opacity: 0, transform: 'translateY(4px)' }}
@@ -1124,7 +1172,7 @@ export function TicketDrawer({
                     ...mono(500, 10),
                     color: 'var(--agent)',
                   }}
-                  title={agentTask.agent ?? 'Agent'}
+                  title={planningActive ? 'Planning Agent' : (agentTask?.agent ?? 'Agent')}
                 >
                   ◆
                 </span>
@@ -1151,7 +1199,7 @@ export function TicketDrawer({
                     />
                   ))}
                   <span style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em', marginLeft: 5 }}>
-                    AGENT IS WORKING — REPLIES LAND HERE
+                    {planningActive ? 'PLANNING AGENT IS REWORKING THE PLAN…' : 'AGENT IS WORKING — REPLIES LAND HERE'}
                   </span>
                 </div>
               </motion.div>
