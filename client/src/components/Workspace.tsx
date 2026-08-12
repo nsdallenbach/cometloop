@@ -3,6 +3,7 @@ import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/rea
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, initials, mono } from '../util';
+import { dropBoardTicket, laneOf } from '../lib/board-order';
 import { Analytics } from './Analytics';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
@@ -16,10 +17,13 @@ const COLS: [TicketStatus, string][] = [
 
 const SKILL_COLS = ['DBX', 'DBT', 'PY', 'BI', 'AZURE', 'PM'];
 
-/** What's being carried during a pointer drag (plus the clone's fixed width). */
+/** What's being carried during a pointer drag (plus the clone's fixed size). */
 type DragPayload =
-  | { kind: 'ticket'; key: string; w: number }
-  | { kind: 'task'; key: string; taskId: number; queued: boolean; w: number };
+  | { kind: 'ticket'; key: string; w: number; h: number }
+  | { kind: 'task'; key: string; taskId: number; queued: boolean; w: number; h: number };
+
+/** Where a dragged ticket would land: lane + slot index among its cards. */
+type DropSlot = { lane: Extract<TicketStatus, 'backlog' | 'review' | 'done'>; idx: number };
 
 const PR_STATE_COLOR: Record<string, string> = { open: 'var(--warn)', merged: 'var(--ok)', closed: 'var(--tx3)' };
 
@@ -92,6 +96,12 @@ export function Workspace({
   const dragY = useMotionValue(0);
   const dragOverColRef = useRef<TicketStatus | 'agent' | null>(null);
   const hoverQcardRef = useRef<number | null>(null);
+  // Live insertion slot for a dragged ticket: the lane renders a gap here and
+  // its cards shift around it, previewing exactly where the drop will land.
+  // Ref + state pair like the lane hover: state only changes when the slot
+  // does, so pointer moves inside a slot cost no re-render.
+  const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
+  const dropSlotRef = useRef<DropSlot | null>(null);
   const suppressClick = useRef(false);
   // A card the user just dropped skips the layout spring and slots straight
   // into its new lane — without this it re-appears in the source slot and
@@ -140,6 +150,25 @@ export function Workspace({
     () => new Set([...laneTasks.running, ...laneTasks.queued].map((a) => a.ticketKey)),
     [laneTasks],
   );
+  /**
+   * A lane's cards in render order — shared by the kanban render and the
+   * drag engine so drop slots always line up with what's on screen. No In
+   * Progress lane: human-active tickets sit in Backlog until they reach
+   * Review; agent-active ones sit in the agent lane. Done auto-hides work
+   * completed more than 24h ago (tickets without a completion time age out
+   * too) and shows the rest newest-first.
+   */
+  const laneTickets = (k: TicketStatus): Ticket[] => {
+    let col = (detail?.tickets ?? []).filter(
+      (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key),
+    );
+    if (k === 'done') {
+      const cutoff = now - 24 * 60 * 60 * 1000;
+      const doneTs = (t: Ticket) => (t.doneAt ? Date.parse(t.doneAt) : NaN);
+      col = col.filter((t) => doneTs(t) >= cutoff).sort((a, b) => doneTs(b) - doneTs(a));
+    }
+    return col;
+  };
   const proposedTickets = tickets.filter((t) => t.status === 'proposed');
   const bulkKeys = Object.keys(bulk).filter((k) => bulk[k]);
   const composerText = composer ?? eng.composer;
@@ -186,7 +215,7 @@ export function Workspace({
     return (
     <div
       {...(!clone && {
-        onPointerDown: (e: React.PointerEvent) => beginPress(e, { kind: 'ticket', key: t.key, w: 0 }),
+        onPointerDown: (e: React.PointerEvent) => beginPress(e, { kind: 'ticket', key: t.key, w: 0, h: 0 }),
         onClick: () => {
           if (!suppressClick.current) openTicket(t.key);
         },
@@ -341,18 +370,37 @@ export function Workspace({
   const ticketCard = (t: Ticket) => (
     <motion.div
       key={t.key}
+      data-tcard={t.key}
       layoutId={`card-${t.key}`}
       layout
       initial={false}
       // Cards the user just dropped slot straight into place; springs are for
       // moves the user didn't make (agent claims, poll-driven updates).
       transition={isJustDropped(t.key) ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
-      // While dragging, the in-lane card dims to a placeholder; the floating
-      // clone under the cursor is the thing that moves.
-      style={{ borderRadius: 3, opacity: pDrag?.kind === 'ticket' && pDrag.key === t.key ? 0.3 : 1 }}
+      style={{ borderRadius: 3 }}
     >
       {ticketCardInner(t)}
     </motion.div>
+  );
+
+  // Lane accents (drag highlight, drop slot): Review yellow, Done green,
+  // Backlog blue.
+  const laneAccent = (k: TicketStatus | 'agent') => (k === 'review' ? 'var(--warn)' : k === 'done' ? 'var(--ok)' : 'var(--acc)');
+
+  /** The gap a dragged ticket will drop into; lane cards shift around it. */
+  const dropSlotGap = (k: DropSlot['lane'], h: number) => (
+    <div
+      key="drop-slot"
+      data-dropslot=""
+      style={{
+        height: h,
+        flex: 'none',
+        border: `1px dashed ${laneAccent(k)}`,
+        borderRadius: 3,
+        background: 'var(--bg3)',
+        opacity: 0.7,
+      }}
+    />
   );
 
   // ---- Deploy-to-Agent lane ----
@@ -448,11 +496,21 @@ export function Workspace({
     const startX = e.clientX;
     const startY = e.clientY;
     let started = false;
+    // Where the dragged ticket came from — the slot gap starts there, and a
+    // within-Done hover returns there (Done orders itself newest-first).
+    let origin: DropSlot | null = null;
 
     const setLane = (lane: TicketStatus | 'agent' | null) => {
       if (dragOverColRef.current === lane) return;
       dragOverColRef.current = lane;
       setDragOverCol(lane);
+    };
+
+    const setSlot = (s: DropSlot | null) => {
+      const cur = dropSlotRef.current;
+      if (cur === s || (cur !== null && s !== null && cur.lane === s.lane && cur.idx === s.idx)) return;
+      dropSlotRef.current = s;
+      setDropSlot(s);
     };
 
     const move = (ev: PointerEvent) => {
@@ -461,17 +519,55 @@ export function Workspace({
         started = true;
         suppressClick.current = true;
         document.body.style.userSelect = 'none';
-        const d = { ...payload, w: rect.width };
+        const d = { ...payload, w: rect.width, h: rect.height };
         pDragRef.current = d;
         setPDrag(d);
+        if (payload.kind === 'ticket') {
+          const t = tickets.find((x) => x.key === payload.key);
+          if (t) {
+            const lane = laneOf(t);
+            origin = { lane, idx: Math.max(0, laneTickets(lane).findIndex((x) => x.key === payload.key)) };
+          }
+          setSlot(origin);
+        }
       }
       dragX.set(ev.clientX - (startX - rect.left));
       dragY.set(ev.clientY - (startY - rect.top));
       const under = document.elementFromPoint(ev.clientX, ev.clientY);
       const laneEl = under?.closest('[data-lane]');
-      setLane(laneEl ? (laneEl.getAttribute('data-lane') as TicketStatus | 'agent') : null);
+      const lane = laneEl ? (laneEl.getAttribute('data-lane') as TicketStatus | 'agent') : null;
+      setLane(lane);
       const qEl = under?.closest('[data-qcard]');
       hoverQcardRef.current = qEl ? Number(qEl.getAttribute('data-qcard')) : null;
+      if (payload.kind !== 'ticket') return;
+      // Track the insertion slot: hovering a card's top half slots before it,
+      // bottom half after. The gap itself and lane padding keep the current
+      // slot, which makes the preview stable while cards shift around.
+      if (lane === 'done') {
+        // Done sorts itself newest-first: an entering card lands on top; a
+        // within-Done drag goes back where it came from.
+        setSlot(origin !== null && origin.lane === 'done' ? origin : { lane: 'done', idx: 0 });
+      } else if (lane !== 'backlog' && lane !== 'review') {
+        setSlot(null);
+      } else {
+        const cardEl = laneEl ? under?.closest('[data-tcard]') : null;
+        if (cardEl && laneEl) {
+          const cards = laneEl.querySelectorAll('[data-tcard]');
+          let idx = 0;
+          for (let i = 0; i < cards.length; i++) {
+            if (cards[i] === cardEl) {
+              idx = i;
+              break;
+            }
+          }
+          const r = cardEl.getBoundingClientRect();
+          if (ev.clientY > r.top + r.height / 2) idx += 1;
+          setSlot({ lane, idx });
+        } else if (dropSlotRef.current === null || dropSlotRef.current.lane !== lane) {
+          // Entered the lane away from any card: slot at the end.
+          setSlot({ lane, idx: laneEl ? laneEl.querySelectorAll('[data-tcard]').length : 0 });
+        }
+      }
     };
 
     const finish = (drop: boolean) => {
@@ -482,13 +578,15 @@ export function Workspace({
       if (!started) return;
       const lane = dragOverColRef.current;
       const overQcard = hoverQcardRef.current;
+      const slot = dropSlotRef.current;
       pDragRef.current = null;
       setPDrag(null);
       setLane(null);
+      setSlot(null);
       hoverQcardRef.current = null;
       // Click fires right after pointerup — release the guard a tick later.
       setTimeout(() => (suppressClick.current = false), 0);
-      if (drop) dropCard(payload, lane, overQcard);
+      if (drop) dropCard(payload, lane, overQcard, slot);
     };
     const up = () => finish(true);
     const cancel = () => finish(false);
@@ -497,7 +595,7 @@ export function Workspace({
     window.addEventListener('pointercancel', cancel);
   };
 
-  const dropCard = (payload: DragPayload, lane: TicketStatus | 'agent' | null, overQcard: number | null) => {
+  const dropCard = (payload: DragPayload, lane: TicketStatus | 'agent' | null, overQcard: number | null, slot: DropSlot | null) => {
     markDropped(payload.key);
     if (payload.kind === 'task') {
       if (!lead) return;
@@ -530,10 +628,22 @@ export function Workspace({
       deployTicket(payload.key);
       return;
     }
-    if (lane == null) return;
-    const t = tickets.find((x) => x.key === payload.key);
-    if (!t || t.status === lane) return;
-    setTicket(payload.key, { status: lane });
+    if (lane !== 'backlog' && lane !== 'review' && lane !== 'done') return;
+    // Land exactly where the slot gap previewed it — including a new order
+    // within the lane. Optimistic like every board mutation; a failed save
+    // refetches so the board falls back to the server's truth.
+    const laneList = laneTickets(lane).filter((x) => x.key !== payload.key);
+    const idx = slot !== null && slot.lane === lane ? slot.idx : laneList.length;
+    const result = dropBoardTicket(tickets, payload.key, lane, laneList, idx, new Date().toISOString());
+    if (!result) return;
+    setDetail((d) => (d ? { ...d, tickets: result.tickets } : d));
+    const saves: Promise<unknown>[] = [];
+    if (result.statusChanged) saves.push(api.patchTicket(payload.key, { status: lane }));
+    if (result.orderChanged) saves.push(api.reorderTickets(eng.id, result.tickets.map((x) => x.key)));
+    Promise.all(saves).catch((e: Error) => {
+      refreshDetail();
+      toast(`Move failed — ${e.message}`);
+    });
   };
 
   const agentCardInner = (at: AgentTask, qPos: number | null, clone = false) => {
@@ -567,7 +677,7 @@ export function Workspace({
           ...(!running && { 'data-qcard': at.id }),
           ...(lead && {
             onPointerDown: (e: React.PointerEvent) =>
-              beginPress(e, { kind: 'task', key: at.ticketKey, taskId: at.id, queued: !running, w: 0 }),
+              beginPress(e, { kind: 'task', key: at.ticketKey, taskId: at.id, queued: !running, w: 0, h: 0 }),
           }),
           onClick: () => {
             if (!suppressClick.current) openTicket(at.ticketKey);
@@ -907,18 +1017,16 @@ export function Workspace({
               <LayoutGroup>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(250px,1fr))', gap: 12, minWidth: 1040, height: '100%' }}>
                 {COLS.map(([k, label]) => {
-                  // No In Progress lane: human-active tickets sit in Backlog
-                  // until they reach Review; agent-active ones sit in the lane.
-                  let colTickets = tickets.filter(
-                    (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key),
-                  );
-                  if (k === 'done') {
-                    // Done auto-hides work completed more than 24h ago (tickets
-                    // without a completion time age out too) and shows the rest
-                    // newest-first.
-                    const cutoff = now - 24 * 60 * 60 * 1000;
-                    const doneTs = (t: Ticket) => (t.doneAt ? Date.parse(t.doneAt) : NaN);
-                    colTickets = colTickets.filter((t) => doneTs(t) >= cutoff).sort((a, b) => doneTs(b) - doneTs(a));
+                  const colTickets = laneTickets(k);
+                  // While a ticket is dragged its card leaves the lane; the
+                  // slot gap marks where it will land and the other cards
+                  // shift around it, previewing the drop before release.
+                  let cards: React.ReactNode[] = (
+                    pDrag?.kind === 'ticket' ? colTickets.filter((t) => t.key !== pDrag.key) : colTickets
+                  ).map(ticketCard);
+                  if (pDrag?.kind === 'ticket' && dropSlot?.lane === k) {
+                    const at = Math.min(dropSlot.idx, cards.length);
+                    cards = [...cards.slice(0, at), dropSlotGap(dropSlot.lane, pDrag.h), ...cards.slice(at)];
                   }
                   return (
                     <Fragment key={k}>
@@ -930,9 +1038,8 @@ export function Workspace({
                         flexDirection: 'column',
                         minHeight: 0,
                         background: 'var(--bg)',
-                        // Drag-over highlight matches the lane's card accent:
-                        // Review yellow, Done green, Backlog blue.
-                        border: `1px solid ${dragOverCol === k ? (k === 'review' ? 'var(--warn)' : k === 'done' ? 'var(--ok)' : 'var(--acc)') : 'var(--line)'}`,
+                        // Drag-over highlight matches the lane's card accent.
+                        border: `1px solid ${dragOverCol === k ? laneAccent(k) : 'var(--line)'}`,
                         borderRadius: 4,
                       }}
                     >
@@ -941,7 +1048,7 @@ export function Workspace({
                         <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{colTickets.length}</span>
                       </div>
                       <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
-                        {colTickets.map(ticketCard)}
+                        {cards}
                       </div>
                     </div>
                     </Fragment>

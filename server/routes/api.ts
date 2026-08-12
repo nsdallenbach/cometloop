@@ -14,6 +14,7 @@ import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
 import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
 import { normalizeTags } from './ticket-tags';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
+import { setupTicketOrderRoutes } from './ticket-order';
 import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
 import {
   SEED_ENGAGEMENTS,
@@ -1638,6 +1639,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
 
     setupRepoRoutes(app, q, requireLead);
     setupTicketLinkRoutes(app, q);
+    setupTicketOrderRoutes(app, q);
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireLead, telemetry);
     setupToolCallRoutes(app, q);
