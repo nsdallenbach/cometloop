@@ -80,6 +80,7 @@ function planContractLines(roadmapItems: string[]): string[] {
       '}',
     'The description becomes the prompt handed to an autonomous coding agent, so make it a compact plan in markdown with these sections (omit any that truly do not apply): ## Context (what exists today and why this is needed), ## Approach (how to implement, referencing systems/files/endpoints implied by the request), ## Dependencies (other tickets, credentials, decisions or unknowns the agent should check first).',
     'Plan only what the request implies — do not invent scope. 3-6 acceptance criteria.',
+    'When the work spans multiple components, services, or a flow with 3+ steps, include ONE compact diagram inside the ## Approach section as a fenced ```mermaid block (flowchart LR or sequenceDiagram; at most ~10 nodes; label every arrow with what moves or happens). The diagram must show the mechanism — components talking, data moving, states changing — not just name boxes. Skip it entirely when a diagram would not add real information. The fence lives INSIDE the "description" markdown string; your response overall is still only the bare JSON object.',
     'est_hours is the expected Claude Code agent execution time from claim to ready-for-review, in agent-hours (may be fractional, typically 0.2–8): a small well-scoped change is under an hour; only genuinely sprawling multi-system work exceeds 8.',
     'human_est_hours is an independent estimate of the same scope done by a professional human developer, in hours — usually 3–6× the agent time, but reason from the scope rather than applying a multiplier.',
     ...(roadmapItems.length > 0
@@ -152,7 +153,7 @@ export async function refinePlan(
           ].join('\n\n'),
         },
       ],
-      max_tokens: 1500,
+      max_tokens: 2000,
     }, ictx);
     return parsePlan(extractText(response), roadmapItems);
   } catch (err) {
@@ -209,7 +210,7 @@ export async function refineTicketWithBoard(
   const actions: ScopingAction[] = [];
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = await invokeModel(serving, q, 'ticket-refine', { messages, tools, max_tokens: 2500 }, {
+      const response = await invokeModel(serving, q, 'ticket-refine', { messages, tools, max_tokens: 3000 }, {
         engagementId: opts.engagementId,
         ticketKey: opts.key,
       });
