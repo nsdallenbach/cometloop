@@ -13,7 +13,7 @@ export interface PaletteSearchable {
   keywords?: string[];
 }
 
-const FIELD_WEIGHTS: Array<[keyof PaletteSearchable | 'keywords', number]> = [
+const FIELD_WEIGHTS: Array<[keyof PaletteSearchable, number]> = [
   ['label', 1],
   ['keywords', 0.85],
   ['description', 0.7],
