@@ -8,6 +8,7 @@ import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-wor
 import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
 import { setupContextFileRoutes } from './context-files';
+import { ATTACHMENT_SCHEMA_SQL, deleteAttachmentFiles, setupTicketAttachmentRoutes } from './ticket-attachments';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
 import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
 import { normalizeTags } from './ticket-tags';
@@ -149,7 +150,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -950,6 +951,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         const engagementId = String(current.engagement_id);
         if (!(await requireLead(req, res, engagementId))) return;
+        await deleteAttachmentFiles(q, appkit.files('files'), [key]);
         await q('DELETE FROM app.suggestions WHERE ticket = $1', [key]);
         await q('UPDATE app.repo_prs SET ticket_key = NULL WHERE ticket_key = $1', [key]);
         await q('UPDATE app.repo_commits SET ticket_key = NULL WHERE ticket_key = $1', [key]);
@@ -1374,6 +1376,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           res.status(404).json({ error: 'Engagement not found' });
           return;
         }
+        const ticketKeys = (await q('SELECT key FROM app.tickets WHERE engagement_id = $1', [id])).rows.map((r) => String(r.key));
+        await deleteAttachmentFiles(q, appkit.files('files'), ticketKeys);
         await q('DELETE FROM app.suggestions WHERE ticket IN (SELECT key FROM app.tickets WHERE engagement_id = $1)', [id]);
         await q('DELETE FROM app.feed_items WHERE engagement_id = $1', [id]);
         await q('DELETE FROM app.sources WHERE engagement_id = $1', [id]);
@@ -1524,6 +1528,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupPrConflictRoutes(app, q);
     setupEstimateRoutes(app, q);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
+    setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
 
     app.post('/api/tickets/:key/comments', async (req, res) => {

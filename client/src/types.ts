@@ -164,6 +164,17 @@ export interface ContextFile {
   url: string;
 }
 
+export interface TicketAttachment {
+  id: string;
+  filename: string;
+  size: number;
+  contentType: string;
+  sha256: string;
+  uploader: string;
+  createdAt: string | null;
+  url: string;
+}
+
 /** Per-engagement Project Standards markdown document. */
 export interface ProjectStandards {
   content: string;
