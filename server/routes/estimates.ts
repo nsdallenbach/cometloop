@@ -278,7 +278,7 @@ export async function estimateTicket(
 
     const response = await invokeModel(serving, q, 'estimate', {
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 400,
+      max_tokens: 800,
     }, { engagementId: input.engagementId, ticketKey: input.key });
     const parsed = parseEstimateOutput(extractModelText(response));
     if (!parsed) {
