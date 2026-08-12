@@ -62,12 +62,20 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 | `POST` | `/api/agent/work/claim` | Atomically claim the next task → returns the work package |
 | `GET` | `/api/agent/work/:id` | Re-fetch the work package for a claimed task |
 | `POST` | `/api/agent/work/:id/progress` | Heartbeat + progress note (becomes a ticket comment) |
+| `POST` | `/api/agent/work/:id/tool-calls` | Stream tool-call events (batched) → live feed in the ticket drawer, never comments |
 | `POST` | `/api/agent/work/:id/git-credential` | Short-lived clone/push token (GitHub App connections only) |
 | `POST` | `/api/agent/work/:id/flag` | Raise a warning (stuck/erroring/needs input) — yellow on the board, no lane change |
 | `DELETE` | `/api/agent/work/:id/flag` | Clear the warning after recovering |
+| `POST` | `/api/agent/work/:id/pr/:number/conflicts` | Merge-conflict analysis for a PR the agent opened (see below) |
+| `POST` | `/api/agent/work/:id/pr/:number/escalate` | Flag a conflicted PR for developer review (comment + label + reviewers + board flag) |
+| `POST` | `/api/agent/work/:id/pr/:number/comment` | Post a PR comment (e.g. document an auto-resolved conflict) |
 | `POST` | `/api/agent/work/:id/complete` | Finish with `done` or `failed` |
 | `GET` | `/api/engagements/:id/context-files` | List context files for an engagement |
 | `GET` | `/api/engagements/:id/context-files/:name` | Download one context file |
+| `GET` | `/api/tickets/:key/attachments` | List a ticket's file attachments |
+| `POST` | `/api/tickets/:key/attachments?filename=` | Upload an attachment (raw body, max 25 MB; executables rejected) |
+| `GET` | `/api/tickets/:key/attachments/:id` | Download one attachment (`X-Content-Sha256` header carries the checksum) |
+| `DELETE` | `/api/tickets/:key/attachments/:id` | Delete an attachment (lead only) |
 
 ### Claim
 
@@ -82,8 +90,8 @@ atomic (`FOR UPDATE SKIP LOCKED`) — concurrent runners never get the same task
 
 The response contains `task` (note `task.id` and `task.instructions`),
 `ticket` (with `description` and `ac` acceptance criteria), `engagement`,
-`comments`, `repo`, and `contextFiles` (each with a relative `url` to download
-through the app).
+`comments`, `repo`, `contextFiles`, and `attachments` (context files and
+attachments each carry a relative `url` to download through the app).
 
 ### Progress
 
@@ -101,6 +109,63 @@ curl -s -X POST "$APP/api/agent/work/$TASK_ID/complete" -H "$AUTH" -H 'Content-T
 
 `outcome: "failed"` returns the ticket to the backlog; put the reason in
 `summary` so the lead sees it on the ticket.
+
+### Tool-call streaming (telemetry)
+
+Runners that watch their agent's tool use (the bundled `devbox-runner` parses
+Claude Code's `stream-json` output) should batch-post each `tool_use` event —
+these render as a live **TOOL ACTIVITY** feed in the ticket drawer instead of
+flooding the comment thread, and each batch doubles as a heartbeat:
+
+```bash
+curl -s -X POST "$APP/api/agent/work/$TASK_ID/tool-calls" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"agent": "devbox-1", "calls": [
+        {"tool": "Bash", "detail": "git status", "ts": "2026-08-11T12:00:00Z"},
+        {"tool": "Read", "detail": "server/server.ts", "ts": "2026-08-11T12:00:05Z"}
+      ]}'
+```
+
+Up to 200 calls per batch; `detail` is a short human label (file path,
+command), max 600 chars. Batch every few seconds rather than per event.
+When the run completes (or is cancelled), the console archives the full log
+as NDJSON to the `sandbox.engagement_console.agent_telemetry` UC volume under
+`tool-calls/<engagement>/<ticket>/task-<id>.ndjson` for offline analysis.
+
+## Merge conflicts on agent PRs
+
+The server-rendered prompt tells the agent to check its freshly opened PR for
+merge conflicts against the base branch and act on what it finds. The division
+of labor: the agent has the clone (it computes the conflicted files locally
+with `git merge-tree`), the console has the provider token and the PR↔ticket
+links (it knows whose work overlaps).
+
+```bash
+curl -s -X POST "$APP/api/agent/work/$TASK_ID/pr/$PR/conflicts" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"agent": "devbox-1", "conflict_files": ["server/routes/api.ts"]}'
+```
+
+The response reports the provider's mergeability verdict, every other open PR
+(and recently merged PR) touching the same files with the ticket each is
+linked to, and an `assessment`: `auto-resolve` when nothing overlapping is in
+flight and no other ticket is impacted, otherwise `developer-review` with
+reasons. The threshold for "impacts another ticket" is a shared file: an open
+PR touching a conflicted file, or a recently merged PR from a different ticket
+having changed one.
+
+- **Auto-resolve path** — the agent merges the base branch into its PR branch,
+  resolves, re-tests, pushes, and documents the resolution via
+  `POST …/pr/:number/comment`.
+- **Escalation path** — `POST …/pr/:number/escalate` with a `reason` and the
+  overlapping `conflicting_prs`. The console comments on the PR naming the
+  conflicting PR(s) and ticket(s), adds a `merge-conflict` label, requests
+  review from the developers who authored the conflicting PRs (GitHub; on ADO
+  the comment mention is the notification), flags the agent task on the board,
+  and posts a heads-up comment on each impacted ticket. The agent then
+  completes normally and notes the flag in `RESULT.md`.
+
+All three endpoints are also exposed as MCP tools (`check_pr_conflicts`,
+`escalate_pr_conflict`, `comment_on_pr`) when the runner wires up
+`mcp/server.mjs`.
 
 ## Minimal runner loop (devbox)
 

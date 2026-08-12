@@ -5,8 +5,16 @@ import { resolveIdentity, type Identity } from './roles';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
+import { COORDINATION_SCHEMA_SQL, setupCoordinationRoutes } from './coordination';
+import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
+import { setupPrConflictRoutes } from './pr-conflicts';
 import { setupContextFileRoutes } from './context-files';
+import { ATTACHMENT_SCHEMA_SQL, deleteAttachmentFiles, setupTicketAttachmentRoutes } from './ticket-attachments';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
+import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
+import { normalizeTags } from './ticket-tags';
+import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
+import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
 import {
   SEED_ENGAGEMENTS,
   SEED_TICKETS,
@@ -75,8 +83,16 @@ const SCHEMA_SQL = [
     description TEXT NOT NULL DEFAULT '',
     ac JSONB NOT NULL DEFAULT '[]',
     blocked BOOLEAN NOT NULL DEFAULT false,
-    seq SERIAL
+    tags JSONB NOT NULL DEFAULT '[]',
+    seq SERIAL,
+    done_at TIMESTAMPTZ
   )`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS branch TEXT`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ`,
+  // Pre-migration done tickets have no completion time; stamp them at first
+  // boot so they age out of the Done lane 24h from now instead of vanishing.
+  `UPDATE app.tickets SET done_at = NOW() WHERE status = 'done' AND done_at IS NULL`,
   `CREATE TABLE IF NOT EXISTS app.sources (
     id SERIAL PRIMARY KEY,
     engagement_id TEXT NOT NULL REFERENCES app.engagements(id),
@@ -140,7 +156,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -177,8 +193,8 @@ async function initSchema(appkit: AppKitServices) {
   }
   for (const t of SEED_TICKETS) {
     await appkit.lakebase.query(
-      `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked)
-       VALUES ($1,'cav',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, done_at)
+       VALUES ($1,'cav',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $3 = 'done' THEN NOW() END)`,
       [t.key, t.title, t.status, t.assignee, t.est, t.workstream, t.agent, JSON.stringify(t.sources), t.description, JSON.stringify(t.ac), t.blocked],
     );
   }
@@ -206,6 +222,8 @@ async function initSchema(appkit: AppKitServices) {
       g.id, g.ticket, g.person, g.rationale,
     ]);
   }
+  // The seeded tickets need baseline events too — the schema-time backfill ran before they existed.
+  await appkit.lakebase.query(TICKET_EVENTS_BACKFILL_SQL);
   console.log('[api] Seed complete');
   await backfillMemberships(appkit);
 }
@@ -404,6 +422,7 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
     : existingAc;
   const reply = typeof plan.reply === 'string' && plan.reply.trim() ? plan.reply.trim().slice(0, 600) : 'Updated the ticket based on your comment.';
 
+  console.log(`[api] comment feedback applied to ${key} — plan updated (${ac.length} AC)`);
   await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4 WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
   await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [key, 'Planning Agent', `@${author} — ${reply}`]);
   await q(
@@ -481,11 +500,17 @@ const PatchTicketBody = z.object({
   assignee: z.string().optional(),
   roadmapItem: z.string().max(120).nullable().optional(),
   estHours: z.number().min(0).max(400).nullable().optional(),
+  // Git refs cap out around 255 bytes; empty string clears the manual value so
+  // the card falls back to the branch of the latest linked PR.
+  branch: z.string().trim().max(255).optional(),
+  tags: z.array(z.string().max(40)).max(20).optional(),
 });
 
 const BulkBody = z.object({
   keys: z.array(z.string()).min(1),
-  patch: PatchTicketBody,
+  // Tags are excluded: a bulk patch replaces the whole tag list, which is
+  // never what "tag these N tickets" means. Tags are edited per-ticket.
+  patch: PatchTicketBody.omit({ tags: true }),
 });
 
 const SuggestionBody = z.object({ decision: z.enum(['acc', 'ovr']) });
@@ -625,16 +650,30 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         const id = req.params.id;
         // Latest tracked deploy per ticket rides along so board cards can show
-        // pipeline progress while the ticket holds in Review.
+        // pipeline progress while the ticket holds in Review, the active PR
+        // (open one if any, else most recently updated) for branch/state on
+        // cards, and waiting_on = unresolved blocking tickets for dependency chips.
         const tickets = (
           await q(
-            `SELECT t.*, d.deploy_state, d.deploy_url FROM app.tickets t
+            `SELECT t.*, d.deploy_state, d.deploy_url,
+                    p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url,
+                    (SELECT COUNT(*)::int FROM app.ticket_links l
+                     JOIN app.tickets b ON b.key = l.ticket_key
+                     WHERE l.linked_key = t.key AND l.type = 'blocks'
+                       AND b.status NOT IN ('done','dismissed')) AS waiting_on
+             FROM app.tickets t
              LEFT JOIN LATERAL (
                SELECT pr.deploy_state, pr.deploy_url FROM app.repo_prs pr
                JOIN app.repo_connections c ON c.id = pr.connection_id
                WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id AND pr.deploy_state IS NOT NULL
                ORDER BY pr.updated_at DESC NULLS LAST LIMIT 1
              ) d ON true
+             LEFT JOIN LATERAL (
+               SELECT pr.number, pr.title, pr.state, pr.branch, pr.url FROM app.repo_prs pr
+               JOIN app.repo_connections c ON c.id = pr.connection_id
+               WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id
+               ORDER BY (pr.state = 'open') DESC, pr.updated_at DESC NULLS LAST LIMIT 1
+             ) p ON true
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
             [id],
           )
@@ -665,6 +704,67 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
     });
 
+    // Daily open/done ticket counts replayed from the status event trail.
+    // Empty trail (zero tickets, fresh engagement) → { days: [] }.
+    app.get('/api/engagements/:id/burndown', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const exists = await q('SELECT 1 FROM app.engagements WHERE id = $1', [id]);
+        if (exists.rows.length === 0) {
+          res.status(404).json({ error: 'Engagement not found' });
+          return;
+        }
+        const { rows } = await q(
+          'SELECT ticket_key, to_status, created_at FROM app.ticket_events WHERE engagement_id = $1 ORDER BY created_at, id',
+          [id],
+        );
+        const events = rows.map((r) => ({
+          ticketKey: String(r.ticket_key),
+          toStatus: String(r.to_status),
+          createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        }));
+        res.json({ days: computeBurndown(events, new Date().toISOString().slice(0, 10)) });
+      } catch (err) {
+        console.error('burndown failed:', err);
+        res.status(500).json({ error: 'Failed to load burndown' });
+      }
+    });
+
+    // Cross-project reads backing the /tickets and /tickets/:key routes: the
+    // client resolves a deep-linked ticket to its engagement via these.
+    app.get('/api/tickets', async (_req, res) => {
+      try {
+        const { rows } = await q(
+          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
+           JOIN app.engagements e ON e.id = t.engagement_id
+           ORDER BY e.created_at, e.id, t.seq`,
+        );
+        res.json(rows);
+      } catch (err) {
+        console.error('list tickets failed:', err);
+        res.status(500).json({ error: 'Failed to load tickets' });
+      }
+    });
+
+    app.get('/api/tickets/:key', async (req, res) => {
+      try {
+        const { rows } = await q(
+          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
+           JOIN app.engagements e ON e.id = t.engagement_id
+           WHERE t.key = $1`,
+          [req.params.key],
+        );
+        if (rows.length === 0) {
+          res.status(404).json({ error: 'Ticket not found' });
+          return;
+        }
+        res.json(rows[0]);
+      } catch (err) {
+        console.error('ticket lookup failed:', err);
+        res.status(500).json({ error: 'Failed to load ticket' });
+      }
+    });
+
     // ---- ticket mutations ----
     app.patch('/api/tickets/:key', async (req, res) => {
       const parsed = PatchTicketBody.safeParse(req.body);
@@ -673,8 +773,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         return;
       }
       try {
-        const { status, assignee } = parsed.data;
+        const { status, assignee, branch } = parsed.data;
+        const tags = parsed.data.tags === undefined ? undefined : normalizeTags(parsed.data.tags);
         let review: { engagementId: string; from: string } | null = null;
+        let enteredReview = false;
+        let before: { engagementId: string; status: string } | null = null;
         if (status !== undefined) {
           // Moving tickets in or out of the agent-review states is a lead decision;
           // everything else (board moves, assignment) is open to developers.
@@ -683,17 +786,22 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             res.status(404).json({ error: 'Ticket not found' });
             return;
           }
+          before = { engagementId: String(current.engagement_id), status: String(current.status) };
           const reviewStates = ['proposed', 'dismissed'];
           if (reviewStates.includes(String(current.status)) || reviewStates.includes(status)) {
             if (!(await requireLead(req, res, String(current.engagement_id)))) return;
             review = { engagementId: String(current.engagement_id), from: String(current.status) };
           }
+          enteredReview = status === 'review' && String(current.status) !== 'review';
         }
         const sets: string[] = [];
         const params: unknown[] = [req.params.key];
         if (status !== undefined) {
           params.push(status);
           sets.push(`status = $${params.length}`);
+          // Completion time drives the Done lane's 24h auto-hide: stamped on
+          // entering 'done' (kept if already done), cleared on leaving it.
+          sets.push(`done_at = CASE WHEN $${params.length} = 'done' THEN COALESCE(done_at, NOW()) END`);
         }
         if (assignee !== undefined) {
           params.push(assignee);
@@ -707,6 +815,14 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           params.push(parsed.data.estHours);
           sets.push(`est_hours = $${params.length}`);
         }
+        if (branch !== undefined) {
+          params.push(branch === '' ? null : branch);
+          sets.push(`branch = $${params.length}`);
+        }
+        if (tags !== undefined) {
+          params.push(JSON.stringify(tags));
+          sets.push(`tags = $${params.length}`);
+        }
         if (sets.length === 0) {
           res.status(400).json({ error: 'Empty patch' });
           return;
@@ -717,6 +833,16 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           return;
         }
         const updated = result.rows[0] as { key: string; title: string; status: string };
+        console.log(
+          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${branch !== undefined ? ` — branch → '${branch}'` : ''}${tags !== undefined ? ` — tags → [${tags.join(', ')}]` : ''}`,
+        );
+        if (enteredReview) {
+          // Ready for review: log the actual LLM working time against the estimate.
+          void recordActualHours(q, updated.key, 'status-patch');
+        }
+        if (status !== undefined && before) {
+          await recordTicketEvent(q, updated.key, before.engagementId, before.status, status);
+        }
         if (review && updated.status !== review.from) {
           const verb =
             updated.status === 'dismissed' ? 'Dismissed' : review.from === 'proposed' ? 'Accepted' : 'Reinstated';
@@ -777,6 +903,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const asText = (v: unknown): string => (typeof v === 'string' ? v : '');
         const original = asText(t.description).trim() || asText(t.title);
         const content = [asText(t.title), asText(t.description).trim()].filter(Boolean).join('\n\n');
+        console.log(`[api] refining ticket ${key} via the planning model (${content.length} chars of context)`);
         const engRow = (await q('SELECT phases FROM app.engagements WHERE id = $1', [String(t.engagement_id)])).rows[0];
         const plan = await refinePlan(appkit, content, roadmapItemNames(engRow?.phases));
         if (!plan) {
@@ -794,6 +921,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             return [];
           }
         })();
+        console.log(`[api] ticket ${key} refined — ${plan.ac.length > 0 ? plan.ac.length : existingAc.length} AC`);
         const updated = await q(
           `UPDATE app.tickets SET title = $2, description = $3, ac = $4,
              est_hours = COALESCE($5, est_hours), roadmap_item = COALESCE($6, roadmap_item)
@@ -806,6 +934,19 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             plan.estHours,
             plan.roadmapItem,
           ],
+        );
+        // The plan (and so the scope) changed — re-estimate in the background.
+        void estimateTicket(
+          q,
+          appkit.serving.bind(appkit),
+          {
+            key,
+            engagementId: String(t.engagement_id),
+            title: plan.title || String(t.title),
+            description,
+            ac: (plan.ac.length > 0 ? plan.ac : existingAc).map((a) => String(a)),
+          },
+          'revised',
         );
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -868,6 +1009,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             roadmapItem = plan.roadmapItem;
           }
           if (!title) title = fallbackTitle(content);
+          console.log(`[api] chatbox ticket for ${engId} ${plan ? 'planned via model' : 'using fallback title'} (${content.length} chars)`);
         }
         // Every ticket lands on the roadmap: fall back to the phase active today.
         if (!roadmapItem) roadmapItem = activeRoadmapItem(eng.phases);
@@ -889,6 +1031,19 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             roadmapItem,
           ],
         );
+        console.log(`[api] created ticket ${key} in ${engId} (${ac.length} AC)`);
+        // Estimate the ticket's LLM hours in the background — creation never
+        // waits on (or fails with) the estimation model. Skip when the creator
+        // supplied a manual estimate; the model must not clobber human input.
+        if (!(est && est.trim() && est.trim() !== '—')) {
+          void estimateTicket(
+            q,
+            appkit.serving.bind(appkit),
+            { key, engagementId: engId, title: title.trim(), description, ac },
+            'initial',
+          );
+        }
+        await recordTicketEvent(q, key, engId, null, 'backlog');
         const who = assignee?.trim();
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -912,10 +1067,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         const engagementId = String(current.engagement_id);
         if (!(await requireLead(req, res, engagementId))) return;
+        await deleteAttachmentFiles(q, appkit.files('files'), [key]);
         await q('DELETE FROM app.suggestions WHERE ticket = $1', [key]);
         await q('UPDATE app.repo_prs SET ticket_key = NULL WHERE ticket_key = $1', [key]);
         await q('UPDATE app.repo_commits SET ticket_key = NULL WHERE ticket_key = $1', [key]);
         await q('DELETE FROM app.tickets WHERE key = $1', [key]);
+        console.log(`[api] deleted ticket ${key} from ${engagementId}`);
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
            VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
@@ -947,11 +1104,27 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           for (const engagementId of new Set(gated.map((t) => String(t.engagement_id)))) {
             if (!(await requireLead(req, res, engagementId))) return;
           }
-          await q('UPDATE app.tickets SET status = $1 WHERE key = ANY($2)', [patch.status, keys]);
+          await q(
+            `UPDATE app.tickets SET status = $1,
+                    done_at = CASE WHEN $1 = 'done' THEN COALESCE(done_at, NOW()) END
+             WHERE key = ANY($2)`,
+            [patch.status, keys],
+          );
+          if (patch.status === 'review') {
+            for (const t of targets.filter((t) => String(t.status) !== 'review')) {
+              void recordActualHours(q, String(t.key), 'status-patch');
+            }
+          }
+          for (const t of targets) {
+            await recordTicketEvent(q, String(t.key), String(t.engagement_id), String(t.status), patch.status);
+          }
         }
         if (patch.assignee !== undefined) {
           await q('UPDATE app.tickets SET assignee = $1 WHERE key = ANY($2)', [patch.assignee, keys]);
         }
+        console.log(
+          `[api] bulk updated ${keys.length} ticket(s)${patch.status !== undefined ? ` — status → '${patch.status}'` : ''}${patch.assignee !== undefined ? ` — assignee → '${patch.assignee}'` : ''}`,
+        );
         res.json({ updated: keys.length });
       } catch (err) {
         console.error('bulk update failed:', err);
@@ -1052,6 +1225,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         });
         const text = extractText(response).trim();
         if (!text) throw new Error('empty model response');
+        console.log(`[api] weekly draft generated for ${id} (${text.length} chars)`);
         await q('UPDATE app.engagements SET composer = $2, pushed = false WHERE id = $1', [id, text]);
         res.json({ text });
       } catch (err) {
@@ -1103,6 +1277,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           return;
         }
         const path = `sows/${Date.now()}-${filename}`;
+        console.log(`[api] SOW upload — ${body.length} bytes to ${path}`);
         await appkit.files('files').upload(path, body, { overwrite: true });
         // Keep only the most recent upload in memory for text extraction at parse time.
         for (const k of Object.keys(req.app.locals)) {
@@ -1149,6 +1324,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         } else {
           docText = description ?? '';
         }
+        console.log(`[api] SOW parse — source ${path ? `document ${path}` : 'written brief'}, ${docText.length} chars extracted`);
         const today = new Date().toISOString().slice(0, 10);
         const sourceKind = path ? 'a signed SOW / SOP document' : 'a written project brief from the engagement lead';
         const prompt = [
@@ -1184,6 +1360,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           });
           return;
         }
+        console.log(
+          `[api] SOW plan validated — ${validated.data.phases.length} phases, ${validated.data.milestones?.length ?? 0} milestones, ${validated.data.proposals.length} proposals`,
+        );
         res.json({ milestones: [], ...validated.data, extractedChars: docText.length });
       } catch (err) {
         const msg = (err as Error).message;
@@ -1260,11 +1439,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         );
         let i = 101;
         for (const p of proposals) {
+          const ticketKey = `${prefix}-${i++}`;
           await q(
             `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked)
              VALUES ($1,$2,$3,'backlog','—',$4,$5,true,$6,$7,$8,false)`,
             [
-              `${prefix}-${i++}`,
+              ticketKey,
               id,
               p.title,
               p.est,
@@ -1276,6 +1456,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
               JSON.stringify(['Scope confirmed at kickoff', `Deliverable acceptance per ${p.source}`]),
             ],
           );
+          await recordTicketEvent(q, ticketKey, id, null, 'backlog');
         }
         if (sowFile) {
           await q(
@@ -1293,6 +1474,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           id,
           creator.email,
         ]);
+        console.log(`[api] created engagement ${id} — ${proposals.length} tickets seeded from ${planOrigin} (${phases.length} phases)`);
         res.status(201).json({ id });
       } catch (err) {
         console.error('create engagement failed:', err);
@@ -1310,12 +1492,15 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           res.status(404).json({ error: 'Engagement not found' });
           return;
         }
+        const ticketKeys = (await q('SELECT key FROM app.tickets WHERE engagement_id = $1', [id])).rows.map((r) => String(r.key));
+        await deleteAttachmentFiles(q, appkit.files('files'), ticketKeys);
         await q('DELETE FROM app.suggestions WHERE ticket IN (SELECT key FROM app.tickets WHERE engagement_id = $1)', [id]);
         await q('DELETE FROM app.feed_items WHERE engagement_id = $1', [id]);
         await q('DELETE FROM app.sources WHERE engagement_id = $1', [id]);
         await q('DELETE FROM app.engagement_members WHERE engagement_id = $1', [id]);
         await q('DELETE FROM app.tickets WHERE engagement_id = $1', [id]);
         await q('DELETE FROM app.engagements WHERE id = $1', [id]);
+        console.log(`[api] deleted engagement ${id} (cascade: tickets, sources, feed, members)`);
         res.json({ ok: true });
       } catch (err) {
         console.error('delete engagement failed:', err);
@@ -1438,10 +1623,29 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
     });
 
+    // The telemetry volume is optional — consoles deployed before the
+    // agent_telemetry bundle resource exists still run, minus the archive.
+    let telemetry: ReturnType<AppKitServices['files']> | null = null;
+    if (process.env.DATABRICKS_VOLUME_TELEMETRY) {
+      try {
+        telemetry = appkit.files('telemetry');
+      } catch (err) {
+        console.warn('[api] telemetry volume unavailable — tool-call logs stay in Postgres only:', (err as Error).message);
+      }
+    } else {
+      console.log('[api] DATABRICKS_VOLUME_TELEMETRY not set — tool-call logs stay in Postgres only');
+    }
+
     setupRepoRoutes(app, q, requireLead);
+    setupTicketLinkRoutes(app, q);
     setupGithubAppRoutes(app);
-    setupAgentRoutes(app, q, appkit.files('files'), requireLead);
+    setupAgentRoutes(app, q, appkit.files('files'), requireLead, telemetry);
+    setupToolCallRoutes(app, q);
+    setupCoordinationRoutes(app, q);
+    setupPrConflictRoutes(app, q);
+    setupEstimateRoutes(app, q);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
+    setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
 
     app.post('/api/tickets/:key/comments', async (req, res) => {
@@ -1474,8 +1678,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     });
   });
 
-  // 90s keeps merge → Done feeling live while webhooks can't reach the app
+  console.log('[api] API routes registered');
+  // Idle repos sync every 90s; connections with an open linked PR or an
+  // in-flight deploy drop to a 30s cadence so an external merge reflects on
+  // the ticket in under a minute while webhooks can't reach the app
   // (GitHub App tokens make the extra polling free, rate-limit-wise).
-  startRepoPolling(q, 90_000);
+  startRepoPolling(q, 90_000, 30_000);
   if (process.env.DEMO_MOCK_RUNNER === '1') startMockRunner(q);
 }
