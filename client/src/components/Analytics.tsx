@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import NumberFlow from '@number-flow/react';
-import type { BurndownDay, Engagement, EngagementDetail, VelocityReport } from '../types';
+import type { Engagement, EngagementDetail, VelocityReport } from '../types';
 import { api } from '../api';
 import { deliveredByDay } from '../lib/delivered-by-day';
 import { mono } from '../util';
@@ -12,25 +11,14 @@ import { BarChart } from './charts/bar-chart';
 import { Bar } from './charts/bar';
 import { BarXAxis } from './charts/bar-x-axis';
 import { BarYAxis } from './charts/bar-y-axis';
-import { RingChart } from './charts/ring-chart';
-import { Ring } from './charts/ring';
-import { RingCenter } from './charts/ring-center';
 import { ChartTooltip } from './charts/tooltip';
 
 const DELIVERED_DAYS = 14;
 
-/** Series colors follow the entity everywhere on this tab:
- *  team = --chart-1 (brand red), agent = --chart-2 (periwinkle).
- *  The delivered card pairs ticket volume with agent effort on the same pair:
- *  tickets done = --chart-1, agent hours = --chart-2. The burndown card
- *  carries its own two-entity legend likewise:
- *  open remaining = --chart-1, done = --chart-2. */
-const TEAM_COLOR = 'var(--chart-1)';
-const AGENT_COLOR = 'var(--chart-2)';
+/** The delivered card pairs ticket volume with agent effort:
+ *  tickets done = --chart-1 (brand red), agent hours = --chart-2 (periwinkle). */
 const TICKETS_COLOR = 'var(--chart-1)';
 const HOURS_COLOR = 'var(--chart-2)';
-const OPEN_COLOR = 'var(--chart-1)';
-const DONE_COLOR = 'var(--chart-2)';
 
 const STATUS_ORDER: [string, string][] = [
   ['proposed', 'PROPOSED'],
@@ -52,19 +40,6 @@ function Card({ title, caption, children }: { title: string; caption?: string; c
   );
 }
 
-function Kpi({ label, value, suffix, sub, color }: { label: string; value: number; suffix?: string; sub: string; color?: string }) {
-  return (
-    <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', padding: '12px 14px' }}>
-      <div style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 600, color: color ?? 'var(--tx)', lineHeight: 1 }}>
-        <NumberFlow value={value} />
-        {suffix && <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--tx2)', marginLeft: 2 }}>{suffix}</span>}
-      </div>
-      <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 6 }}>{sub}</div>
-    </div>
-  );
-}
-
 function LegendRow({ items }: { items: { label: string; color: string; n?: number }[] }) {
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 4 }}>
@@ -81,24 +56,6 @@ function LegendRow({ items }: { items: { label: string; color: string; n?: numbe
 
 export function Analytics({ eng, detail }: { eng: Engagement; detail: EngagementDetail }) {
   const tickets = detail.tickets;
-  const [burndown, setBurndown] = useState<BurndownDay[] | null>(null);
-  useEffect(() => {
-    let alive = true;
-    api
-      .burndown(eng.id)
-      .then((days) => alive && setBurndown(days))
-      .catch(() => alive && setBurndown([]));
-    return () => {
-      alive = false;
-    };
-  }, [eng.id, tickets]);
-  const board = useMemo(() => tickets.filter((t) => t.status !== 'proposed' && t.status !== 'dismissed'), [tickets]);
-  const done = board.filter((t) => t.status === 'done').length;
-  const blocked = board.filter((t) => t.blocked).length;
-  const agentOwned = board.filter((t) => t.agent).length;
-  const agentShare = board.length ? Math.round((agentOwned / board.length) * 100) : 0;
-  const burnDelta = eng.burn - eng.plan;
-  const burnColor = eng.burn > eng.plan + 5 ? 'var(--bad)' : eng.burn > eng.plan ? 'var(--warn)' : 'var(--ok)';
 
   // Done tickets bucketed per day for the trailing window: agent hours + count.
   const delivered = useMemo(() => deliveredByDay(tickets, DELIVERED_DAYS), [tickets]);
@@ -138,19 +95,8 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
         <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LIVE — SYNCED WITH THE BOARD</span>
       </div>
 
-      {/* KPI strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 14 }}>
-        <Kpi label="TICKETS DONE" value={done} suffix={`/ ${board.length}`} sub={`${board.length ? Math.round((done / board.length) * 100) : 0}% OF BOARD`} />
-        <Kpi label="AGENT SHARE" value={agentShare} suffix="%" sub={`${agentOwned} OF ${board.length} TICKETS AGENT-OWNED`} />
-        <Kpi label="BLOCKED" value={blocked} sub="ON BOARD NOW" color={blocked > 0 ? 'var(--warn)' : undefined} />
-        <Kpi
-          label="BURN VS PLAN"
-          value={eng.burn}
-          suffix={`% · ${burnDelta >= 0 ? '+' : ''}${burnDelta}pp`}
-          sub={`PLAN ${eng.plan}% AT THIS POINT`}
-          color={burnColor}
-        />
-      </div>
+      {/* Org velocity is the headline: idea → production, decision latency, savings. */}
+      <VelocitySection engId={eng.id} ticketCount={tickets.length} />
 
       {/* Delivery over time — agent hours (left y-scale) vs tickets done (right y-scale) */}
       <div style={{ marginBottom: 14 }}>
@@ -178,87 +124,16 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
         </Card>
       </div>
 
-      {/* Burndown — remaining open tickets by day, replayed from the status event trail */}
-      <div style={{ marginBottom: 14 }}>
-        <Card
-          title="BURNDOWN — OPEN TICKETS BY DAY"
-          caption={
-            burndown == null
-              ? 'Loading…'
-              : burndown.length === 0
-                ? 'No ticket history yet — the trail starts with the first ticket.'
-                : burndown.length < 2
-                  ? `${burndown[burndown.length - 1].open} open of ${burndown[burndown.length - 1].total} on board — history builds from today.`
-                  : `${burndown[burndown.length - 1].open} open of ${burndown[burndown.length - 1].total} on board`
-          }
-        >
-          {burndown != null && burndown.length >= 2 ? (
-            <>
-              <LegendRow
-                items={[
-                  { label: 'OPEN', color: OPEN_COLOR, n: burndown[burndown.length - 1].open },
-                  { label: 'DONE', color: DONE_COLOR, n: burndown[burndown.length - 1].done },
-                ]}
-              />
-              <AreaChart data={burndown} xDataKey="date" aspectRatio="3.4 / 1" margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
-                <Grid horizontal numTicksRows={4} />
-                <Area dataKey="open" fill={OPEN_COLOR} fillOpacity={0.25} />
-                <Area dataKey="done" fill={DONE_COLOR} fillOpacity={0.25} />
-                <XAxis numTicks={5} />
-                <ChartTooltip />
-              </AreaChart>
-            </>
-          ) : (
-            <div style={{ ...mono(400, 10), color: 'var(--tx3)', padding: '14px 0', textAlign: 'center' }}>
-              {burndown == null ? 'LOADING BURNDOWN…' : 'THE CHART DRAWS ITSELF ONCE THERE ARE TWO DAYS OF HISTORY.'}
-            </div>
-          )}
-        </Card>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 14, alignItems: 'start' }}>
-        {/* Ticket pipeline */}
-        <Card title="TICKETS BY STATUS" caption="Everything on this engagement, proposed through done.">
-          <BarChart data={statusData} xDataKey="name" aspectRatio="2.2 / 1" barGap={0.35} margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
-            <Grid horizontal numTicksRows={4} />
-            <Bar dataKey="count" fill="var(--chart-3)" lineCap={3} />
-            <BarXAxis />
-            <BarYAxis />
-            <ChartTooltip showDatePill={false} showCrosshair={false} />
-          </BarChart>
-        </Card>
-
-        {/* Delivery split */}
-        <Card
-          title="DELIVERY SPLIT"
-          caption={board.length ? `Agent owns ${agentShare}% of the board.` : undefined}
-        >
-          <LegendRow
-            items={[
-              { label: 'TEAM', color: TEAM_COLOR, n: board.length - agentOwned },
-              { label: 'AGENT', color: AGENT_COLOR, n: agentOwned },
-            ]}
-          />
-          <div style={{ display: 'grid', placeItems: 'center', padding: '6px 0 2px' }}>
-            <RingChart
-              size={190}
-              strokeWidth={13}
-              ringGap={5}
-              baseInnerRadius={56}
-              data={[
-                { label: 'TEAM', value: board.length - agentOwned, maxValue: Math.max(1, board.length), color: TEAM_COLOR },
-                { label: 'AGENT', value: agentOwned, maxValue: Math.max(1, board.length), color: AGENT_COLOR },
-              ]}
-            >
-              <Ring index={0} />
-              <Ring index={1} />
-              <RingCenter defaultLabel="Tickets" />
-            </RingChart>
-          </div>
-        </Card>
-      </div>
-
-      <VelocitySection engId={eng.id} ticketCount={tickets.length} />
+      {/* Ticket pipeline — the raw counts, parked at the bottom for reference. */}
+      <Card title="TICKETS BY STATUS" caption="Everything on this engagement, proposed through done.">
+        <BarChart data={statusData} xDataKey="name" aspectRatio="3.4 / 1" barGap={0.35} margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
+          <Grid horizontal numTicksRows={4} />
+          <Bar dataKey="count" fill="var(--chart-3)" lineCap={3} />
+          <BarXAxis />
+          <BarYAxis />
+          <ChartTooltip showDatePill={false} showCrosshair={false} />
+        </BarChart>
+      </Card>
     </div>
   );
 }
@@ -340,7 +215,7 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
 
   return (
     <>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '22px 0 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 12px' }}>
         <span style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>ORG VELOCITY — IDEA TO PRODUCTION</span>
         <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>MEDIANS OVER THE TRAILING {windowDays} DAYS, DELTAS VS THE {windowDays} BEFORE</span>
       </div>
@@ -413,42 +288,48 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
         </Card>
 
         <Card
-          title="THEN VS NOW"
-          caption={
-            report.thenVsNow == null
-              ? 'Comparison unlocks at two weeks of history.'
-              : `First half of the trail vs the second (${report.thenVsNow.spanDays} days of history).`
-          }
+          title="WEEK OVER WEEK"
+          caption={report.weekly.length === 0 ? 'Fills in as completion weeks accumulate.' : 'Per completion week — latest emphasized.'}
         >
-          {report.thenVsNow != null ? (
+          {report.weekly.length > 0 ? (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
               <thead>
                 <tr>
-                  {['', 'THEN', 'NOW'].map((h) => (
-                    <th key={h || 'metric'} style={{ textAlign: h ? 'right' : 'left', ...mono(500, 9.5), color: 'var(--tx3)', letterSpacing: '.08em', padding: '4px 2px', fontWeight: 500 }}>
+                  {['WEEK', 'DONE', 'IDEA → DONE', 'HRS SAVED'].map((h, i) => (
+                    <th
+                      key={h}
+                      style={{ textAlign: i === 0 ? 'left' : 'right', ...mono(500, 9.5), color: 'var(--tx3)', letterSpacing: '.08em', padding: '4px 2px', fontWeight: 500 }}
+                    >
                       {h}
                     </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {(
-                  [
-                    ['Done / week', String(report.thenVsNow.then.donePerWeek), String(report.thenVsNow.now.donePerWeek)],
-                    ['Idea → done', fmtHrs(report.thenVsNow.then.leadTimeHrs), fmtHrs(report.thenVsNow.now.leadTimeHrs)],
-                    ['Human hrs saved / wk', `${report.thenVsNow.then.humanHoursSavedPerWeek}h`, `${report.thenVsNow.now.humanHoursSavedPerWeek}h`],
-                  ] as const
-                ).map(([label, then, now]) => (
-                  <tr key={label}>
-                    <td style={{ padding: '5px 2px', color: 'var(--tx2)' }}>{label}</td>
-                    <td style={{ padding: '5px 2px', textAlign: 'right', color: 'var(--tx3)', fontVariantNumeric: 'tabular-nums' }}>{then}</td>
-                    <td style={{ padding: '5px 2px', textAlign: 'right', color: 'var(--tx)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{now}</td>
-                  </tr>
-                ))}
+                {report.weekly.slice(-5).map((w, i, arr) => {
+                  const latest = i === arr.length - 1;
+                  const cell = {
+                    padding: '5px 2px',
+                    textAlign: 'right' as const,
+                    color: latest ? 'var(--tx)' : 'var(--tx3)',
+                    fontWeight: latest ? 600 : 400,
+                    fontVariantNumeric: 'tabular-nums' as const,
+                  };
+                  return (
+                    <tr key={w.week}>
+                      <td style={{ padding: '5px 2px', color: latest ? 'var(--tx)' : 'var(--tx2)', fontWeight: latest ? 600 : 400 }}>
+                        {w.week.slice(5)}
+                      </td>
+                      <td style={cell}>{w.doneCount}</td>
+                      <td style={cell}>{fmtHrs(w.leadTimeHrs)}</td>
+                      <td style={cell}>{w.humanHoursSaved}h</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           ) : (
-            <div style={{ ...mono(400, 10), color: 'var(--tx3)', padding: '14px 0', textAlign: 'center' }}>HISTORY BUILDS DAILY</div>
+            <div style={{ ...mono(400, 10), color: 'var(--tx3)', padding: '14px 0', textAlign: 'center' }}>HISTORY BUILDS WEEKLY</div>
           )}
         </Card>
       </div>
