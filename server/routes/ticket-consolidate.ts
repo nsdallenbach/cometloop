@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
+import { recordTicketEvent } from './ticket-events';
 
 /**
  * Ticket consolidation (DAT-173): merge duplicate/overlapping tickets into a
@@ -134,7 +135,15 @@ export async function consolidateTickets(
   }
 
   const mergedKeys = merged.map((m) => m.key);
+  // Capture the prior statuses so the audit trail records the dismissal —
+  // consolidation must not be a silent way for tickets to leave the board.
+  const priorStatuses = (
+    await q(`SELECT key, status FROM app.tickets WHERE key IN (${placeholders(mergedKeys.length)})`, mergedKeys)
+  ).rows;
   await q(`UPDATE app.tickets SET status = 'dismissed' WHERE key IN (${placeholders(mergedKeys.length)})`, mergedKeys);
+  for (const row of priorStatuses) {
+    await recordTicketEvent(q, txt(row.key), txt(target.engagement_id), txt(row.status), 'dismissed');
+  }
   for (const key of mergedKeys) {
     await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
       key,

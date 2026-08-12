@@ -121,6 +121,39 @@ describe('agentHoursFromRuns', () => {
     expect(agentHoursFromRuns([run({ updated_at: '2026-08-11T07:00:00Z' })], now)).toBeNull();
   });
 
+  it('prefers the tool-call activity window over wall clock', () => {
+    // Claimed 08:00, task closed 10:30 — but the agent only worked 08:05→09:05.
+    expect(
+      agentHoursFromRuns([run({ first_call: '2026-08-11T08:05:00Z', last_call: '2026-08-11T09:05:00Z' })], now)
+    ).toBe(1);
+  });
+
+  it('caps a wedged run at its last heartbeat, not the manual completion', () => {
+    // Runner died at 08:30; a human completed the task at 19:00 — 10.5h of idle must not count.
+    expect(
+      agentHoursFromRuns([run({ last_heartbeat: '2026-08-11T08:30:00Z', updated_at: '2026-08-11T19:00:00Z' })], now)
+    ).toBe(0.5);
+  });
+
+  it('review idle after the last tool call never counts', () => {
+    // Work ended 09:00 (last call); ticket sat in review until a 11:45 completion.
+    expect(
+      agentHoursFromRuns(
+        [run({ first_call: '2026-08-11T08:00:00Z', last_call: '2026-08-11T09:00:00Z', updated_at: '2026-08-11T11:45:00Z' })],
+        now
+      )
+    ).toBe(1);
+  });
+
+  it('an active run without calls measures to its heartbeat, not now', () => {
+    expect(
+      agentHoursFromRuns(
+        [run({ state: 'working', claimed_at: '2026-08-11T08:00:00Z', last_heartbeat: '2026-08-11T09:00:00Z' })],
+        now
+      )
+    ).toBe(1);
+  });
+
   it('floors very short runs at 0.1h', () => {
     expect(
       agentHoursFromRuns([run({ claimed_at: '2026-08-11T09:59:00Z', updated_at: '2026-08-11T10:00:00Z' })], now)

@@ -58,6 +58,34 @@ const MIGRATIONS = [
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS branch TEXT` },
+  // DAT-194: actual_hours measured wall clock (claim → task close), which
+  // counted wedged-runner idle and review wait. Recompute every recorded
+  // actual from the activity window — tool-call stream bounds when present,
+  // else claim → last heartbeat — matching agentHoursFromRuns. Idempotent:
+  // only rows that differ from the recomputed value are touched.
+  {
+    sql: `WITH activity AS (
+      SELECT at.ticket_key, SUM(GREATEST(0, EXTRACT(EPOCH FROM (
+        COALESCE((SELECT MAX(c.called_at) FROM app.agent_tool_calls c WHERE c.task_id = at.id),
+                 LEAST(COALESCE(at.last_heartbeat, at.updated_at), at.updated_at))
+        - COALESCE((SELECT MIN(c.called_at) FROM app.agent_tool_calls c WHERE c.task_id = at.id), at.claimed_at)
+      ))))/3600.0 AS hours
+      FROM app.agent_tasks at
+      WHERE at.claimed_at IS NOT NULL AND at.state IN ('done','failed','cancelled')
+      GROUP BY at.ticket_key)
+    UPDATE app.tickets t SET actual_hours = LEAST(999, GREATEST(0.1, round(a.hours::numeric, 1)))
+    FROM activity a
+    WHERE t.key = a.ticket_key AND t.actual_hours IS NOT NULL
+      AND abs(t.actual_hours - LEAST(999, GREATEST(0.1, round(a.hours::numeric, 1)))) > 0.05`,
+  },
+  // Keep the calibration table's latest actuals in agreement with the tickets.
+  {
+    sql: `UPDATE app.ticket_estimates e SET actual_hours = t.actual_hours, actual_source = 'dat-194-activity-recompute'
+    FROM app.tickets t
+    WHERE e.ticket_key = t.key AND e.actual_hours IS NOT NULL AND t.actual_hours IS NOT NULL
+      AND e.id = (SELECT id FROM app.ticket_estimates e2 WHERE e2.ticket_key = t.key AND e2.actual_hours IS NOT NULL ORDER BY id DESC LIMIT 1)
+      AND abs(e.actual_hours - t.actual_hours) > 0.05`,
+  },
   // When the ticket body/description was last edited (DAT-174); null = never edited.
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ` },
   // Attachments metadata: FK onto dev-owned tickets, so the table is created
