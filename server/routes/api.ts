@@ -565,16 +565,26 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         const id = req.params.id;
         // Latest tracked deploy per ticket rides along so board cards can show
-        // pipeline progress while the ticket holds in Review.
+        // pipeline progress while the ticket holds in Review, and the active
+        // PR (an open one if any, else the most recently updated) so cards can
+        // surface the working branch and PR state at a glance.
         const tickets = (
           await q(
-            `SELECT t.*, d.deploy_state, d.deploy_url FROM app.tickets t
+            `SELECT t.*, d.deploy_state, d.deploy_url,
+                    p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url
+             FROM app.tickets t
              LEFT JOIN LATERAL (
                SELECT pr.deploy_state, pr.deploy_url FROM app.repo_prs pr
                JOIN app.repo_connections c ON c.id = pr.connection_id
                WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id AND pr.deploy_state IS NOT NULL
                ORDER BY pr.updated_at DESC NULLS LAST LIMIT 1
              ) d ON true
+             LEFT JOIN LATERAL (
+               SELECT pr.number, pr.title, pr.state, pr.branch, pr.url FROM app.repo_prs pr
+               JOIN app.repo_connections c ON c.id = pr.connection_id
+               WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id
+               ORDER BY (pr.state = 'open') DESC, pr.updated_at DESC NULLS LAST LIMIT 1
+             ) p ON true
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
             [id],
           )
@@ -628,6 +638,41 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       } catch (err) {
         console.error('burndown failed:', err);
         res.status(500).json({ error: 'Failed to load burndown' });
+      }
+    });
+
+    // Cross-project reads backing the /tickets and /tickets/:key routes: the
+    // client resolves a deep-linked ticket to its engagement via these.
+    app.get('/api/tickets', async (_req, res) => {
+      try {
+        const { rows } = await q(
+          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
+           JOIN app.engagements e ON e.id = t.engagement_id
+           ORDER BY e.created_at, e.id, t.seq`,
+        );
+        res.json(rows);
+      } catch (err) {
+        console.error('list tickets failed:', err);
+        res.status(500).json({ error: 'Failed to load tickets' });
+      }
+    });
+
+    app.get('/api/tickets/:key', async (req, res) => {
+      try {
+        const { rows } = await q(
+          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
+           JOIN app.engagements e ON e.id = t.engagement_id
+           WHERE t.key = $1`,
+          [req.params.key],
+        );
+        if (rows.length === 0) {
+          res.status(404).json({ error: 'Ticket not found' });
+          return;
+        }
+        res.json(rows[0]);
+      } catch (err) {
+        console.error('ticket lookup failed:', err);
+        res.status(500).json({ error: 'Failed to load ticket' });
       }
     });
 
@@ -1422,8 +1467,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   });
 
   console.log('[api] API routes registered');
-  // 90s keeps merge → Done feeling live while webhooks can't reach the app
+  // Idle repos sync every 90s; connections with an open linked PR or an
+  // in-flight deploy drop to a 30s cadence so an external merge reflects on
+  // the ticket in under a minute while webhooks can't reach the app
   // (GitHub App tokens make the extra polling free, rate-limit-wise).
-  startRepoPolling(q, 90_000);
+  startRepoPolling(q, 90_000, 30_000);
   if (process.env.DEMO_MOCK_RUNNER === '1') startMockRunner(q);
 }
