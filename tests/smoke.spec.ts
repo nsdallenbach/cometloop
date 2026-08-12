@@ -69,6 +69,44 @@ test('smoke test - admin page shows staffing matrix', async ({ page, request }) 
   }
 });
 
+test('smoke test - /projects deep link renders portfolio', async ({ page }) => {
+  await page.goto('/projects');
+  await expect(page.getByRole('heading', { name: 'Portfolio' })).toBeVisible();
+});
+
+test('smoke test - project detail deep link renders board', async ({ page, request }) => {
+  const eng = await firstEngagement(request);
+  test.skip(!eng, 'no engagements in database');
+
+  await page.goto(`/projects/${eng!.id}`);
+  await expect(page.getByRole('heading', { name: eng!.name })).toBeVisible();
+  await expect(page.getByText('BACKLOG', { exact: true })).toBeVisible();
+});
+
+test('smoke test - tickets list and ticket deep link render', async ({ page, request }) => {
+  await page.goto('/tickets');
+  await expect(page.getByRole('heading', { name: 'Tickets' })).toBeVisible();
+
+  const tickets = (await (await request.get('/api/tickets')).json()) as { key: string }[];
+  test.skip(tickets.length === 0, 'no tickets in database');
+
+  await page.goto(`/tickets/${tickets[0].key}`);
+  await expect(page.getByText(tickets[0].key).first()).toBeVisible();
+});
+
+test('smoke test - browser back returns from project to portfolio', async ({ page, request }) => {
+  const eng = await firstEngagement(request);
+  test.skip(!eng, 'no engagements in database');
+
+  await page.goto('/projects');
+  await page.getByText(eng!.name).first().click();
+  await expect(page).toHaveURL(new RegExp(`/projects/${eng!.id}$`));
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/projects$/);
+  await expect(page.getByRole('heading', { name: 'Portfolio' })).toBeVisible();
+});
+
 // ── Lifecycle hooks ─────────────────────────────────────────────────────────
 
 test.beforeEach(async ({ page }) => {

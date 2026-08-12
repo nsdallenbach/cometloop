@@ -1,28 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
+import { Navigate, useLocation, useNavigate } from 'react-router';
 import { api } from './api';
 import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
+import { parsePath, paths, type Tab } from './routes';
 import { mono, STATUS_LABEL } from './util';
 import { Admin } from './components/Admin';
 import { Portfolio } from './components/Portfolio';
 import { Setup } from './components/Setup';
+import { Tickets } from './components/Tickets';
 import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
 import { Palette, type PaletteItem } from './components/Palette';
 
-type Route = 'portfolio' | 'setup' | 'workspace' | 'admin';
-export type Tab = 'board' | 'roadmap' | 'analytics' | 'sources' | 'standards' | 'team' | 'feed';
+export type { Tab } from './routes';
 
 export default function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [theme, setTheme] = useState<'dark' | 'light'>(
     () => (localStorage.getItem('eec-theme') as 'dark' | 'light') ?? 'dark',
   );
-  const [route, setRoute] = useState<Route>('portfolio');
-  const [engId, setEngId] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('board');
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [detail, setDetail] = useState<EngagementDetail | null>(null);
-  const [detailKey, setDetailKey] = useState<string | null>(null);
+  // Which engagement `detail` belongs to — reads below gate on it matching the
+  // current URL's engagement so a stale board never renders after navigation.
+  const [detailEngId, setDetailEngId] = useState<string | null>(null);
+  // /tickets/:key deep links resolve to the owning engagement here; board and
+  // palette clicks seed it directly so no lookup round trip is needed.
+  const [ticketEngs, setTicketEngs] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [palette, setPalette] = useState(false);
   const [newTicket, setNewTicket] = useState(false);
@@ -33,6 +39,14 @@ export default function App() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // The URL is the source of truth for which screen is showing.
+  const screen = useMemo(() => parsePath(location.pathname), [location.pathname]);
+  const detailKey = screen.name === 'ticket' ? screen.ticketKey : null;
+  const engId =
+    screen.name === 'workspace' ? screen.engId : screen.name === 'ticket' ? (ticketEngs[screen.ticketKey] ?? null) : null;
+  const tab: Tab = screen.name === 'workspace' ? screen.tab : 'board';
+  const inWorkspace = screen.name === 'workspace' || screen.name === 'ticket';
 
   const showToast = useCallback((msg: string) => {
     clearTimeout(toastTimer.current);
@@ -78,12 +92,13 @@ export default function App() {
       .then((d) => {
         setDetail(d);
         setDetailError(null);
+        setDetailEngId(engId);
       })
       .catch((e: Error) => setDetailError(e.message));
   }, [engId]);
 
   useEffect(() => {
-    if (route !== 'workspace' || !engId) return;
+    if (!inWorkspace || !engId) return;
     let stale = false;
     api
       .detail(engId)
@@ -91,19 +106,80 @@ export default function App() {
         if (!stale) {
           setDetail(d);
           setDetailError(null);
+          setDetailEngId(engId);
         }
       })
       .catch((e: Error) => {
-        if (!stale) setDetailError(e.message);
+        if (!stale) {
+          setDetailError(e.message);
+          setDetailEngId(engId);
+        }
       });
     return () => {
       stale = true;
     };
-  }, [route, engId]);
+  }, [inWorkspace, engId]);
+
+  // Resolve a /tickets/:key deep link to its engagement so the workspace can
+  // render behind the drawer.
+  useEffect(() => {
+    if (screen.name !== 'ticket') return;
+    const key = screen.ticketKey;
+    if (ticketEngs[key]) return;
+    let stale = false;
+    api
+      .ticket(key)
+      .then((t) => {
+        if (!stale) setTicketEngs((m) => ({ ...m, [key]: t.engagementId }));
+      })
+      .catch(() => {
+        if (!stale) {
+          showToast(`Ticket ${key} not found`);
+          void navigate(paths.tickets, { replace: true });
+        }
+      });
+    return () => {
+      stale = true;
+    };
+  }, [screen, ticketEngs, navigate, showToast]);
 
   useEffect(() => {
     localStorage.setItem('eec-theme', theme);
   }, [theme]);
+
+  const openEngagement = useCallback(
+    (id: string, toTab: Tab = 'board') => {
+      setNewTicket(false);
+      void navigate(paths.project(id, toTab));
+    },
+    [navigate],
+  );
+
+  const goPortfolio = useCallback(() => {
+    setNewTicket(false);
+    void navigate(paths.portfolio);
+    void refreshEngagements();
+  }, [navigate, refreshEngagements]);
+
+  // Tickets get a canonical URL (/tickets/:key) wherever they're opened from;
+  // engIdHint pre-seeds the engagement lookup when the caller already knows it.
+  const openTicket = useCallback(
+    (key: string, engIdHint?: string) => {
+      if (engIdHint) setTicketEngs((m) => (m[key] === engIdHint ? m : { ...m, [key]: engIdHint }));
+      void navigate(paths.ticket(key), { state: { fromApp: true } });
+    },
+    [navigate],
+  );
+
+  const closeTicket = useCallback(() => {
+    // Opened in-app: back returns to the screen beneath the drawer. Opened via
+    // a direct link: land on the ticket's board (or the tickets list).
+    if ((location.state as { fromApp?: boolean } | null)?.fromApp) {
+      void navigate(-1);
+    } else {
+      void navigate(engId ? paths.project(engId) : paths.tickets, { replace: true });
+    }
+  }, [location.state, engId, navigate]);
 
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
@@ -116,23 +192,26 @@ export default function App() {
         e.key.toLowerCase() === 'n' &&
         !e.metaKey && !e.ctrlKey && !e.altKey &&
         !typing && !palette && !newTicket && !detailKey &&
-        route === 'workspace' && engId
+        screen.name === 'workspace' && engId
       ) {
         e.preventDefault();
-        setTab('board');
+        if (tab !== 'board') void navigate(paths.project(engId));
         setNewTicket(true);
       } else if (e.key === 'Escape') {
         // Close the topmost layer only.
         if (palette) setPalette(false);
         else if (newTicket) setNewTicket(false);
-        else setDetailKey(null);
+        else if (detailKey) closeTicket();
       }
     };
     window.addEventListener('keydown', kd);
     return () => window.removeEventListener('keydown', kd);
-  }, [route, engId, palette, newTicket, detailKey]);
+  }, [screen, engId, tab, palette, newTicket, detailKey, navigate, closeTicket]);
 
   const eng = useMemo(() => engagements.find((e) => e.id === engId) ?? null, [engagements, engId]);
+  // Only expose detail that matches the engagement in the URL.
+  const curDetail = engId !== null && detailEngId === engId ? detail : null;
+  const curDetailError = engId !== null && detailEngId === engId ? detailError : null;
 
   const isAdmin = me?.role === 'admin';
   const canCreate = isAdmin || me?.role === 'lead';
@@ -140,23 +219,6 @@ export default function App() {
     (id: string) => isAdmin || (me?.role === 'lead' && me.leadOf.includes(id)),
     [isAdmin, me],
   );
-
-  const openEngagement = useCallback((id: string, toTab: Tab = 'board') => {
-    setEngId(id);
-    setTab(toTab);
-    setDetail(null);
-    setDetailError(null);
-    setDetailKey(null);
-    setNewTicket(false);
-    setRoute('workspace');
-  }, []);
-
-  const goPortfolio = useCallback(() => {
-    setRoute('portfolio');
-    setDetailKey(null);
-    setNewTicket(false);
-    void refreshEngagements();
-  }, [refreshEngagements]);
 
   // ---- ticket mutations shared by board + drawer ----
   // Optimistic with rollback: the previous field values are restored on failure.
@@ -173,9 +235,9 @@ export default function App() {
     });
   }, [showToast]);
 
-  const detailTicket = detail?.tickets.find((t) => t.key === detailKey) ?? null;
+  const detailTicket = curDetail?.tickets.find((t) => t.key === detailKey) ?? null;
   // Latest agent task for the open ticket (agentTasks arrive newest-first).
-  const detailAgentTask = detailTicket ? (detail?.agentTasks.find((a) => a.ticketKey === detailTicket.key) ?? null) : null;
+  const detailAgentTask = detailTicket ? (curDetail?.agentTasks.find((a) => a.ticketKey === detailTicket.key) ?? null) : null;
 
   const queueForAgent = useCallback(
     (key: string, instructions: string) => {
@@ -206,28 +268,33 @@ export default function App() {
   // ---- command palette ----
   const paletteItems: PaletteItem[] = useMemo(() => {
     const items: PaletteItem[] = [
-      ...(route === 'workspace' && eng
+      ...(inWorkspace && eng
         ? [
             {
               kind: 'ACTION',
               label: `New ticket — ${eng.client} board`,
               hint: 'N',
               run: () => {
-                setTab('board');
+                if (!(screen.name === 'workspace' && screen.tab === 'board')) void navigate(paths.project(eng.id));
                 setNewTicket(true);
               },
             },
           ]
         : []),
       { kind: 'NAV', label: 'Go to Portfolio', hint: 'G P', run: () => goPortfolio() },
+      { kind: 'NAV', label: 'Go to Tickets — all projects', hint: '', run: () => void navigate(paths.tickets) },
       ...engagements.slice(0, 4).map((e) => ({
         kind: 'NAV',
         label: `${e.client} — open Board`,
         hint: '',
         run: () => openEngagement(e.id, 'board'),
       })),
-      ...(canCreate ? [{ kind: 'ACTION', label: 'New engagement (from SOW or brief)', hint: '', run: () => setRoute('setup') }] : []),
-      ...(isAdmin ? [{ kind: 'NAV', label: 'Open Admin — staffing & project lifecycle', hint: '', run: () => setRoute('admin') }] : []),
+      ...(canCreate
+        ? [{ kind: 'ACTION', label: 'New engagement (from SOW or brief)', hint: '', run: () => void navigate(paths.setup) }]
+        : []),
+      ...(isAdmin
+        ? [{ kind: 'NAV', label: 'Open Admin — staffing & project lifecycle', hint: '', run: () => void navigate(paths.admin) }]
+        : []),
       ...(engagements[0]
         ? [
             {
@@ -244,18 +311,17 @@ export default function App() {
             },
           ]
         : []),
-      ...(detail?.tickets.slice(0, 6) ?? []).map((t) => ({
+      ...(curDetail?.tickets.slice(0, 6) ?? []).map((t) => ({
         kind: 'TICKET',
         label: `${t.key} — ${t.title}`,
         hint: STATUS_LABEL[t.status] ?? t.status,
-        run: () => {
-          setRoute('workspace');
-          setDetailKey(t.key);
-        },
+        run: () => openTicket(t.key, t.engagementId),
       })),
     ];
     return items;
-  }, [engagements, detail, engId, eng, route, goPortfolio, openEngagement, canCreate, isAdmin]);
+  }, [engagements, curDetail, engId, eng, screen, inWorkspace, goPortfolio, openEngagement, openTicket, navigate, canCreate, isAdmin]);
+
+  if (screen.name === 'redirect') return <Navigate to={screen.to} replace />;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -348,16 +414,33 @@ export default function App() {
             ROLE UNVERIFIED — RETRY
           </button>
         )}
+        <button
+          className="hv-tx2"
+          onClick={() => void navigate(paths.tickets)}
+          title="All tickets across projects"
+          style={{
+            ...mono(400, 10),
+            background: 'none',
+            border: `1px solid ${screen.name === 'tickets' ? 'var(--tx3)' : 'var(--line2)'}`,
+            color: screen.name === 'tickets' ? 'var(--tx2)' : 'var(--tx3)',
+            borderRadius: 3,
+            padding: '3px 7px',
+            cursor: 'pointer',
+            letterSpacing: '.06em',
+          }}
+        >
+          TICKETS
+        </button>
         {isAdmin && (
         <button
           className="hv-tx2"
-          onClick={() => setRoute('admin')}
+          onClick={() => void navigate(paths.admin)}
           title="Staffing & project lifecycle"
           style={{
             ...mono(400, 10),
             background: 'none',
-            border: `1px solid ${route === 'admin' ? 'var(--tx3)' : 'var(--line2)'}`,
-            color: route === 'admin' ? 'var(--tx2)' : 'var(--tx3)',
+            border: `1px solid ${screen.name === 'admin' ? 'var(--tx3)' : 'var(--line2)'}`,
+            color: screen.name === 'admin' ? 'var(--tx2)' : 'var(--tx3)',
             borderRadius: 3,
             padding: '3px 7px',
             cursor: 'pointer',
@@ -423,12 +506,12 @@ export default function App() {
         </div>
       )}
 
-      {route === 'portfolio' && (
+      {screen.name === 'portfolio' && (
         <Portfolio
           engagements={engagements}
           loading={loading}
           onOpen={openEngagement}
-          onNew={() => setRoute('setup')}
+          onNew={() => void navigate(paths.setup)}
           onDeleted={() => void refreshEngagements()}
           toast={showToast}
           canCreate={canCreate}
@@ -436,8 +519,10 @@ export default function App() {
         />
       )}
 
-      {route === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
-      {route === 'admin' && !isAdmin && (
+      {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
+
+      {screen.name === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
+      {screen.name === 'admin' && !isAdmin && (
         <div style={{ padding: 40, textAlign: 'center', color: 'var(--tx3)', ...mono(400, 11) }}>
           ADMIN ACCESS REQUIRED —{' '}
           <button onClick={goPortfolio} style={{ border: 'none', background: 'none', color: 'var(--acc)', ...mono(500, 11), cursor: 'pointer', padding: 0 }}>
@@ -446,7 +531,7 @@ export default function App() {
         </div>
       )}
 
-      {route === 'setup' && (
+      {screen.name === 'setup' && (
         <Setup
           goPortfolio={goPortfolio}
           toast={showToast}
@@ -456,16 +541,34 @@ export default function App() {
         />
       )}
 
-      {route === 'workspace' && eng && (
+      {inWorkspace && !eng && (
+        loading || (screen.name === 'ticket' && !engId) ? (
+          <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: 'var(--tx3)', ...mono(400, 11), letterSpacing: '.08em' }}>
+            LOADING…
+          </div>
+        ) : (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--tx3)', ...mono(400, 11) }}>
+            PROJECT NOT FOUND —{' '}
+            <button
+              onClick={goPortfolio}
+              style={{ border: 'none', background: 'none', color: 'var(--acc)', ...mono(500, 11), cursor: 'pointer', padding: 0 }}
+            >
+              BACK TO PORTFOLIO
+            </button>
+          </div>
+        )
+      )}
+
+      {inWorkspace && eng && (
         <Workspace
           key={eng.id}
           eng={eng}
-          detail={detail}
-          detailError={detailError}
+          detail={curDetail}
+          detailError={curDetailError}
           tab={tab}
-          setTab={setTab}
+          setTab={(t) => void navigate(paths.project(eng.id, t))}
           goPortfolio={goPortfolio}
-          openTicket={setDetailKey}
+          openTicket={(key) => openTicket(key, eng.id)}
           setTicket={setTicket}
           setDetail={setDetail}
           toast={showToast}
@@ -481,25 +584,25 @@ export default function App() {
         <TicketDrawer
           theme={theme}
           ticket={detailTicket}
-          team={detail?.team.map((t) => t.name) ?? []}
+          team={curDetail?.team.map((t) => t.name) ?? []}
           lead={eng ? canLead(eng.id) : false}
           agentTask={detailAgentTask}
           allTickets={detail?.tickets ?? []}
-          onOpenTicket={setDetailKey}
+          onOpenTicket={openTicket}
           onQueueAgent={(instructions) => queueForAgent(detailTicket.key, instructions)}
           onCancelAgent={() => cancelAgent(detailTicket.key)}
           onAssign={(assignee) => setTicket(detailTicket.key, { assignee })}
           toast={showToast}
           refreshDetail={refreshDetail}
-          onClose={() => setDetailKey(null)}
+          onClose={closeTicket}
           onAccept={() => {
             setTicket(detailTicket.key, { status: 'backlog' });
-            setDetailKey(null);
+            closeTicket();
             showToast(`${detailTicket.key} accepted onto board`);
           }}
           onDismiss={() => {
             setTicket(detailTicket.key, { status: 'dismissed' });
-            setDetailKey(null);
+            closeTicket();
             showToast(`${detailTicket.key} dismissed`);
           }}
           onDelete={() => {
@@ -508,15 +611,12 @@ export default function App() {
               .deleteTicket(key)
               .then(() => {
                 setDetail((d) => (d ? { ...d, tickets: d.tickets.filter((t) => t.key !== key) } : d));
-                setDetailKey(null);
+                closeTicket();
                 showToast(`${key} deleted`);
               })
               .catch((e: Error) => showToast(`Delete failed — ${e.message}`));
           }}
-          goSources={() => {
-            setTab('sources');
-            setDetailKey(null);
-          }}
+          goSources={() => void navigate(paths.project(detailTicket.engagementId, 'sources'))}
         />
       )}
 

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import type { AgentTask, Ticket, TicketComment, TicketDev, TicketLinkType, TicketLinks } from '../types';
+import type { AgentTask, Ticket, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
 import { STATUS_LABEL, initials, mono } from '../util';
 import { Markdown } from './Markdown';
 
@@ -175,6 +175,46 @@ export function TicketDrawer({
       })
       .catch((e: Error) => toast(`Unlink failed — ${e.message}`));
   };
+
+  // Tool-call feed streamed from the runner: polled live while the agent works,
+  // loaded once for finished runs so the trace stays reviewable. Polls are
+  // incremental (`after` = last seen id) so long runs don't re-ship history.
+  const agentRunning = agentTask !== null && ['claimed', 'working'].includes(agentTask.state);
+  const [toolFeed, setToolFeed] = useState<{ key: string; taskId: number | null; calls: ToolCall[] } | null>(null);
+  const toolCursor = useRef({ key: '', last: 0 });
+  const feedBox = useRef<HTMLDivElement | null>(null);
+
+  const loadToolCalls = useCallback(() => {
+    const after = toolCursor.current.key === ticket.key ? toolCursor.current.last : 0;
+    void api
+      .toolCalls(ticket.key, after || undefined)
+      .then((d) => {
+        setToolFeed((cur) => {
+          // Ids are globally monotonic, so appending is safe even when a newer
+          // run takes over — its rows always sort after the previous run's.
+          const grow = after > 0 && cur !== null && cur.key === ticket.key && cur.taskId === d.taskId;
+          const calls = grow ? [...cur.calls, ...d.calls] : d.calls;
+          if (calls.length > 0) toolCursor.current = { key: ticket.key, last: calls[calls.length - 1].id };
+          else if (after === 0) toolCursor.current = { key: ticket.key, last: 0 };
+          return { key: ticket.key, taskId: d.taskId, calls };
+        });
+      })
+      .catch(() => {});
+  }, [ticket.key]);
+
+  useEffect(() => {
+    if (agentTask === null) return;
+    loadToolCalls();
+    if (!agentRunning) return;
+    const iv = setInterval(loadToolCalls, 4000);
+    return () => clearInterval(iv);
+  }, [agentTask, agentRunning, loadToolCalls]);
+
+  // The feed shows only the newest calls; keep it pinned to the bottom.
+  const toolCalls = toolFeed !== null && toolFeed.key === ticket.key ? toolFeed.calls.slice(-500) : [];
+  useEffect(() => {
+    if (feedBox.current) feedBox.current.scrollTop = feedBox.current.scrollHeight;
+  }, [toolCalls.length]);
 
   // Stale results from a previously opened ticket render as "loading".
   const comments = loaded && loaded.key === ticket.key && !loaded.error ? loaded.list : null;
@@ -427,6 +467,49 @@ export function TicketDrawer({
                       <a href={agentTask.resultUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--acc)', wordBreak: 'break-all' }}>
                         {agentTask.resultUrl}
                       </a>
+                    )}
+                    {(agentRunning || toolCalls.length > 0) && (
+                      <div>
+                        <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', margin: '3px 0 4px' }}>
+                          TOOL ACTIVITY
+                          {toolCalls.length > 0 ? ` · ${toolCalls.length}${toolFeed && toolFeed.calls.length > toolCalls.length ? ' LATEST' : ''}` : ''}
+                          {agentRunning && (
+                            <span style={{ color: 'var(--agent)', animation: 'eec-pulse 2.4s infinite' }}> · LIVE</span>
+                          )}
+                        </div>
+                        <div
+                          ref={feedBox}
+                          style={{
+                            maxHeight: 170,
+                            overflowY: 'auto',
+                            background: 'var(--bg)',
+                            border: '1px solid var(--line)',
+                            borderRadius: 3,
+                            padding: '6px 9px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 2,
+                          }}
+                        >
+                          {toolCalls.length === 0 && (
+                            <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>WAITING FOR TOOL ACTIVITY…</span>
+                          )}
+                          {toolCalls.map((c) => (
+                            <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline', ...mono(400, 10), lineHeight: 1.55 }}>
+                              <span style={{ flex: 'none', color: 'var(--tx3)' }}>
+                                {new Date(c.calledAt).toLocaleTimeString('en', { hour12: false })}
+                              </span>
+                              <span style={{ flex: 'none', color: 'var(--agent)', fontWeight: 500 }}>{c.tool}</span>
+                              <span
+                                title={c.detail}
+                                style={{ color: 'var(--tx2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                              >
+                                {c.detail}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}

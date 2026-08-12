@@ -1,7 +1,9 @@
 import type {
+  ActivePr,
   AdminData,
   AgentTask,
   AgentTaskState,
+  BurndownDay,
   ContextFile,
   ContextSource,
   DeployState,
@@ -25,6 +27,8 @@ import type {
   TicketLinkType,
   TicketLinks,
   TicketStatus,
+  TicketWithEngagement,
+  ToolCall,
 } from './types';
 
 type Row = Record<string, unknown>;
@@ -90,7 +94,21 @@ function mapTicket(r: Row): Ticket {
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
     waitingOn: n(r.waiting_on),
+    activePr:
+      r.pr_number == null
+        ? null
+        : {
+            number: n(r.pr_number),
+            title: s(r.pr_title),
+            state: (['open', 'merged', 'closed'].includes(s(r.pr_state)) ? s(r.pr_state) : 'closed') as ActivePr['state'],
+            branch: s(r.pr_branch),
+            url: s(r.pr_url),
+          },
   };
+}
+
+function mapTicketWithEngagement(r: Row): TicketWithEngagement {
+  return { ...mapTicket(r), client: s(r.client), engagementName: s(r.engagement_name) };
 }
 
 function mapSource(r: Row): ContextSource {
@@ -197,6 +215,20 @@ export const api = {
       suggestions: d.suggestions.map(mapSuggestion),
       agentTasks: (d.agentTasks ?? []).map(mapAgentTask),
     };
+  },
+
+  async burndown(engId: string): Promise<BurndownDay[]> {
+    const d = await http<{ days: BurndownDay[] }>(`/api/engagements/${engId}/burndown`);
+    return d.days ?? [];
+  },
+
+  async tickets(): Promise<TicketWithEngagement[]> {
+    const rows = await http<Row[]>('/api/tickets');
+    return rows.map(mapTicketWithEngagement);
+  },
+
+  async ticket(key: string): Promise<TicketWithEngagement> {
+    return mapTicketWithEngagement(await http<Row>(`/api/tickets/${encodeURIComponent(key)}`));
   },
 
   async createTicket(
@@ -417,6 +449,16 @@ export const api = {
 
   reorderAgentQueue(engId: string, order: number[]) {
     return http(`/api/engagements/${engId}/agent-queue/order`, { method: 'PUT', ...json({ order }) });
+  },
+
+  /** Tool-call feed for the ticket's latest agent run; `after` makes the poll incremental. */
+  async toolCalls(ticketKey: string, after?: number): Promise<{ taskId: number | null; calls: ToolCall[] }> {
+    const qs = after && after > 0 ? `?after=${after}` : '';
+    const d = await http<{ task_id: unknown; calls?: Row[] }>(`/api/tickets/${ticketKey}/tool-calls${qs}`);
+    return {
+      taskId: d.task_id == null ? null : n(d.task_id),
+      calls: (d.calls ?? []).map((r) => ({ id: n(r.id), tool: s(r.tool), detail: s(r.detail), calledAt: s(r.called_at) })),
+    };
   },
 
   // ---- context files ----
