@@ -40,6 +40,8 @@ type Row = Record<string, unknown>;
 const s = (v: unknown) =>
   typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '';
 const n = (v: unknown) => (typeof v === 'number' ? v : Number(v) || 0);
+/** Non-empty string, else null — for optional text columns with '' noise. */
+const nz = (v: unknown) => (v != null && s(v) !== '' ? s(v) : null);
 const b = (v: unknown) => v === true || v === 't' || v === 'true';
 const j = <T>(v: unknown, fallback: T): T => {
   if (v == null) return fallback;
@@ -103,7 +105,8 @@ function mapTicket(r: Row): Ticket {
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
     roadmapItem: r.roadmap_item == null ? null : s(r.roadmap_item),
-    branch: r.branch != null && s(r.branch) !== '' ? s(r.branch) : r.pr_branch != null && s(r.pr_branch) !== '' ? s(r.pr_branch) : null,
+    branch: nz(r.branch) ?? nz(r.active_branch) ?? nz(r.pr_branch),
+    runner: nz(r.task_agent) !== null && s(r.task_agent) === s(r.assignee) ? s(r.task_agent) : null,
     doneAt: r.done_at == null ? null : s(r.done_at),
     updatedAt: r.updated_at == null ? null : s(r.updated_at),
     waitingOn: n(r.waiting_on),

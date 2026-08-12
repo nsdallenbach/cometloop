@@ -793,6 +793,35 @@ export function Workspace({
             {at.lastNote ?? 'Claimed — waiting for the first progress note…'}
           </div>
         )}
+        {/* Who picked it up and on which branch — branch appears once the
+            runner announces it (or the PR opens); omitted until then. */}
+        {running && at.agent != null && at.agent !== '' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 7 }}>
+            <span
+              title={`${at.agent} (${runnerBrand(at.agent).label} runner)`}
+              style={{
+                width: 20,
+                height: 20,
+                flex: 'none',
+                borderRadius: '50%',
+                background: 'var(--bg3)',
+                border: '1px solid var(--line2)',
+                display: 'grid',
+                placeItems: 'center',
+              }}
+            >
+              {runnerBrand(at.agent).mark(12)}
+            </span>
+            {t?.branch && (
+              <span
+                title={t.branch}
+                style={{ ...mono(400, 9.5), color: 'var(--tx3)', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+              >
+                ⎇ {t.branch}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     );
   };

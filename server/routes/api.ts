@@ -614,11 +614,14 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         // Latest tracked deploy per ticket rides along so board cards can show
         // pipeline progress while the ticket holds in Review, the active PR
         // (open one if any, else most recently updated) for branch/state on
-        // cards, and waiting_on = unresolved blocking tickets for dependency chips.
+        // cards, the branch a runner announced for in-flight work (fills the
+        // gap between claim and the PR opening), and waiting_on = unresolved
+        // blocking tickets for dependency chips.
         const tickets = (
           await q(
             `SELECT t.*, d.deploy_state, d.deploy_url,
                     p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url,
+                    ba.branch_name AS active_branch,
                     (SELECT COUNT(*)::int FROM app.ticket_links l
                      JOIN app.tickets b ON b.key = l.ticket_key
                      WHERE l.linked_key = t.key AND l.type = 'blocks'
@@ -636,6 +639,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id
                ORDER BY (pr.state = 'open') DESC, pr.updated_at DESC NULLS LAST LIMIT 1
              ) p ON true
+             LEFT JOIN LATERAL (
+               SELECT b.branch_name FROM app.branch_activity b
+               WHERE b.ticket_key = t.key AND b.status = 'active'
+               ORDER BY b.last_heartbeat DESC NULLS LAST LIMIT 1
+             ) ba ON true
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
             [id],
           )
@@ -694,13 +702,33 @@ export async function setupApiRoutes(appkit: AppKitServices) {
 
     // Cross-project reads backing the /tickets and /tickets/:key routes: the
     // client resolves a deep-linked ticket to its engagement via these.
+    // Rides along per ticket: the branch for the work (runner-announced while
+    // in flight, else the latest linked PR's) and the agent on the latest
+    // agent task, so the list view can show branch + runner avatar too.
+    const crossTicketSelect = `
+      SELECT t.*, e.client, e.name AS engagement_name,
+             p.branch AS pr_branch, ba.branch_name AS active_branch, ag.agent AS task_agent
+      FROM app.tickets t
+      JOIN app.engagements e ON e.id = t.engagement_id
+      LEFT JOIN LATERAL (
+        SELECT pr.branch FROM app.repo_prs pr
+        JOIN app.repo_connections c ON c.id = pr.connection_id
+        WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id
+        ORDER BY (pr.state = 'open') DESC, pr.updated_at DESC NULLS LAST LIMIT 1
+      ) p ON true
+      LEFT JOIN LATERAL (
+        SELECT b.branch_name FROM app.branch_activity b
+        WHERE b.ticket_key = t.key AND b.status = 'active'
+        ORDER BY b.last_heartbeat DESC NULLS LAST LIMIT 1
+      ) ba ON true
+      LEFT JOIN LATERAL (
+        SELECT a.agent FROM app.agent_tasks a
+        WHERE a.ticket_key = t.key ORDER BY a.id DESC LIMIT 1
+      ) ag ON true`;
+
     app.get('/api/tickets', async (_req, res) => {
       try {
-        const { rows } = await q(
-          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
-           JOIN app.engagements e ON e.id = t.engagement_id
-           ORDER BY e.created_at, e.id, t.seq`,
-        );
+        const { rows } = await q(`${crossTicketSelect} ORDER BY e.created_at, e.id, t.seq`);
         res.json(rows);
       } catch (err) {
         console.error('list tickets failed:', err);
@@ -710,12 +738,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
 
     app.get('/api/tickets/:key', async (req, res) => {
       try {
-        const { rows } = await q(
-          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
-           JOIN app.engagements e ON e.id = t.engagement_id
-           WHERE t.key = $1`,
-          [req.params.key],
-        );
+        const { rows } = await q(`${crossTicketSelect} WHERE t.key = $1`, [req.params.key]);
         if (rows.length === 0) {
           res.status(404).json({ error: 'Ticket not found' });
           return;

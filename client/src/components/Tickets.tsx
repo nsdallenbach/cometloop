@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import { api } from '../api';
 import type { TicketStatus, TicketWithEngagement } from '../types';
-import { mono, STATUS_LABEL } from '../util';
+import { initials, mono, STATUS_LABEL } from '../util';
+import { runnerBrand } from './RunnerLogo';
 
 const th: React.CSSProperties = {
   textAlign: 'left',
@@ -134,6 +135,7 @@ export function Tickets({ onOpen }: { onOpen: (key: string, engagementId: string
               <th style={th}>PROJECT</th>
               <th style={th}>STATUS</th>
               <th style={th}>ASSIGNEE</th>
+              <th style={th}>BRANCH</th>
               <th style={th}>EST</th>
             </tr>
           </thead>
@@ -153,13 +155,44 @@ export function Tickets({ onOpen }: { onOpen: (key: string, engagementId: string
                 <td style={{ ...td, ...mono(400, 11), color: 'var(--tx2)', whiteSpace: 'nowrap' }}>
                   {STATUS_LABEL[t.status] ?? t.status}
                 </td>
-                <td style={{ ...td, color: 'var(--tx2)', whiteSpace: 'nowrap' }}>{t.assignee || '—'}</td>
+                <td style={{ ...td, color: 'var(--tx2)', whiteSpace: 'nowrap' }}>
+                  {t.assignee && t.assignee !== '—' ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                      <span
+                        title={t.runner !== null ? `${t.assignee} (${runnerBrand(t.runner).label} runner)` : t.assignee}
+                        style={{
+                          width: 20,
+                          height: 20,
+                          flex: 'none',
+                          borderRadius: '50%',
+                          background: 'var(--bg3)',
+                          border: '1px solid var(--line2)',
+                          display: 'grid',
+                          placeItems: 'center',
+                          ...mono(500, 9),
+                          color: 'var(--tx2)',
+                        }}
+                      >
+                        {t.runner !== null ? runnerBrand(t.runner).mark(12) : initials(t.assignee)}
+                      </span>
+                      {t.assignee}
+                    </span>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+                <td
+                  title={t.branch ?? undefined}
+                  style={{ ...td, ...mono(400, 10), color: 'var(--tx3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 220 }}
+                >
+                  {t.branch ? <>⎇ {t.branch}</> : '—'}
+                </td>
                 <td style={{ ...td, ...mono(400, 11), color: 'var(--tx3)', whiteSpace: 'nowrap' }}>{t.est || '—'}</td>
               </tr>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ ...td, textAlign: 'center', color: 'var(--tx3)', padding: '24px 10px' }}>
+                <td colSpan={7} style={{ ...td, textAlign: 'center', color: 'var(--tx3)', padding: '24px 10px' }}>
                   No tickets match these filters.
                 </td>
               </tr>
