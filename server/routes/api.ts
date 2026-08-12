@@ -9,6 +9,7 @@ import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
 import { setupContextFileRoutes } from './context-files';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
+import { normalizeTags } from './ticket-tags';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
 import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
 import {
@@ -79,9 +80,11 @@ const SCHEMA_SQL = [
     description TEXT NOT NULL DEFAULT '',
     ac JSONB NOT NULL DEFAULT '[]',
     blocked BOOLEAN NOT NULL DEFAULT false,
+    tags JSONB NOT NULL DEFAULT '[]',
     seq SERIAL,
     done_at TIMESTAMPTZ
   )`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'`,
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ`,
   // Pre-migration done tickets have no completion time; stamp them at first
   // boot so they age out of the Done lane 24h from now instead of vanishing.
@@ -435,11 +438,14 @@ const ProposalPlanSchema = z.object({
 const PatchTicketBody = z.object({
   status: z.enum(['backlog', 'progress', 'review', 'done', 'proposed', 'dismissed']).optional(),
   assignee: z.string().optional(),
+  tags: z.array(z.string().max(40)).max(20).optional(),
 });
 
 const BulkBody = z.object({
   keys: z.array(z.string()).min(1),
-  patch: PatchTicketBody,
+  // Tags are excluded: a bulk patch replaces the whole tag list, which is
+  // never what "tag these N tickets" means. Tags are edited per-ticket.
+  patch: PatchTicketBody.omit({ tags: true }),
 });
 
 const SuggestionBody = z.object({ decision: z.enum(['acc', 'ovr']) });
@@ -696,6 +702,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
       try {
         const { status, assignee } = parsed.data;
+        const tags = parsed.data.tags === undefined ? undefined : normalizeTags(parsed.data.tags);
         let review: { engagementId: string; from: string } | null = null;
         let before: { engagementId: string; status: string } | null = null;
         if (status !== undefined) {
@@ -726,6 +733,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           params.push(assignee);
           sets.push(`assignee = $${params.length}`);
         }
+        if (tags !== undefined) {
+          params.push(JSON.stringify(tags));
+          sets.push(`tags = $${params.length}`);
+        }
         if (sets.length === 0) {
           res.status(400).json({ error: 'Empty patch' });
           return;
@@ -737,7 +748,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         const updated = result.rows[0] as { key: string; title: string; status: string };
         console.log(
-          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}`,
+          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${tags !== undefined ? ` — tags → [${tags.join(', ')}]` : ''}`,
         );
         if (status !== undefined && before) {
           await recordTicketEvent(q, updated.key, before.engagementId, before.status, status);

@@ -91,6 +91,7 @@ function mapTicket(r: Row): Ticket {
     description: s(r.description),
     ac: j(r.ac, []),
     blocked: b(r.blocked),
+    tags: j(r.tags, []),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
     doneAt: r.done_at == null ? null : s(r.done_at),
@@ -239,7 +240,7 @@ export const api = {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
   },
 
-  patchTicket(key: string, patch: { status?: TicketStatus; assignee?: string }) {
+  patchTicket(key: string, patch: { status?: TicketStatus; assignee?: string; tags?: string[] }) {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },
 

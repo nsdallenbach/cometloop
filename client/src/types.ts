@@ -70,6 +70,7 @@ export interface Ticket {
   description: string;
   ac: string[];
   blocked: boolean;
+  tags: string[];
   deployState: DeployState | null;
   deployUrl: string | null;
   /** When the ticket entered Done (null while in any other status). */

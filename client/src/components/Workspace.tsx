@@ -60,7 +60,7 @@ export function Workspace({
   setTab: (t: Tab) => void;
   goPortfolio: () => void;
   openTicket: (key: string) => void;
-  setTicket: (key: string, patch: { status?: TicketStatus; assignee?: string }) => void;
+  setTicket: (key: string, patch: { status?: TicketStatus; assignee?: string; tags?: string[] }) => void;
   setDetail: React.Dispatch<React.SetStateAction<EngagementDetail | null>>;
   toast: (msg: string) => void;
   onEngagementChanged: () => void;
@@ -262,6 +262,20 @@ export function Workspace({
         )}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
+      {t.tags.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 7 }}>
+          {t.tags.slice(0, 4).map((tag) => (
+            <span key={tag} style={{ ...mono(500, 9), color: 'var(--tx3)', border: '1px solid var(--line2)', borderRadius: 2, padding: '1px 5px' }}>
+              {tag}
+            </span>
+          ))}
+          {t.tags.length > 4 && (
+            <span title={t.tags.slice(4).join(', ')} style={{ ...mono(400, 9), color: 'var(--tx3)', padding: '1px 0' }}>
+              +{t.tags.length - 4}
+            </span>
+          )}
+        </div>
+      )}
       {t.activePr && (
         <a
           href={t.activePr.url}
@@ -959,6 +973,7 @@ export function Workspace({
                     <th style={thStyle}>ASSIGNEE</th>
                     <th style={thStyle}>EST</th>
                     <th style={thStyle}>WORKSTREAM</th>
+                    <th style={thStyle}>TAGS</th>
                     <th style={thStyle}>SOURCE</th>
                   </tr>
                 </thead>
@@ -1037,6 +1052,15 @@ export function Workspace({
                         </td>
                         <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>{t.est}</td>
                         <td style={{ ...tdBase, fontSize: 12, color: 'var(--tx2)', whiteSpace: 'nowrap' }}>{t.workstream}</td>
+                        <td style={tdBase}>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 200 }}>
+                            {t.tags.map((tag) => (
+                              <span key={tag} style={{ ...mono(500, 9), color: 'var(--tx3)', border: '1px solid var(--line2)', borderRadius: 2, padding: '1px 5px', whiteSpace: 'nowrap' }}>
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
                         <td style={{ ...tdBase, ...mono(400, 10.5), color: 'var(--agent)', whiteSpace: 'nowrap' }}>{t.sources[0]?.type ?? ''}</td>
                       </tr>
                     ))}
