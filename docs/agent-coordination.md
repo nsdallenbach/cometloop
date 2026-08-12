@@ -197,3 +197,6 @@ history of who worked which branch.
   against the **live** deployed console (and therefore real Lakebase
   Postgres): `node scripts/coordination-roundtrip.mjs`. Uses `DATABRICKS_TOKEN`
   or the Databricks CLI for auth, like the devbox runner.
+- [coordination-drill-log.md](./coordination-drill-log.md) — results of live
+  drills run with real concurrent agent runners (e.g. DAT-182), one entry per
+  drill.
