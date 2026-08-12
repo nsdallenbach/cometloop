@@ -5,6 +5,13 @@ comments, the agent work queue, git credential vending and context files.
 This is how a devbox Claude Code instance comments on tickets, moves them,
 creates them, and drives its own work lifecycle.
 
+The console also serves a board-tools MCP endpoint over Streamable HTTP at
+`POST /api/mcp` on the app itself (search/get/link/consolidate tickets) —
+that is the surface Databricks model serving agents use; see
+[docs/mcp-databricks-registration.md](../docs/mcp-databricks-registration.md).
+This stdio server remains the full-featured surface for desktop/devbox
+clients.
+
 ## Setup
 
 Requires Node 18+ and either a pre-minted OAuth token or the Databricks CLI
@@ -31,11 +38,12 @@ Environment (all optional):
 
 ## Tools
 
-**Read**: `list_engagements`, `get_board`, `get_ticket`,
+**Read**: `list_engagements`, `get_board`, `get_ticket`, `search_tickets`,
 `list_context_files`, `read_context_file`
 
 **Tickets**: `create_ticket`, `move_ticket`, `assign_ticket`,
-`comment_on_ticket`
+`comment_on_ticket`, `link_tickets`, `consolidate_tickets` (consolidate is
+lead only — it dismisses the merged source tickets)
 
 **Attachments**: `list_ticket_attachments`, `attach_file_to_ticket`,
 `read_ticket_attachment`, `delete_ticket_attachment` (lead only; uploads are

@@ -138,7 +138,44 @@ tool(
   },
 );
 
+tool(
+  'search_tickets',
+  'Search an engagement board for tickets by keyword (title + description match). Returns key, title, status and a description snippet.',
+  {
+    engagement_id: z.string(),
+    query: z.string().optional().describe('Keywords to match in title or description; omit to list the board'),
+    status: z.enum(['backlog', 'proposed', 'progress', 'review', 'done']).optional(),
+    limit: z.number().int().min(1).max(100).optional().describe('Max results (default 30)'),
+  },
+  async ({ engagement_id, query, status, limit }) => {
+    const d = await call('GET', `/api/engagements/${encodeURIComponent(engagement_id)}/detail`);
+    const terms = (query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+    const matches = d.tickets.filter((t) => {
+      if (t.status === 'dismissed' || (status && t.status !== status)) return false;
+      const haystack = `${t.title}\n${t.description ?? ''}`.toLowerCase();
+      return terms.every((term) => haystack.includes(term));
+    });
+    return matches
+      .slice(0, limit ?? 30)
+      .map((t) => ({ ...trimTicket(t), description: undefined, snippet: (t.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 280) || undefined }));
+  },
+);
+
 // ---- ticket mutations ----
+
+tool(
+  'link_tickets',
+  'Record a relationship between two tickets on the same board: relates, blocks (key blocks other_key) or blocked_by (key is blocked by other_key).',
+  { key: z.string(), other_key: z.string(), type: z.enum(['relates', 'blocks', 'blocked_by']) },
+  async ({ key, other_key, type }) => call('POST', `/api/tickets/${encodeURIComponent(key)}/links`, { key: other_key, type }),
+);
+
+tool(
+  'consolidate_tickets',
+  'Merge duplicate/overlapping source tickets into a surviving target (lead only): descriptions and acceptance criteria fold into the target and the sources are dismissed with a pointer comment.',
+  { target_key: z.string(), source_keys: z.array(z.string()).min(1).max(20) },
+  async ({ target_key, source_keys }) => call('POST', `/api/tickets/${encodeURIComponent(target_key)}/consolidate`, { sources: source_keys }),
+);
 
 tool(
   'create_ticket',

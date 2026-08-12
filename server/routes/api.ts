@@ -14,6 +14,9 @@ import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
 import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
 import { normalizeTags } from './ticket-tags';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
+import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes } from './ticket-consolidate';
+import { setupMcpRoutes } from './mcp';
+import { extractText, refinePlan, refineTicketWithBoard, type RefinedPlan, type ScopingAction } from './scoping-agent';
 import { setupTicketOrderRoutes } from './ticket-order';
 import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
 import {
@@ -243,98 +246,40 @@ async function backfillMemberships(appkit: AppKitServices) {
 }
 
 // ---------- LLM helpers ----------
-
-function extractText(response: unknown): string {
-  // Programmatic serving invoke returns ExecutionResult: { ok: true, data } | { ok: false, status, message }
-  let payload = response;
-  if (payload && typeof payload === 'object' && 'ok' in payload) {
-    const wrapper = payload as { ok: boolean; data?: unknown; message?: string };
-    if (!wrapper.ok) throw new Error(wrapper.message ?? 'model invocation failed');
-    payload = wrapper.data;
-  }
-  const r = payload as { choices?: { message?: { content?: unknown } }[] };
-  const content = r?.choices?.[0]?.message?.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((c: unknown) => {
-        const part = c as { type?: string; text?: string };
-        return part?.type === 'text' && typeof part.text === 'string' ? part.text : '';
-      })
-      .join('');
-  }
-  return '';
-}
+// extractText / refinePlan / refineTicketWithBoard live in scoping-agent.ts;
+// the board tools they can call are shared with the MCP endpoint (mcp.ts).
 
 /**
- * Ask the serving endpoint to turn a raw work request into a planned ticket:
- * derived title, markdown plan (Context / Approach / Dependencies) and
- * acceptance criteria. Returns null when the model is unavailable or the
- * response holds no usable JSON — callers fall back to the raw content.
+ * Fold a board-aware refinement back into a ticket row: append the verbatim
+ * original request, and when the scoping loop consolidated other tickets into
+ * this one mid-flight, carry the "## Consolidated from" sections and merged
+ * AC across the description rewrite instead of dropping them.
  */
-async function refinePlan(
-  appkit: AppKitServices,
-  content: string,
-  roadmapItems: string[] = [],
-): Promise<{ title: string; description: string; ac: string[]; estHours: number | null; humanEstHours: number | null; roadmapItem: string | null } | null> {
-  try {
-    const response = await appkit.serving('default').invoke({
-      messages: [
-        {
-          role: 'user',
-          content: [
-            'You are the delivery-planning agent for a consulting delivery board. A team member typed a work request into a chat box. Turn it into a well-formed delivery ticket.',
-            'Respond with ONLY a JSON object, no code fences:',
-            '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "est_hours": number, "human_est_hours": number' +
-              (roadmapItems.length > 0 ? ', "roadmap_item": "one of the roadmap items below"' : '') +
-              '}',
-            'The description becomes the prompt handed to an autonomous coding agent, so make it a compact plan in markdown with these sections (omit any that truly do not apply): ## Context (what exists today and why this is needed), ## Approach (how to implement, referencing systems/files/endpoints implied by the request), ## Dependencies (other tickets, credentials, decisions or unknowns the agent should check first).',
-            'Plan only what the request implies — do not invent scope. 3-6 acceptance criteria.',
-            'est_hours is the expected Claude Code agent execution time from claim to ready-for-review, in agent-hours (may be fractional, typically 0.2–8): a small well-scoped change is under an hour; only genuinely sprawling multi-system work exceeds 8.',
-            'human_est_hours is an independent estimate of the same scope done by a professional human developer, in hours — usually 3–6× the agent time, but reason from the scope rather than applying a multiplier.',
-            ...(roadmapItems.length > 0
-              ? [`roadmap_item must be exactly one of: ${roadmapItems.map((p) => JSON.stringify(p)).join(', ')} — pick the item this work belongs to.`]
-              : []),
-            'Work request:',
-            content,
-          ].join('\n\n'),
-        },
-      ],
-      max_tokens: 1500,
-    });
-    const text = extractText(response);
-    const jsonMatch = /\{[\s\S]*\}/.exec(text);
-    if (!jsonMatch) return null;
-    const plan = JSON.parse(jsonMatch[0]) as {
-      title?: unknown;
-      description?: unknown;
-      acceptance_criteria?: unknown;
-      est_hours?: unknown;
-      human_est_hours?: unknown;
-      roadmap_item?: unknown;
-    };
-    const title = typeof plan.title === 'string' ? plan.title.trim().slice(0, 200) : '';
-    const description = typeof plan.description === 'string' ? plan.description.trim() : '';
-    const ac = Array.isArray(plan.acceptance_criteria)
-      ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)
-      : [];
-    const estHours =
-      typeof plan.est_hours === 'number' && Number.isFinite(plan.est_hours) && plan.est_hours > 0
-        ? Math.min(400, Math.round(plan.est_hours * 2) / 2)
-        : null;
-    const humanEstHours =
-      typeof plan.human_est_hours === 'number' && Number.isFinite(plan.human_est_hours) && plan.human_est_hours > 0
-        ? Math.min(999, Math.round(plan.human_est_hours * 2) / 2)
-        : null;
-    // Only accept an item that actually exists on the roadmap — the model must not invent one.
-    const roadmapItem =
-      typeof plan.roadmap_item === 'string' && roadmapItems.includes(plan.roadmap_item.trim()) ? plan.roadmap_item.trim() : null;
-    if (!title && !description) return null;
-    return { title, description, ac, estHours, humanEstHours, roadmapItem };
-  } catch (err) {
-    console.warn('[api] ticket refinement failed:', (err as Error).message);
-    return null;
+function foldPlanIntoTicket(
+  plan: RefinedPlan,
+  original: string,
+  currentRow: Record<string, unknown> | undefined,
+  actions: ScopingAction[],
+): { description: string; ac: string[] } {
+  let description = plan.description
+    ? `${plan.description}\n\n## Original request\n\n> ${original.replace(/\n/g, '\n> ')}`
+    : original;
+  let ac = plan.ac;
+  const consolidated = actions.some((a) => a.tool === 'consolidate_tickets' && a.ok);
+  if (consolidated && currentRow) {
+    const tail = consolidatedTail(typeof currentRow.description === 'string' ? currentRow.description : '');
+    if (tail && plan.description) description = `${description}\n\n${tail}`;
+    const rowAc = (() => {
+      try {
+        const raw: unknown = typeof currentRow.ac === 'string' ? JSON.parse(currentRow.ac) : (currentRow.ac ?? []);
+        return Array.isArray(raw) ? raw.filter((a): a is string => typeof a === 'string' && a.trim().length > 0) : [];
+      } catch {
+        return [];
+      }
+    })();
+    ac = mergeAcceptanceCriteria(plan.ac, rowAc);
   }
+  return { description, ac };
 }
 
 /** Phase/roadmap-item names from an engagement row's phases JSONB, defensively parsed. */
@@ -916,16 +861,31 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const asText = (v: unknown): string => (typeof v === 'string' ? v : '');
         const original = asText(t.description).trim() || asText(t.title);
         const content = [asText(t.title), asText(t.description).trim()].filter(Boolean).join('\n\n');
-        console.log(`[api] refining ticket ${key} via the planning model (${content.length} chars of context)`);
+        console.log(`[api] refining ticket ${key} via the scoping agent (${content.length} chars of context)`);
         const engRow = (await q('SELECT phases FROM app.engagements WHERE id = $1', [String(t.engagement_id)])).rows[0];
-        const plan = await refinePlan(appkit, content, roadmapItemNames(engRow?.phases));
+        const roadmapItems = roadmapItemNames(engRow?.phases);
+        const serving = appkit.serving.bind(appkit);
+        // Board-aware tool-calling agent first; single-shot refinement as the
+        // fallback so a tool-loop failure degrades, never breaks, the action.
+        const agentic = await refineTicketWithBoard(serving, q, {
+          key,
+          engagementId: String(t.engagement_id),
+          content,
+          roadmapItems,
+          author: requestAuthor(req),
+        });
+        const plan = agentic?.plan ?? (await refinePlan(serving, content, roadmapItems));
         if (!plan) {
           res.status(502).json({ error: 'The planning model is unavailable — try again shortly' });
           return;
         }
-        const description = plan.description
-          ? `${plan.description}\n\n## Original request\n\n> ${original.replace(/\n/g, '\n> ')}`
-          : original;
+        if (agentic && agentic.actions.length > 0) {
+          console.log(`[api] ${key} scoping actions: ${agentic.actions.map((a) => a.summary).join('; ')}`);
+        }
+        // Re-read the row — the scoping loop may have consolidated other
+        // tickets into it since `t` was loaded.
+        const currentRow = agentic ? (await q('SELECT description, ac FROM app.tickets WHERE key = $1', [key])).rows[0] : t;
+        const folded = foldPlanIntoTicket(plan, original, currentRow, agentic?.actions ?? []);
         const existingAc: unknown[] = (() => {
           try {
             const raw: unknown = typeof t.ac === 'string' ? JSON.parse(t.ac) : (t.ac ?? []);
@@ -934,7 +894,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             return [];
           }
         })();
-        console.log(`[api] ticket ${key} refined — ${plan.ac.length > 0 ? plan.ac.length : existingAc.length} AC`);
+        const finalAc: string[] = folded.ac.length > 0 ? folded.ac : existingAc.map((a) => String(a));
+        console.log(`[api] ticket ${key} refined — ${finalAc.length} AC`);
         const updated = await q(
           `UPDATE app.tickets SET title = $2, description = $3, ac = $4,
              est_hours = COALESCE($5, est_hours), human_est_hours = COALESCE($6, human_est_hours),
@@ -943,8 +904,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           [
             key,
             plan.title || String(t.title),
-            description,
-            JSON.stringify(plan.ac.length > 0 ? plan.ac : existingAc),
+            folded.description,
+            JSON.stringify(finalAc),
             plan.estHours,
             plan.humanEstHours,
             plan.roadmapItem,
@@ -953,13 +914,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         // The plan (and so the scope) changed — re-estimate in the background.
         void estimateTicket(
           q,
-          appkit.serving.bind(appkit),
+          serving,
           {
             key,
             engagementId: String(t.engagement_id),
             title: plan.title || String(t.title),
-            description,
-            ac: (plan.ac.length > 0 ? plan.ac : existingAc).map((a) => String(a)),
+            description: folded.description,
+            ac: finalAc,
           },
           'revised',
         );
@@ -1008,30 +969,16 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         let estHours: number | null = null;
         let humanEstHours: number | null = null;
         let roadmapItem: string | null = null;
-        if (!title) {
-          // Single-chatbox flow: refine the raw request into a planned ticket.
-          // The description doubles as the agent prompt, so it should read like
-          // the output of planning: context, approach, dependencies, AC.
-          const content = description;
-          const plan = await refinePlan(appkit, content, roadmapItemNames(eng.phases));
-          if (plan) {
-            if (plan.title) title = plan.title;
-            if (plan.description) {
-              // Keep the human's words verbatim below the plan — they are the intent of record.
-              description = `${plan.description}\n\n## Original request\n\n> ${content.replace(/\n/g, '\n> ')}`;
-            }
-            ac = plan.ac;
-            estHours = plan.estHours;
-            humanEstHours = plan.humanEstHours;
-            roadmapItem = plan.roadmapItem;
-          }
-          if (!title) title = fallbackTitle(content);
-          console.log(`[api] chatbox ticket for ${engId} ${plan ? 'planned via model' : 'using fallback title'} (${content.length} chars)`);
-        }
-        // Every ticket lands on the roadmap: fall back to the phase active today.
-        if (!roadmapItem) roadmapItem = activeRoadmapItem(eng.phases);
         const author = requestAuthor(req);
-        const result = await q(
+        const chatbox = !title;
+        if (chatbox) title = fallbackTitle(description);
+        // Every ticket lands on the roadmap; the chatbox flow lets the plan
+        // pick an item first and falls back to the active phase after refining.
+        else roadmapItem = activeRoadmapItem(eng.phases);
+        // Insert the raw ticket first: the scoping agent needs a real key on
+        // the board so its link/consolidate tool calls have a subject. The
+        // refined plan folds into the row right after, within this request.
+        const inserted = await q(
           `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, est_hours, human_est_hours, roadmap_item)
            VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,$9,false,$10,$11,$12) RETURNING *`,
           [
@@ -1039,16 +986,64 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             engId,
             title.trim(),
             assignee?.trim() || '—',
-            est?.trim() || (estHours != null ? `${estHours}h` : '—'),
+            est?.trim() || '—',
             workstream?.trim() ?? '',
             JSON.stringify([{ type: 'MANUAL', label: `Created in console by ${author}` }]),
             description,
             JSON.stringify(ac),
-            estHours,
-            humanEstHours,
+            null,
+            null,
             roadmapItem,
           ],
         );
+        let row = inserted.rows[0];
+        if (chatbox) {
+          // Single-chatbox flow: refine the raw request into a planned ticket.
+          // The description doubles as the agent prompt, so it should read like
+          // the output of planning: context, approach, dependencies, AC.
+          // Board-aware tool-calling agent first (search/link/consolidate
+          // against other board tickets), single-shot planner as fallback, raw
+          // content as the last resort — refinement never fails creation.
+          const content = description;
+          const roadmapItems = roadmapItemNames(eng.phases);
+          const serving = appkit.serving.bind(appkit);
+          const agentic = await refineTicketWithBoard(serving, q, { key, engagementId: engId, content, roadmapItems, author });
+          const plan = agentic?.plan ?? (await refinePlan(serving, content, roadmapItems));
+          if (plan) {
+            if (plan.title) title = plan.title;
+            estHours = plan.estHours;
+            humanEstHours = plan.humanEstHours;
+            roadmapItem = plan.roadmapItem;
+            // Keep the human's words verbatim below the plan — they are the
+            // intent of record — and carry consolidation results across.
+            const currentRow = agentic ? (await q('SELECT description, ac FROM app.tickets WHERE key = $1', [key])).rows[0] : undefined;
+            const folded = foldPlanIntoTicket(plan, content, currentRow, agentic?.actions ?? []);
+            if (plan.description) description = folded.description;
+            ac = folded.ac;
+          }
+          if (agentic && agentic.actions.length > 0) {
+            console.log(`[api] ${key} scoping actions: ${agentic.actions.map((a) => a.summary).join('; ')}`);
+          }
+          if (!roadmapItem) roadmapItem = activeRoadmapItem(eng.phases);
+          const updated = await q(
+            `UPDATE app.tickets SET title = $2, description = $3, ac = $4, est = $5, est_hours = $6, human_est_hours = $7, roadmap_item = $8
+             WHERE key = $1 RETURNING *`,
+            [
+              key,
+              title.trim(),
+              description,
+              JSON.stringify(ac),
+              est?.trim() || (estHours != null ? `${estHours}h` : '—'),
+              estHours,
+              humanEstHours,
+              roadmapItem,
+            ],
+          );
+          row = updated.rows[0] ?? row;
+          console.log(
+            `[api] chatbox ticket ${key} for ${engId} ${plan ? (agentic ? 'planned via scoping agent' : 'planned via model') : 'using fallback title'} (${content.length} chars)`,
+          );
+        }
         console.log(`[api] created ticket ${key} in ${engId} (${ac.length} AC)`);
         // Estimate the ticket's LLM hours in the background — creation never
         // waits on (or fails with) the estimation model. Skip when the creator
@@ -1068,7 +1063,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
            VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
           [engId, `Created ticket ${key} — ${title.trim()}${who && who !== '—' ? `, assigned to ${who}` : ''}`],
         );
-        res.status(201).json(result.rows[0]);
+        res.status(201).json(row);
       } catch (err) {
         console.error('create ticket failed:', err);
         res.status(500).json({ error: 'Failed to create ticket' });
@@ -1656,6 +1651,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
 
     setupRepoRoutes(app, q, requireLead);
     setupTicketLinkRoutes(app, q);
+    setupTicketConsolidateRoutes(app, q, requireLead);
+    setupMcpRoutes(app, q);
     setupTicketOrderRoutes(app, q);
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireLead, telemetry);
