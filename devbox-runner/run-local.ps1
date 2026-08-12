@@ -4,7 +4,7 @@
 $repo = Split-Path $PSScriptRoot -Parent
 Set-Location $repo
 
-$env:AGENT_NAME = 'local-emu'
+if (-not $env:AGENT_NAME) { $env:AGENT_NAME = 'local-emu' }
 $env:ENGAGEMENT = 'execution-console'
 $env:MCP_SERVER = Join-Path $repo 'mcp\server.mjs'
 
