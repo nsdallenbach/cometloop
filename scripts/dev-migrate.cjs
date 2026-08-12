@@ -86,6 +86,59 @@ const MIGRATIONS = [
       AND e.id = (SELECT id FROM app.ticket_estimates e2 WHERE e2.ticket_key = t.key AND e2.actual_hours IS NOT NULL ORDER BY id DESC LIMIT 1)
       AND abs(e.actual_hours - t.actual_hours) > 0.05`,
   },
+  // --- DAT-194 (part 2): backdate pre-trail history from the feed log. ---
+  // Tickets done before the event trail existed got done_at stamped at the
+  // done_at migration's run time and a single synthetic 'done' event at the
+  // engagement's creation — flattening every lead time. The feed recorded the
+  // real moments all along ("Created ticket KEY — …", "… KEY moved to Done.").
+  // (1) done_at ← the latest feed item announcing the ticket moved to Done,
+  // when it disagrees by more than an hour.
+  {
+    sql: `UPDATE app.tickets t SET done_at = f.at
+    FROM (SELECT t2.key, MAX(fi.created_at) AS at
+          FROM app.tickets t2 JOIN app.feed_items fi
+            ON fi.engagement_id = t2.engagement_id AND fi.text LIKE '%' || t2.key || ' moved to Done%'
+          GROUP BY t2.key) f
+    WHERE t.key = f.key AND t.status = 'done'
+      AND abs(EXTRACT(EPOCH FROM (t.done_at - f.at))) > 3600`,
+  },
+  // (2) Synthetic creation events (from_status IS NULL) ← the feed's
+  // "Created ticket" moment, when one exists and disagrees by > 1 minute.
+  {
+    sql: `UPDATE app.ticket_events e SET created_at = f.at
+    FROM (SELECT t2.key, MIN(fi.created_at) AS at
+          FROM app.tickets t2 JOIN app.feed_items fi
+            ON fi.engagement_id = t2.engagement_id AND fi.text LIKE 'Created ticket ' || t2.key || ' %'
+          GROUP BY t2.key) f
+    WHERE e.ticket_key = f.key AND e.from_status IS NULL
+      AND abs(EXTRACT(EPOCH FROM (e.created_at - f.at))) > 60`,
+  },
+  // (3) Pre-trail done tickets whose ONLY event is the synthetic 'done'
+  // snapshot: give them a real done event at done_at, then repurpose the
+  // synthetic row as the creation event. Order matters; both are idempotent
+  // (the count/status guards stop matching after the first run).
+  {
+    sql: `INSERT INTO app.ticket_events (ticket_key, engagement_id, from_status, to_status, created_at)
+    SELECT t.key, t.engagement_id, 'review', 'done', t.done_at
+    FROM app.tickets t
+    WHERE t.status = 'done' AND t.done_at IS NOT NULL
+      AND (SELECT COUNT(*) FROM app.ticket_events e WHERE e.ticket_key = t.key) = 1
+      AND EXISTS (SELECT 1 FROM app.ticket_events e WHERE e.ticket_key = t.key AND e.from_status IS NULL AND e.to_status = 'done')`,
+  },
+  {
+    sql: `UPDATE app.ticket_events e SET to_status = 'backlog'
+    FROM app.tickets t
+    WHERE e.ticket_key = t.key AND e.from_status IS NULL AND e.to_status = 'done' AND t.status = 'done'
+      AND (SELECT COUNT(*) FROM app.ticket_events e2 WHERE e2.ticket_key = t.key) = 2`,
+  },
+  // (4) The done event's timestamp follows any done_at correction from (1).
+  {
+    sql: `UPDATE app.ticket_events e SET created_at = t.done_at
+    FROM app.tickets t
+    WHERE e.ticket_key = t.key AND e.to_status = 'done' AND t.status = 'done' AND t.done_at IS NOT NULL
+      AND e.id = (SELECT MAX(e2.id) FROM app.ticket_events e2 WHERE e2.ticket_key = t.key AND e2.to_status = 'done')
+      AND abs(EXTRACT(EPOCH FROM (e.created_at - t.done_at))) > 3600`,
+  },
   // When the ticket body/description was last edited (DAT-174); null = never edited.
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ` },
   // Attachments metadata: FK onto dev-owned tickets, so the table is created
