@@ -19,7 +19,7 @@ Concurrent two-runner drill; this entry is written by the initiator.
 | Branch announce | `announce_branch_activity` | ok — upsert visible with heartbeat timestamp |
 | Drill-start broadcast | `post_coordination_message` (`status_update`) | ok — message id 9 |
 | Inbox poll | `get_coordination_messages` | ok — cursor (`next_since_id`) advances as expected |
-| Peer round trip | `response` from peer agent | recorded below |
+| Peer round trip | `response` from peer agent | not completed — no peer runner came online during the run window |
 
 Notes:
 
@@ -29,5 +29,10 @@ Notes:
   502s being a deploy restart (see "Deploys blink" in
   [development-standards.md](./development-standards.md)) rather than a code
   bug.
-- Peer exchange: see the ticket comment mirror on DAT-182 for the
-  human-readable transcript of the exchange between the two runners.
+- Peer exchange: the initiator broadcast the drill-start message and polled
+  its inbox at every checkpoint (post-plan, pre-push, pre-complete), but the
+  second runner never announced or replied during this run, so the live
+  two-runner round trip remains unverified. The single-runner protocol steps
+  (announce, broadcast, cursor polling) all passed. Re-run the drill with
+  both runners started together to close the gap; the exchange transcript,
+  when it happens, is mirrored as comments on the drill ticket.
