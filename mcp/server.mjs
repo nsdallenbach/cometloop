@@ -18,21 +18,38 @@ const APP_URL = (process.env.DELIVERY_CONSOLE_URL ?? 'https://delivery-console-7
 const HOST = process.env.DATABRICKS_HOST ?? 'https://dbc-96494b8f-6b86.cloud.databricks.com';
 const CLI = process.env.DATABRICKS_CLI ?? 'databricks';
 
+// Short TTL: workspace tokens live ~1h, so a 10-minute cache never hands out
+// a token near death; a 401 busts the cache and retries once regardless.
 let cachedTok = null; // { token, exp }
 function token() {
   if (process.env.DATABRICKS_TOKEN) return process.env.DATABRICKS_TOKEN;
   if (cachedTok && Date.now() < cachedTok.exp) return cachedTok.token;
   const out = execFileSync(CLI, ['auth', 'token', '--host', HOST], { encoding: 'utf8' });
-  cachedTok = { token: JSON.parse(out).access_token, exp: Date.now() + 45 * 60_000 };
+  cachedTok = { token: JSON.parse(out).access_token, exp: Date.now() + 10 * 60_000 };
   return cachedTok.token;
 }
 
+/** Authorized fetch with one transparent token refresh on 401. */
+async function authedFetch(url, init = {}) {
+  for (let attempt = 0; ; attempt++) {
+    const resp = await fetch(url, {
+      ...init,
+      headers: { Authorization: `Bearer ${token()}`, ...(init.headers ?? {}) },
+      signal: AbortSignal.timeout(init.timeoutMs ?? 30_000),
+    });
+    if (resp.status === 401 && attempt === 0 && !process.env.DATABRICKS_TOKEN) {
+      cachedTok = null; // token died mid-flight — mint fresh and retry once
+      continue;
+    }
+    return resp;
+  }
+}
+
 async function call(method, path, body) {
-  const resp = await fetch(`${APP_URL}${path}`, {
+  const resp = await authedFetch(`${APP_URL}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${token()}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
   });
   const raw = await resp.text();
   if (!resp.ok) {
@@ -231,6 +248,40 @@ tool(
 );
 
 tool(
+  'check_pr_conflicts',
+  'Analyze merge conflicts on a PR opened for your claimed task: provider mergeability, other open/recent PRs touching the same files, the tickets they are linked to, and a safe-to-auto-resolve vs developer-review assessment. Pass conflict_files from `git merge-tree` for a precise overlap basis.',
+  {
+    task_id: z.number().int(),
+    agent: z.string(),
+    pr_number: z.number().int(),
+    conflict_files: z.array(z.string()).optional().describe('Conflicted paths from git merge-tree; defaults to every file the PR touches'),
+  },
+  async ({ task_id, agent, pr_number, conflict_files }) =>
+    call('POST', `/api/agent/work/${task_id}/pr/${pr_number}/conflicts`, { agent, conflict_files }),
+);
+
+tool(
+  'escalate_pr_conflict',
+  'Flag a conflicted PR for developer review instead of auto-resolving: posts a PR comment naming the conflicting PR(s)/ticket(s), adds a merge-conflict label, requests review from the developers who own the conflicting changes, flags your task on the board, and comments on the impacted tickets.',
+  {
+    task_id: z.number().int(),
+    agent: z.string(),
+    pr_number: z.number().int(),
+    reason: z.string().min(1).max(2000).describe('Why auto-resolution was not safe'),
+    conflicting_prs: z.array(z.number().int()).optional().describe('PR numbers from check_pr_conflicts that overlap the conflict'),
+  },
+  async ({ task_id, agent, pr_number, reason, conflicting_prs }) =>
+    call('POST', `/api/agent/work/${task_id}/pr/${pr_number}/escalate`, { agent, reason, conflicting_prs }),
+);
+
+tool(
+  'comment_on_pr',
+  "Post a comment on a PR belonging to your claimed task's repo — e.g. to document an auto-resolved merge conflict.",
+  { task_id: z.number().int(), agent: z.string(), pr_number: z.number().int(), body: z.string().min(1) },
+  async ({ task_id, agent, pr_number, body }) => call('POST', `/api/agent/work/${task_id}/pr/${pr_number}/comment`, { agent, body }),
+);
+
+tool(
   'get_git_credential',
   'Vend a short-lived (~1h) git clone/push token for a claimed task (GitHub App connections only).',
   { task_id: z.number().int(), agent: z.string() },
@@ -248,9 +299,8 @@ tool(
   'Read a context file as text (up to 200 KB; binary files are refused).',
   { engagement_id: z.string(), name: z.string() },
   async ({ engagement_id, name }) => {
-    const resp = await fetch(
+    const resp = await authedFetch(
       `${APP_URL}/api/engagements/${encodeURIComponent(engagement_id)}/context-files/${encodeURIComponent(name)}`,
-      { headers: { Authorization: `Bearer ${token()}` }, signal: AbortSignal.timeout(30_000) },
     );
     if (!resp.ok) throw new Error(`Download failed (${resp.status})`);
     const buf = Buffer.from(await resp.arrayBuffer());

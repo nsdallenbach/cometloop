@@ -5,6 +5,9 @@ import { listContextFiles, type FilesVolume } from './context-files';
 import { listTicketAttachments } from './ticket-attachments';
 import { loadConnection } from './repos';
 import { installationToken } from './github-app';
+import { recordActualHours } from './estimates';
+import { archiveToolCalls } from './tool-calls';
+import { setTicketStatus } from './ticket-events';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -100,7 +103,7 @@ export function startMockRunner(q: Query): void {
         )
       ).rows;
       for (const t of claimed) {
-        await q(`UPDATE app.tickets SET status = 'progress', assignee = $2 WHERE key = $1`, [String(t.ticket_key), AGENT]);
+        await setTicketStatus(q, String(t.ticket_key), 'progress', { assignee: AGENT });
       }
       await q(
         `UPDATE app.agent_tasks
@@ -170,6 +173,16 @@ function renderPrompt(
     '- If the GIT_TOKEN environment variable is set, push with https://x-access-token:$GIT_TOKEN@github.com/<owner>/<repo>.git and open the PR via the GitHub REST API with that token; otherwise use local git credentials / gh.',
     '- If delivery-console MCP tools are available, post report_agent_progress at plan time and before pushing, and raise flag_agent_work if you get blocked instead of guessing.',
     '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
+    ...(repo
+      ? [
+          '',
+          '## After the PR is open — merge conflicts',
+          `- Check the PR for merge conflicts against ${txt(repo.default_branch) || 'the base branch'}: run \`git fetch origin\` then \`git merge-tree $(git merge-base HEAD origin/<base>) HEAD origin/<base>\` (conflict markers in the output = conflicted files), and POST /api/agent/work/${txt(task.id)}/pr/<number>/conflicts with {"agent","conflict_files"} (also available as the check_pr_conflicts MCP tool). The report cross-references other open/recent PRs touching the same files, the tickets they are linked to, and returns an auto-resolve vs developer-review assessment.`,
+          '- If there are conflicts, review the overlapping PRs listed in the report before touching anything, to understand where the conflicting changes came from.',
+          '- Auto-resolve ONLY when the report recommends auto-resolve (no overlapping open PR, no other ticket impacted) AND the conflicts are trivially mergeable (non-overlapping hunks, imports, lockfiles, formatting). Then merge origin/<base> into your branch, resolve, re-run the relevant build/tests, push, and document the resolution with a PR comment (comment_on_pr tool or POST .../pr/<number>/comment).',
+          '- If resolution is not safe — overlapping logic changes, or a conflicting PR belongs to another ticket — do NOT resolve or merge. Escalate with escalate_pr_conflict (or POST .../pr/<number>/escalate with {"agent","reason","conflicting_prs"}): this comments on the PR naming the conflicting PR(s)/ticket(s), labels it merge-conflict, requests review from the developers who own the conflicting changes, and flags the ticket on the board. Then finish normally with the PR left open for developer review, and say in RESULT.md that the PR is flagged.',
+        ]
+      : []),
   ];
   return lines.join('\n');
 }
@@ -179,7 +192,10 @@ export function setupAgentRoutes(
   q: Query,
   files: FilesVolume,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  telemetry: FilesVolume | null = null,
 ) {
+  /** Fire-and-forget: archive a finished run's tool-call log to the telemetry volume. */
+  const archive = (taskId: number) => void archiveToolCalls(q, telemetry, taskId);
   const feed = (engagementId: string, actor: string, text: string) =>
     q(
       `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -252,6 +268,9 @@ export function setupAgentRoutes(
          VALUES ($1,$2,$3,$4,$5) RETURNING *`,
         [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', lead.email],
       );
+      console.log(
+        `[agent] queued ${key} as task ${String(inserted.rows[0].id)} (engagement ${engagementId}, priority ${parsed.data.priority ?? 0})`,
+      );
       await feed(engagementId, 'YOU', `Queued ${key} — ${String(ticket.title)} for agent work.`);
       res.status(201).json(inserted.rows[0]);
     } catch (err) {
@@ -277,7 +296,11 @@ export function setupAgentRoutes(
         task.id,
         'Marked done from the board.',
       ]);
-      await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+      await setTicketStatus(q, key, 'review');
+      // Ready for review: log the actual LLM working time against the estimate.
+      void recordActualHours(q, key, 'board-complete');
+      console.log(`[agent] task ${String(task.id)} (${key}) marked done from the board — ticket moved to review`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Marked agent work on ${key} done — moved to Review.`);
       res.json({ ok: true });
     } catch (err) {
@@ -301,12 +324,11 @@ export function setupAgentRoutes(
       await q(`UPDATE app.agent_tasks SET state = 'cancelled', updated_at = NOW() WHERE id = $1`, [task.id]);
       // A claimed ticket goes back to the backlog; drop the agent as assignee.
       if (task.state !== 'queued') {
-        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—' WHERE key = $1 AND assignee = $2`, [
-          key,
-          typeof task.agent === 'string' ? task.agent : '',
-        ]);
-        await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
+        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: typeof task.agent === 'string' ? task.agent : '' });
+        await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
+      console.log(`[agent] task ${String(task.id)} (${key}) cancelled from state '${String(task.state)}'`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Cancelled agent work on ${key}.`);
       res.json({ ok: true });
     } catch (err) {
@@ -326,6 +348,7 @@ export function setupAgentRoutes(
       const engagementId = req.params.id;
       if (!(await requireLead(req, res, engagementId))) return;
       const { order } = parsed.data;
+      console.log(`[agent] reordering queue for engagement ${engagementId} (${order.length} task(s))`);
       // Claiming sorts priority DESC, so the top of the lane gets the highest
       // number. Newly queued tasks default to 0 and land at the bottom.
       for (let i = 0; i < order.length; i++) {
@@ -362,6 +385,7 @@ export function setupAgentRoutes(
         }
         const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
         if (queued.length > 0) {
+          console.log(`[agent] wait poll answered with ${queued.length} queued task(s)${engagement ? ` (engagement ${engagement})` : ''}`);
           res.json({ queued });
           return;
         }
@@ -436,7 +460,8 @@ export function setupAgentRoutes(
         return;
       }
       const key = String(claimed.ticket_key);
-      await q(`UPDATE app.tickets SET status = 'progress', assignee = $2 WHERE key = $1`, [key, agent]);
+      console.log(`[agent] ${agent} claimed task ${String(claimed.id)} (${key}) — ticket moved to progress`);
+      await setTicketStatus(q, key, 'progress', { assignee: agent });
       await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work.`);
       res.json(await workPackage(claimed));
     } catch (err) {
@@ -453,6 +478,7 @@ export function setupAgentRoutes(
         res.status(404).json({ error: 'Task not found' });
         return;
       }
+      console.log(`[agent] work package re-fetched for task ${String(task.id)} (${String(task.ticket_key)}, state '${String(task.state)}')`);
       res.json(await workPackage(task));
     } catch (err) {
       console.error('work package failed:', err);
@@ -494,6 +520,8 @@ export function setupAgentRoutes(
         return;
       }
       const { token, expiresAt } = await installationToken(conn.installation_id);
+      // Log the vend event only — never the token itself.
+      console.log(`[agent] vended git credential for task ${String(task.id)} (repo ${conn.repo_name}, expires ${expiresAt})`);
       res.json({
         provider: 'github',
         repo: conn.repo_name,
@@ -526,6 +554,9 @@ export function setupAgentRoutes(
         res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
         return;
       }
+      console.log(
+        `[agent] progress on task ${String(task.id)} (${String(task.ticket_key)}) from ${parsed.data.agent} — note ${parsed.data.note.trim().length} chars, state '${String(task.state)}' → 'working'`,
+      );
       await q(`UPDATE app.agent_tasks SET state = 'working', last_note = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
         task.id,
         parsed.data.note.trim(),
@@ -597,6 +628,7 @@ export function setupAgentRoutes(
         return;
       }
       const key = String(task.ticket_key);
+      console.log(`[agent] task ${String(task.id)} (${key}) flagged by ${agent}: ${reason.trim().slice(0, 140)}`);
       await q(`UPDATE app.agent_tasks SET flag = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
         task.id,
         reason.trim(),
@@ -629,6 +661,7 @@ export function setupAgentRoutes(
         res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
         return;
       }
+      console.log(`[agent] flag cleared on task ${String(task.id)} (${String(task.ticket_key)}) by ${parsed.data.agent}`);
       await q(`UPDATE app.agent_tasks SET flag = NULL, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [task.id]);
       await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
         String(task.ticket_key),
@@ -663,16 +696,22 @@ export function setupAgentRoutes(
       }
       const key = String(task.ticket_key);
       const engagementId = String(task.engagement_id);
+      console.log(
+        `[agent] task ${String(task.id)} (${key}) completed by ${agent}: ${outcome} — ticket → ${outcome === 'done' ? 'review' : 'backlog'}`,
+      );
       await q(
         `UPDATE app.agent_tasks SET state = $2, result = $3, result_url = $4, flag = NULL, last_heartbeat = NOW(), updated_at = NOW()
          WHERE id = $1`,
         [task.id, outcome, summary.trim(), url ?? null],
       );
+      archive(Number(task.id));
       if (outcome === 'done') {
-        await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+        await setTicketStatus(q, key, 'review');
+        // Ready for review: log the actual LLM working time against the estimate.
+        void recordActualHours(q, key, 'agent-complete');
       } else {
-        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—' WHERE key = $1 AND assignee = $2`, [key, agent]);
-        await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
+        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: agent });
+        await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
         key,

@@ -1,7 +1,9 @@
 import type {
+  ActivePr,
   AdminData,
   AgentTask,
   AgentTaskState,
+  BurndownDay,
   ContextFile,
   ContextSource,
   DeployState,
@@ -22,7 +24,12 @@ import type {
   TicketAttachment,
   TicketComment,
   TicketDev,
+  TicketLink,
+  TicketLinkType,
+  TicketLinks,
   TicketStatus,
+  TicketWithEngagement,
+  ToolCall,
 } from './types';
 
 type Row = Record<string, unknown>;
@@ -79,15 +86,35 @@ function mapTicket(r: Row): Ticket {
     status: s(r.status) as TicketStatus,
     assignee: s(r.assignee),
     est: s(r.est),
+    estHours: r.est_hours == null ? null : n(r.est_hours),
+    actualHours: r.actual_hours == null ? null : n(r.actual_hours),
     workstream: s(r.workstream),
     agent: b(r.agent),
     sources: j(r.sources, []),
     description: s(r.description),
     ac: j(r.ac, []),
     blocked: b(r.blocked),
+    tags: j(r.tags, []),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
+    branch: r.branch != null && s(r.branch) !== '' ? s(r.branch) : r.pr_branch != null && s(r.pr_branch) !== '' ? s(r.pr_branch) : null,
+    doneAt: r.done_at == null ? null : s(r.done_at),
+    waitingOn: n(r.waiting_on),
+    activePr:
+      r.pr_number == null
+        ? null
+        : {
+            number: n(r.pr_number),
+            title: s(r.pr_title),
+            state: (['open', 'merged', 'closed'].includes(s(r.pr_state)) ? s(r.pr_state) : 'closed') as ActivePr['state'],
+            branch: s(r.pr_branch),
+            url: s(r.pr_url),
+          },
   };
+}
+
+function mapTicketWithEngagement(r: Row): TicketWithEngagement {
+  return { ...mapTicket(r), client: s(r.client), engagementName: s(r.engagement_name) };
 }
 
 function mapSource(r: Row): ContextSource {
@@ -196,6 +223,20 @@ export const api = {
     };
   },
 
+  async burndown(engId: string): Promise<BurndownDay[]> {
+    const d = await http<{ days: BurndownDay[] }>(`/api/engagements/${engId}/burndown`);
+    return d.days ?? [];
+  },
+
+  async tickets(): Promise<TicketWithEngagement[]> {
+    const rows = await http<Row[]>('/api/tickets');
+    return rows.map(mapTicketWithEngagement);
+  },
+
+  async ticket(key: string): Promise<TicketWithEngagement> {
+    return mapTicketWithEngagement(await http<Row>(`/api/tickets/${encodeURIComponent(key)}`));
+  },
+
   async createTicket(
     engId: string,
     payload: { title?: string; description?: string; assignee?: string; est?: string; workstream?: string },
@@ -203,7 +244,7 @@ export const api = {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
   },
 
-  patchTicket(key: string, patch: { status?: TicketStatus; assignee?: string }) {
+  patchTicket(key: string, patch: { status?: TicketStatus; assignee?: string; branch?: string; tags?: string[] }) {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },
 
@@ -364,6 +405,35 @@ export const api = {
     return { prs: d.prs.map(mapRepoPr), commits: d.commits.map(mapRepoCommit) };
   },
 
+  // ---- linked tickets ----
+
+  async ticketLinks(key: string): Promise<TicketLinks> {
+    const d = await http<{ links: Row[]; branches: Row[] }>(`/api/tickets/${key}/links`);
+    return {
+      links: d.links.map((r) => ({
+        id: r.id == null ? null : n(r.id),
+        key: s(r.key),
+        title: s(r.title),
+        status: s(r.status) as TicketLink['status'],
+        type: s(r.type) as TicketLinkType,
+      })),
+      branches: d.branches.map((r) => ({
+        branch: s(r.branch),
+        prNumber: n(r.prNumber),
+        state: (s(r.state) as 'open' | 'merged' | 'closed') || 'closed',
+        url: s(r.url),
+      })),
+    };
+  },
+
+  addTicketLink(key: string, linkedKey: string, type: 'blocks' | 'blocked_by' | 'relates'): Promise<{ id: number }> {
+    return http(`/api/tickets/${key}/links`, { method: 'POST', ...json({ key: linkedKey, type }) });
+  },
+
+  removeTicketLink(key: string, id: number) {
+    return http(`/api/tickets/${key}/links/${id}`, { method: 'DELETE' });
+  },
+
   async mergePr(ticketKey: string, number: number): Promise<RepoPr> {
     const d = await http<{ pr: Row }>(`/api/tickets/${ticketKey}/prs/${number}/merge`, { method: 'POST', ...json({}) });
     return mapRepoPr(d.pr);
@@ -407,6 +477,17 @@ export const api = {
 
   deleteAttachment(ticketKey: string, id: string) {
     return http(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+
+  /** Tool-call feed for the ticket's latest agent run; `after` makes the poll incremental. */
+  async toolCalls(ticketKey: string, after?: number): Promise<{ taskId: number | null; calls: ToolCall[] }> {
+    const qs = after && after > 0 ? `?after=${after}` : '';
+    const d = await http<{ task_id: unknown; calls?: Row[] }>(`/api/tickets/${ticketKey}/tool-calls${qs}`);
+    return {
+      taskId: d.task_id == null ? null : n(d.task_id),
+      calls: (d.calls ?? []).map((r) => ({ id: n(r.id), tool: s(r.tool), detail: s(r.detail), calledAt: s(r.called_at) })),
+    };
   },
 
   // ---- context files ----
