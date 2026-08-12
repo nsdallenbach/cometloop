@@ -160,19 +160,28 @@ function CommitActivityCard({ engId }: { engId: string }) {
     };
   }, [engId]);
 
-  const filled = useMemo(() => {
-    const byDate = new Map((days ?? []).map((d) => [d.date, d]));
-    const out: CommitDay[] = [];
+  // GitHub-style calendar: columns are weeks (Sunday-first), rows Sun..Sat,
+  // from the first Sunday ~26 weeks back through today.
+  const weeks = useMemo(() => {
+    const byDate = new Map((days ?? []).map((d) => [d.date, d.commits]));
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    for (let i = 55; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const iso = d.toISOString().slice(0, 10);
-      out.push(byDate.get(iso) ?? { date: iso, commits: 0, authors: 0 });
+    const start = new Date(today);
+    start.setDate(start.getDate() - 181 - start.getDay());
+    const out: { date: string; commits: number; inRange: boolean }[][] = [];
+    for (let d = new Date(start); d <= today; ) {
+      const week: { date: string; commits: number; inRange: boolean }[] = [];
+      for (let i = 0; i < 7; i++) {
+        const iso = d.toISOString().slice(0, 10);
+        week.push({ date: iso, commits: byDate.get(iso) ?? 0, inRange: d <= today });
+        d.setDate(d.getDate() + 1);
+      }
+      out.push(week);
     }
     return out;
   }, [days]);
+
+  const maxDay = useMemo(() => Math.max(1, ...(days ?? []).map((d) => d.commits)), [days]);
 
   const total = useMemo(() => (days ?? []).reduce((a, d) => a + d.commits, 0), [days]);
   const busiest = useMemo(
@@ -183,7 +192,7 @@ function CommitActivityCard({ engId }: { engId: string }) {
 
   return (
     <Card
-      title="COMMIT ACTIVITY — LAST 8 WEEKS"
+      title="COMMIT ACTIVITY — LAST 26 WEEKS"
       caption={
         days === null
           ? 'Loading…'
@@ -193,19 +202,106 @@ function CommitActivityCard({ engId }: { engId: string }) {
       }
     >
       {days !== null && total > 0 ? (
-        <BarChart data={filled} xDataKey="date" aspectRatio="6 / 1" barGap={0.25} margin={{ top: 12, right: 16, bottom: 26, left: 30 }}>
-          <Grid horizontal numTicksRows={3} />
-          <Bar dataKey="commits" fill="var(--chart-2)" lineCap={2} />
-          <BarXAxis />
-          <BarYAxis />
-          <ChartTooltip showDatePill={false} showCrosshair={false} />
-        </BarChart>
+        <ContributionGrid weeks={weeks} maxDay={maxDay} />
       ) : (
         <div style={{ ...mono(400, 10), color: 'var(--tx3)', padding: '14px 0', textAlign: 'center' }}>
           {days === null ? 'LOADING…' : 'NO COMMITS SYNCED YET'}
         </div>
       )}
     </Card>
+  );
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const CELL = 12;
+const CELL_GAP = 3;
+
+/** Intensity 0-4 → themed green ramp, GitHub-contribution style. */
+function cellColor(commits: number, maxDay: number): string {
+  if (commits <= 0) return 'var(--bg3)';
+  const level = Math.min(4, Math.max(1, Math.ceil((commits / maxDay) * 4)));
+  const pct = [0, 30, 52, 74, 100][level];
+  return `color-mix(in srgb, var(--ok) ${pct}%, var(--bg3))`;
+}
+
+function ContributionGrid({ weeks, maxDay }: { weeks: { date: string; commits: number; inRange: boolean }[][]; maxDay: number }) {
+  const fmtCellDate = (iso: string) => {
+    const d = new Date(`${iso}T00:00:00`);
+    return d.toLocaleDateString('en', { month: 'short', day: 'numeric' });
+  };
+  // A month label above the first column whose first row enters a new month.
+  const monthLabels = weeks.map((w, i) => {
+    const m = new Date(`${w[0].date}T00:00:00`).getMonth();
+    const prev = i > 0 ? new Date(`${weeks[i - 1][0].date}T00:00:00`).getMonth() : -1;
+    return i === 0 || m !== prev ? MONTH_NAMES[m] : null;
+  });
+  const step = CELL + CELL_GAP;
+  return (
+    <div style={{ overflowX: 'auto', padding: '4px 2px' }}>
+      <div style={{ display: 'flex', gap: 6, width: 'max-content', margin: '0 auto' }}>
+        {/* Day-of-week rail */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: CELL_GAP, paddingTop: 18 }}>
+          {['', 'Mon', '', 'Wed', '', 'Fri', ''].map((d, i) => (
+            // eslint-disable-next-line react/no-array-index-key -- fixed 7-row rail
+            <span key={i} style={{ height: CELL, lineHeight: `${CELL}px`, ...mono(400, 9), color: 'var(--tx3)', width: 26, textAlign: 'right', paddingRight: 2 }}>
+              {d}
+            </span>
+          ))}
+        </div>
+        <div>
+          {/* Month labels */}
+          <div style={{ position: 'relative', height: 14, marginBottom: 4 }}>
+            {monthLabels.map((m, i) =>
+              m ? (
+                // eslint-disable-next-line react/no-array-index-key -- positions are the identity here
+                <span key={`${m}-${i}`} style={{ position: 'absolute', left: i * step, ...mono(400, 9), color: 'var(--tx3)' }}>
+                  {m}
+                </span>
+              ) : null,
+            )}
+          </div>
+          {/* The grid: weeks as columns, Sun..Sat as rows */}
+          <div style={{ display: 'flex', gap: CELL_GAP }}>
+            {weeks.map((week) => (
+              <div key={week[0].date} style={{ display: 'flex', flexDirection: 'column', gap: CELL_GAP }}>
+                {week.map((day) => (
+                  <div
+                    key={day.date}
+                    title={day.inRange ? `${day.commits} commit${day.commits === 1 ? '' : 's'} on ${fmtCellDate(day.date)}` : undefined}
+                    style={{
+                      width: CELL,
+                      height: CELL,
+                      borderRadius: 2,
+                      background: day.inRange ? cellColor(day.commits, maxDay) : 'transparent',
+                      border: day.inRange && day.commits === 0 ? '1px solid var(--line)' : '1px solid transparent',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+          {/* Legend */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'flex-end', marginTop: 8 }}>
+            <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginRight: 2 }}>LESS</span>
+            {[0, 1, 2, 3, 4].map((lvl) => (
+              <div
+                key={lvl}
+                style={{
+                  width: CELL - 2,
+                  height: CELL - 2,
+                  borderRadius: 2,
+                  background: lvl === 0 ? 'var(--bg3)' : `color-mix(in srgb, var(--ok) ${[0, 30, 52, 74, 100][lvl]}%, var(--bg3))`,
+                  border: lvl === 0 ? '1px solid var(--line)' : '1px solid transparent',
+                  boxSizing: 'border-box',
+                }}
+              />
+            ))}
+            <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 2 }}>MORE</span>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -277,7 +373,6 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
         : `Longest wait: ${slowest.label.toLowerCase()} at ${fmtHrs(slowest.medianHrs)} median.`;
 
   const weeklyData = report.weekly.map((w) => ({ ...w, leadTimeHrs: w.leadTimeHrs ?? 0, cycleTimeHrs: w.cycleTimeHrs ?? 0 }));
-  const stageData = report.stages.map((s) => ({ name: s.key.toUpperCase(), hours: s.medianHrs ?? 0 }));
 
   return (
     <>
@@ -298,7 +393,7 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
         />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 14, alignItems: 'start', marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 14, alignItems: 'stretch', marginBottom: 14 }}>
         <Card
           title="GETTING FASTER? — WEEKLY MEDIANS"
           caption={
@@ -315,7 +410,7 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
                   { label: 'CYCLE (H)', color: 'var(--chart-2)' },
                 ]}
               />
-              <AreaChart data={weeklyData} xDataKey="week" aspectRatio="3 / 1" margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
+              <AreaChart data={weeklyData} xDataKey="week" aspectRatio="2.6 / 1" margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
                 <Grid horizontal numTicksRows={4} />
                 <Area dataKey="leadTimeHrs" fill="var(--chart-1)" fillOpacity={0.25} />
                 <Area dataKey="cycleTimeHrs" fill="var(--chart-2)" fillOpacity={0.25} />
@@ -328,21 +423,44 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
           )}
         </Card>
 
-        <Card title="WHERE WORK WAITS" caption={stageCaption}>
-          <BarChart data={stageData} xDataKey="name" aspectRatio="1.6 / 1" barGap={0.35} margin={{ top: 16, right: 16, bottom: 28, left: 34 }}>
-            <Grid horizontal numTicksRows={4} />
-            <Bar dataKey="hours" fill="var(--chart-3)" lineCap={3} />
-            <BarXAxis />
-            <BarYAxis />
-            <ChartTooltip showDatePill={false} showCrosshair={false} />
-          </BarChart>
-        </Card>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <Card title="WHERE WORK WAITS" caption={stageCaption}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '2px 0' }}>
+              {(() => {
+                const max = Math.max(0.1, ...report.stages.map((s) => s.medianHrs ?? 0));
+                return report.stages.map((s) => (
+                  <div key={s.key}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                      <span style={{ ...mono(500, 10), color: 'var(--tx2)', letterSpacing: '.06em' }}>{s.label.toUpperCase()}</span>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--tx)', fontVariantNumeric: 'tabular-nums' }}>
+                        {fmtHrs(s.medianHrs)}
+                        <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 6 }}>{s.samples} SAMPLES</span>
+                      </span>
+                    </div>
+                    <div style={{ height: 5, borderRadius: 2, background: 'var(--bg3)', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          height: '100%',
+                          width: `${Math.max(2, Math.round(((s.medianHrs ?? 0) / max) * 100))}%`,
+                          borderRadius: 2,
+                          background: s.key === 'review' ? 'var(--warn)' : 'var(--chart-2)',
+                        }}
+                      />
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+          </Card>
+
+          <WeekOverWeekCard report={report} />
+        </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 14, alignItems: 'start' }}>
+      <div style={{ marginBottom: 14 }}>
         <Card title={`BACKLOG TRAJECTORY — OPEN TICKETS`} caption={backlogCaption}>
           {report.backlog.length >= 2 ? (
-            <AreaChart data={report.backlog} xDataKey="date" aspectRatio="3 / 1" margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
+            <AreaChart data={report.backlog} xDataKey="date" aspectRatio="5 / 1" margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
               <Grid horizontal numTicksRows={4} />
               <Area dataKey="open" fill={report.backlogDelta != null && report.backlogDelta > 0 ? 'var(--chart-1)' : 'var(--chart-2)'} fillOpacity={0.25} />
               <XAxis numTicks={6} />
@@ -352,7 +470,13 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
             <div style={{ ...mono(400, 10), color: 'var(--tx3)', padding: '14px 0', textAlign: 'center' }}>{`OPEN NOW: ${backlogNow}`}</div>
           )}
         </Card>
+      </div>
+    </>
+  );
+}
 
+function WeekOverWeekCard({ report }: { report: VelocityReport }) {
+  return (
         <Card
           title="WEEK OVER WEEK"
           caption={report.weekly.length === 0 ? 'Fills in as completion weeks accumulate.' : 'Per completion week — latest emphasized.'}
@@ -398,7 +522,5 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
             <div style={{ ...mono(400, 10), color: 'var(--tx3)', padding: '14px 0', textAlign: 'center' }}>HISTORY BUILDS WEEKLY</div>
           )}
         </Card>
-      </div>
-    </>
   );
 }
