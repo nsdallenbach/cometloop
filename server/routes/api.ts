@@ -90,6 +90,11 @@ const SCHEMA_SQL = [
     ac JSONB NOT NULL DEFAULT '[]',
     blocked BOOLEAN NOT NULL DEFAULT false,
     tags JSONB NOT NULL DEFAULT '[]',
+    -- DAT-195: time estimates are mandatory. Fresh installs enforce here; the
+    -- existing dev-owned database gets the same NOT NULL via dev-migrate.cjs
+    -- (a boot ALTER on app.tickets would be rejected — see ownership rule).
+    est_hours REAL NOT NULL,
+    human_est_hours REAL NOT NULL,
     seq SERIAL,
     done_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ
@@ -201,10 +206,11 @@ async function initSchema(appkit: AppKitServices) {
     );
   }
   for (const t of SEED_TICKETS) {
+    const seedEst = seedEstimates(t.est);
     await appkit.lakebase.query(
-      `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, done_at)
-       VALUES ($1,'cav',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $3 = 'done' THEN NOW() END)`,
-      [t.key, t.title, t.status, t.assignee, t.est, t.workstream, t.agent, JSON.stringify(t.sources), t.description, JSON.stringify(t.ac), t.blocked],
+      `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, est_hours, human_est_hours, done_at)
+       VALUES ($1,'cav',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, CASE WHEN $3 = 'done' THEN NOW() END)`,
+      [t.key, t.title, t.status, t.assignee, t.est, t.workstream, t.agent, JSON.stringify(t.sources), t.description, JSON.stringify(t.ac), t.blocked, seedEst.estHours, seedEst.humanEstHours],
     );
   }
   for (const s of SEED_SOURCES) {
@@ -452,15 +458,17 @@ const ProposalPlanSchema = z.object({
 
 // ---------- routes ----------
 
-const PatchTicketBody = z.object({
+// Exported for the required-estimates unit tests (DAT-195).
+export const PatchTicketBody = z.object({
   status: z.enum(['backlog', 'progress', 'review', 'done', 'proposed', 'dismissed']).optional(),
   assignee: z.string().optional(),
   // Matches the ceiling refined plans can reach; the description doubles as
   // the agent prompt, so edits keep the raw markdown untouched.
   description: z.string().max(20000).optional(),
   roadmapItem: z.string().max(120).nullable().optional(),
-  estHours: z.number().min(0).max(400).nullable().optional(),
-  humanEstHours: z.number().min(0).max(999).nullable().optional(),
+  // DAT-195: estimates can be revised but never cleared — null is rejected.
+  estHours: z.number().gt(0).max(400).optional(),
+  humanEstHours: z.number().gt(0).max(999).optional(),
   // Git refs cap out around 255 bytes; empty string clears the manual value so
   // the card falls back to the branch of the latest linked PR.
   branch: z.string().trim().max(255).optional(),
@@ -510,15 +518,36 @@ const NewMemberBody = z.object({ name: z.string().min(1).max(80), role: z.string
 
 const CommentBody = z.object({ body: z.string().min(1).max(4000) });
 
-const CreateTicketBody = z
+export const CreateTicketBody = z
   .object({
     title: z.string().min(1).max(200).optional(),
     description: z.string().max(4000).optional(),
     assignee: z.string().max(80).optional(),
     est: z.string().max(16).optional(),
     workstream: z.string().max(80).optional(),
+    // DAT-195: both time estimates are mandatory on every ticket.
+    estHours: z.number().gt(0).max(400),
+    humanEstHours: z.number().gt(0).max(999),
   })
   .refine((b) => b.title?.trim() || b.description?.trim(), { message: 'A title or description is required' });
+
+/** True when any validation issue is about the mandatory estimate fields. */
+function hasEstimateIssue(error: z.ZodError): boolean {
+  return error.issues.some((i) => i.path[0] === 'estHours' || i.path[0] === 'humanEstHours');
+}
+
+/**
+ * Deterministic estimates for server-seeded tickets (engagement-setup
+ * proposals, demo seed) now that est_hours/human_est_hours are NOT NULL
+ * (DAT-195): an hour-suffixed est label is taken at face value; anything
+ * else (day labels, '—') defaults to 1 agent-hour, with the human figure at
+ * the DAT-175 4× fallback ratio. User/agent creates carry real values.
+ */
+export function seedEstimates(est?: string): { estHours: number; humanEstHours: number } {
+  const m = /^([0-9]+(?:\.[0-9]+)?)\s*h$/i.exec(est?.trim() ?? '');
+  const estHours = m ? Math.min(400, Math.max(0.1, Number(m[1]))) : 1;
+  return { estHours, humanEstHours: Math.min(999, Math.round(estHours * 4 * 10) / 10) };
+}
 
 /** Fallback title when the model is unavailable: first line, clipped at a word boundary. */
 function fallbackTitle(description: string): string {
@@ -731,7 +760,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     app.patch('/api/tickets/:key', async (req, res) => {
       const parsed = PatchTicketBody.safeParse(req.body);
       if (!parsed.success) {
-        res.status(400).json({ error: 'Invalid patch' });
+        res.status(400).json({
+          error: hasEstimateIssue(parsed.error)
+            ? 'Time estimates cannot be cleared — estHours and humanEstHours must be positive numbers'
+            : 'Invalid patch',
+        });
         return;
       }
       try {
@@ -776,6 +809,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         if (parsed.data.estHours !== undefined) {
           params.push(parsed.data.estHours);
           sets.push(`est_hours = $${params.length}`);
+          // Keep the board card's est label in step with the agent estimate,
+          // matching how estimateTicket writes the pair.
+          params.push(`${parsed.data.estHours}h`);
+          sets.push(`est = $${params.length}`);
         }
         if (parsed.data.humanEstHours !== undefined) {
           params.push(parsed.data.humanEstHours);
@@ -955,7 +992,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     app.post('/api/engagements/:id/tickets', async (req, res) => {
       const parsed = CreateTicketBody.safeParse(req.body);
       if (!parsed.success) {
-        res.status(400).json({ error: 'A ticket title or description is required' });
+        res.status(400).json({
+          error: hasEstimateIssue(parsed.error)
+            ? 'Both time estimates are required — estHours (agent) and humanEstHours (human dev) must be positive numbers'
+            : 'A ticket title or description is required',
+        });
         return;
       }
       try {
@@ -982,8 +1023,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         let description = parsed.data.description?.trim() ?? '';
         let title = parsed.data.title?.trim() ?? '';
         let ac: string[] = [];
-        let estHours: number | null = null;
-        let humanEstHours: number | null = null;
+        // DAT-195: the creator's estimates are mandatory in the body and are
+        // the values of record — the planning model never overrides them.
+        const { estHours, humanEstHours } = parsed.data;
         let roadmapItem: string | null = null;
         const author = requestAuthor(req);
         const chatbox = !title;
@@ -1002,13 +1044,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             engId,
             title.trim(),
             assignee?.trim() || '—',
-            est?.trim() || '—',
+            est?.trim() || `${estHours}h`,
             workstream?.trim() ?? '',
             JSON.stringify([{ type: 'MANUAL', label: `Created in console by ${author}` }]),
             description,
             JSON.stringify(ac),
-            null,
-            null,
+            estHours,
+            humanEstHours,
             roadmapItem,
           ],
         );
@@ -1027,8 +1069,6 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           const plan = agentic?.plan ?? (await refinePlan(serving, content, roadmapItems, q, { engagementId: engId, ticketKey: key }));
           if (plan) {
             if (plan.title) title = plan.title;
-            estHours = plan.estHours;
-            humanEstHours = plan.humanEstHours;
             roadmapItem = plan.roadmapItem;
             // Keep the human's words verbatim below the plan — they are the
             // intent of record — and carry consolidation results across.
@@ -1042,18 +1082,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           }
           if (!roadmapItem) roadmapItem = activeRoadmapItem(eng.phases);
           const updated = await q(
-            `UPDATE app.tickets SET title = $2, description = $3, ac = $4, est = $5, est_hours = $6, human_est_hours = $7, roadmap_item = $8
+            `UPDATE app.tickets SET title = $2, description = $3, ac = $4, est = $5, roadmap_item = $6
              WHERE key = $1 RETURNING *`,
-            [
-              key,
-              title.trim(),
-              description,
-              JSON.stringify(ac),
-              est?.trim() || (estHours != null ? `${estHours}h` : '—'),
-              estHours,
-              humanEstHours,
-              roadmapItem,
-            ],
+            [key, title.trim(), description, JSON.stringify(ac), est?.trim() || `${estHours}h`, roadmapItem],
           );
           row = updated.rows[0] ?? row;
           console.log(
@@ -1061,17 +1092,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           );
         }
         console.log(`[api] created ticket ${key} in ${engId} (${ac.length} AC)`);
-        // Estimate the ticket's LLM hours in the background — creation never
-        // waits on (or fails with) the estimation model. Skip when the creator
-        // supplied a manual estimate; the model must not clobber human input.
-        if (!(est && est.trim() && est.trim() !== '—')) {
-          void estimateTicket(
-            q,
-            appkit.serving.bind(appkit),
-            { key, engagementId: engId, title: title.trim(), description, ac },
-            'initial',
-          );
-        }
+        // No background estimation at creation since DAT-195: both estimates
+        // arrive with the request and the model must not clobber human input.
+        // Content-based re-estimation still runs on /refine and the DAT-197
+        // estimate backfill endpoint.
         await recordTicketEvent(q, key, engId, null, 'backlog');
         const who = assignee?.trim();
         await q(
@@ -1471,9 +1495,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         let i = 101;
         for (const p of proposals) {
           const ticketKey = `${prefix}-${i++}`;
+          const seedEst = seedEstimates(p.est);
           await q(
-            `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked)
-             VALUES ($1,$2,$3,'backlog','—',$4,$5,true,$6,$7,$8,false)`,
+            `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, est_hours, human_est_hours)
+             VALUES ($1,$2,$3,'backlog','—',$4,$5,true,$6,$7,$8,false,$9,$10)`,
             [
               ticketKey,
               id,
@@ -1485,6 +1510,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
               ]),
               `Seeded automatically from ${planOrigin} during engagement setup.`,
               JSON.stringify(['Scope confirmed at kickoff', `Deliverable acceptance per ${p.source}`]),
+              seedEst.estHours,
+              seedEst.humanEstHours,
             ],
           );
           await recordTicketEvent(q, ticketKey, id, null, 'backlog');

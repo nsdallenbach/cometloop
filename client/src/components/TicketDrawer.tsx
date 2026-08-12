@@ -162,6 +162,37 @@ export function TicketDrawer({
       .catch((e: Error) => toast(`Branch update failed — ${e.message}`));
   };
 
+  // Estimate edits (DAT-195): same keying rule as branch edits. Both time
+  // estimates are mandatory — clearing or a non-positive value is blocked
+  // with an inline error instead of a save.
+  const [estEdit, setEstEdit] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; value: string } | null>(null);
+  const [estError, setEstError] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; msg: string } | null>(null);
+  const estEditValue = (field: 'estHours' | 'humanEstHours'): string | null =>
+    estEdit && estEdit.key === ticket.key && estEdit.field === field ? estEdit.value : null;
+  const estFieldError = (field: 'estHours' | 'humanEstHours'): string | null =>
+    estError && estError.key === ticket.key && estError.field === field ? estError.msg : null;
+  const saveEstimate = (field: 'estHours' | 'humanEstHours') => {
+    const raw = estEditValue(field);
+    if (raw === null) return;
+    const max = field === 'estHours' ? 400 : 999;
+    const n = Number(raw);
+    if (!raw.trim() || !Number.isFinite(n) || n <= 0 || n > max) {
+      setEstError({ key: ticket.key, field, msg: `Required — enter hours between 0 and ${max}` });
+      return;
+    }
+    setEstError(null);
+    setEstEdit(null);
+    const rounded = Math.round(n * 10) / 10;
+    if (rounded === (field === 'estHours' ? ticket.estHours : ticket.humanEstHours)) return;
+    api
+      .patchTicket(ticket.key, field === 'estHours' ? { estHours: rounded } : { humanEstHours: rounded })
+      .then(() => {
+        toast(`${ticket.key} ${field === 'estHours' ? 'agent' : 'human dev'} estimate set to ${rounded}h`);
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Estimate update failed — ${e.message}`));
+  };
+
   // Description edits follow the same keying rule as branch edits: the draft
   // belongs to one ticket and survives board polls until saved or cancelled.
   const [descEdit, setDescEdit] = useState<{ key: string; value: string } | null>(null);
@@ -534,8 +565,36 @@ export function TicketDrawer({
               </select>
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>◆ AGENT ESTIMATE</div>
-              <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.est}</div>
+              <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>◆ AGENT ESTIMATE (H)</div>
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={estEditValue('estHours') ?? (ticket.estHours != null ? String(ticket.estHours) : '')}
+                onChange={(e) => {
+                  setEstEdit({ key: ticket.key, field: 'estHours', value: e.target.value });
+                  if (estFieldError('estHours')) setEstError(null);
+                }}
+                onBlur={() => saveEstimate('estHours')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                }}
+                title="Agent (LLM) time estimate in hours — required, cannot be cleared"
+                style={{
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  background: 'var(--bg)',
+                  border: `1px solid ${estFieldError('estHours') ? 'var(--bad)' : 'var(--line2)'}`,
+                  color: 'var(--tx)',
+                  borderRadius: 3,
+                  padding: '3px 6px',
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                }}
+              />
+              {estFieldError('estHours') && (
+                <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 3 }}>{estFieldError('estHours')}</div>
+              )}
               {ticket.actualHours != null && (
                 <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 2 }}>
                   actual {ticket.actualHours}h
@@ -553,10 +612,36 @@ export function TicketDrawer({
               )}
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>HUMAN DEV ESTIMATE</div>
-              <div style={{ fontSize: 12.5, fontWeight: 600 }} title="Estimated time for a human developer to deliver the same scope">
-                {ticket.humanEstHours != null ? `${ticket.humanEstHours}h` : '—'}
-              </div>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>HUMAN DEV ESTIMATE (H)</div>
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={estEditValue('humanEstHours') ?? (ticket.humanEstHours != null ? String(ticket.humanEstHours) : '')}
+                onChange={(e) => {
+                  setEstEdit({ key: ticket.key, field: 'humanEstHours', value: e.target.value });
+                  if (estFieldError('humanEstHours')) setEstError(null);
+                }}
+                onBlur={() => saveEstimate('humanEstHours')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                }}
+                title="Estimated time for a human developer to deliver the same scope — required, cannot be cleared"
+                style={{
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  background: 'var(--bg)',
+                  border: `1px solid ${estFieldError('humanEstHours') ? 'var(--bad)' : 'var(--line2)'}`,
+                  color: 'var(--tx)',
+                  borderRadius: 3,
+                  padding: '3px 6px',
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                }}
+              />
+              {estFieldError('humanEstHours') && (
+                <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 3 }}>{estFieldError('humanEstHours')}</div>
+              )}
             </div>
             <div style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>WORKSTREAM</div>
