@@ -103,34 +103,42 @@ export async function postCoordinationMessage(
   return inserted;
 }
 
+/** The ticket an agent is currently working, or (failing that) has in review. */
+async function agentTicket(q: Query, agent: string): Promise<string | null> {
+  const active = (
+    await q(`SELECT ticket_key FROM app.agent_tasks WHERE agent = $1 AND state IN ('claimed','working') ORDER BY id DESC LIMIT 1`, [agent])
+  ).rows[0];
+  if (active) return String(active.ticket_key);
+  const review = (
+    await q(`SELECT key FROM app.tickets WHERE assignee = $1 AND status = 'review' ORDER BY seq DESC LIMIT 1`, [agent])
+  ).rows[0];
+  return review ? String(review.key) : null;
+}
+
 /**
- * Human-review mirror: the message shows up as a ticket comment tagging the
- * recipient agent, emulating how developers would talk on each other's
- * tickets. Mirrors to the message's own ticket when given; otherwise to the
- * ticket the recipient agent is actively working or has in review. Broadcast
- * messages without a ticket stay in the coordination log only.
+ * Human-review mirror: every coordination message appears as a ticket comment
+ * so the whole cross-agent conversation is visible on the board — no need to
+ * open the channel. A message lands on the sender's active ticket (so an agent
+ * sees its own outgoing messages) and, for targeted messages, the recipient's
+ * ticket too; an explicit `ticket` on the message is always included. Distinct
+ * tickets each get one comment. A message with no resolvable ticket at all
+ * stays in the coordination log only.
  */
 async function mirrorToTicketComment(q: Query, msg: CoordinationMessage): Promise<void> {
-  let ticketKey = msg.ticket ?? null;
-  if (!ticketKey && msg.recipient) {
-    const active = (
-      await q(
-        `SELECT ticket_key FROM app.agent_tasks WHERE agent = $1 AND state IN ('claimed','working') ORDER BY id DESC LIMIT 1`,
-        [msg.recipient],
-      )
-    ).rows[0];
-    ticketKey = active ? String(active.ticket_key) : null;
-    if (!ticketKey) {
-      const review = (
-        await q(`SELECT key FROM app.tickets WHERE assignee = $1 AND status = 'review' ORDER BY seq DESC LIMIT 1`, [msg.recipient])
-      ).rows[0];
-      ticketKey = review ? String(review.key) : null;
-    }
+  const tickets = new Set<string>();
+  if (msg.ticket) tickets.add(msg.ticket);
+  const fromSender = await agentTicket(q, msg.sender);
+  if (fromSender) tickets.add(fromSender);
+  if (msg.recipient) {
+    const fromRecipient = await agentTicket(q, msg.recipient);
+    if (fromRecipient) tickets.add(fromRecipient);
   }
-  if (!ticketKey) return;
+  if (tickets.size === 0) return;
   const tags = [msg.type.replace(/_/g, ' '), ...(msg.sla ? [`SLA: ${msg.sla}`] : []), ...(msg.branch ? [`branch ${msg.branch}`] : [])];
-  const body = `${msg.recipient ? `@${msg.recipient} ` : ''}[${tags.join(' · ')}] ${msg.body}`;
-  await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [ticketKey, msg.sender, body]);
+  const body = `${msg.recipient ? `@${msg.recipient} ` : '(broadcast) '}[${tags.join(' · ')}] ${msg.body}`;
+  for (const ticketKey of tickets) {
+    await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [ticketKey, msg.sender, body]);
+  }
 }
 
 export interface FetchOptions {
