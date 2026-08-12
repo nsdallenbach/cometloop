@@ -1,4 +1,5 @@
 import type {
+  ActivePr,
   AdminData,
   AgentTask,
   AgentTaskState,
@@ -87,6 +88,16 @@ function mapTicket(r: Row): Ticket {
     blocked: b(r.blocked),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
+    activePr:
+      r.pr_number == null
+        ? null
+        : {
+            number: n(r.pr_number),
+            title: s(r.pr_title),
+            state: (['open', 'merged', 'closed'].includes(s(r.pr_state)) ? s(r.pr_state) : 'closed') as ActivePr['state'],
+            branch: s(r.pr_branch),
+            url: s(r.pr_url),
+          },
   };
 }
 
