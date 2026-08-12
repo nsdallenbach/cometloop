@@ -63,10 +63,9 @@ that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
   (e.g. `agent_tasks`) and can `ALTER` them at boot. Tables created during
   early dev are owned by the developer role — boot `ALTER`s on those FAIL.
   For those, put new columns in the `CREATE TABLE IF NOT EXISTS` (fresh
-  installs) AND ship a dev-role migration script in `scripts/` (existing DB),
-  following `migrate-github-app.cjs`.
-- Grants for the app SP are managed by `scripts/grant-sp.cjs` — full table
-  privileges, because FK creation needs `REFERENCES`.
+  installs) AND add an entry to `scripts/dev-migrate.cjs` (existing DB) — one
+  idempotent script holds every dev-role migration, including the app SP's
+  grants (full table privileges, because FK creation needs `REFERENCES`).
 
 ## Server code
 
