@@ -86,9 +86,11 @@ const SCHEMA_SQL = [
     blocked BOOLEAN NOT NULL DEFAULT false,
     tags JSONB NOT NULL DEFAULT '[]',
     seq SERIAL,
-    done_at TIMESTAMPTZ
+    done_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
   )`,
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS branch TEXT`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`,
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'`,
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ`,
   // Pre-migration done tickets have no completion time; stamp them at first
@@ -431,7 +433,7 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
   const reply = typeof plan.reply === 'string' && plan.reply.trim() ? plan.reply.trim().slice(0, 600) : 'Updated the ticket based on your comment.';
 
   console.log(`[api] comment feedback applied to ${key} — plan updated (${ac.length} AC)`);
-  await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4 WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
+  await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4, updated_at = NOW() WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
   await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [key, 'Planning Agent', `@${author} — ${reply}`]);
   await q(
     `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -506,6 +508,9 @@ const ProposalPlanSchema = z.object({
 const PatchTicketBody = z.object({
   status: z.enum(['backlog', 'progress', 'review', 'done', 'proposed', 'dismissed']).optional(),
   assignee: z.string().optional(),
+  // Matches the ceiling refined plans can reach; the description doubles as
+  // the agent prompt, so edits keep the raw markdown untouched.
+  description: z.string().max(20000).optional(),
   roadmapItem: z.string().max(120).nullable().optional(),
   estHours: z.number().min(0).max(400).nullable().optional(),
   humanEstHours: z.number().min(0).max(999).nullable().optional(),
@@ -519,7 +524,8 @@ const BulkBody = z.object({
   keys: z.array(z.string()).min(1),
   // Tags are excluded: a bulk patch replaces the whole tag list, which is
   // never what "tag these N tickets" means. Tags are edited per-ticket.
-  patch: PatchTicketBody.omit({ tags: true }),
+  // Description likewise — overwriting N bodies with one text is never intended.
+  patch: PatchTicketBody.omit({ tags: true, description: true }),
 });
 
 const SuggestionBody = z.object({ decision: z.enum(['acc', 'ovr']) });
@@ -828,6 +834,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           params.push(parsed.data.humanEstHours);
           sets.push(`human_est_hours = $${params.length}`);
         }
+        if (parsed.data.description !== undefined) {
+          params.push(parsed.data.description);
+          sets.push(`description = $${params.length}`);
+          // updated_at tracks content edits specifically, so the drawer's
+          // "edited" stamp stays truthful across status/assignee churn.
+          sets.push(`updated_at = NOW()`);
+        }
         if (branch !== undefined) {
           params.push(branch === '' ? null : branch);
           sets.push(`branch = $${params.length}`);
@@ -847,7 +860,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         const updated = result.rows[0] as { key: string; title: string; status: string };
         console.log(
-          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${branch !== undefined ? ` — branch → '${branch}'` : ''}${tags !== undefined ? ` — tags → [${tags.join(', ')}]` : ''}`,
+          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${branch !== undefined ? ` — branch → '${branch}'` : ''}${tags !== undefined ? ` — tags → [${tags.join(', ')}]` : ''}${parsed.data.description !== undefined ? ' — description edited' : ''}`,
         );
         if (enteredReview) {
           // Ready for review: log the actual LLM working time against the estimate.
@@ -938,7 +951,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const updated = await q(
           `UPDATE app.tickets SET title = $2, description = $3, ac = $4,
              est_hours = COALESCE($5, est_hours), human_est_hours = COALESCE($6, human_est_hours),
-             roadmap_item = COALESCE($7, roadmap_item)
+             roadmap_item = COALESCE($7, roadmap_item), updated_at = NOW()
            WHERE key = $1 RETURNING *`,
           [
             key,
