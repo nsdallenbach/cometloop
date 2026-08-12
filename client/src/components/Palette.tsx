@@ -1,11 +1,14 @@
-import { useState } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import { mono } from '../util';
+import { searchPaletteItems, type PaletteSearchable } from '../lib/palette-search';
 
-export interface PaletteItem {
+export interface PaletteItem extends PaletteSearchable {
   kind: string;
   label: string;
   hint: string;
+  description?: string;
+  keywords?: string[];
   run: () => void;
 }
 
@@ -20,8 +23,9 @@ export function Palette({
 }) {
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
-  const pq = q.trim().toLowerCase();
-  const filtered = (pq ? items.filter((i) => i.label.toLowerCase().includes(pq)) : items).slice(0, 9);
+  // Defer the query so ranking never blocks the input while typing quickly.
+  const deferredQ = useDeferredValue(q);
+  const filtered = useMemo(() => searchPaletteItems(items, deferredQ, 9), [items, deferredQ]);
   const activeIdx = Math.min(active, Math.max(0, filtered.length - 1));
 
   const runItem = (item: PaletteItem) => {
@@ -93,7 +97,9 @@ export function Palette({
         />
         <div style={{ maxHeight: 320, overflowY: 'auto', padding: 6 }}>
           {filtered.length === 0 && (
-            <div style={{ padding: '14px 11px', fontSize: 12.5, color: 'var(--tx3)' }}>No matching commands or tickets.</div>
+            <div style={{ padding: '14px 11px', fontSize: 12.5, color: 'var(--tx3)' }}>
+              No matching commands or tickets{deferredQ.trim() ? ` for “${deferredQ.trim()}”` : ''}.
+            </div>
           )}
           {filtered.map((r, i) => (
             <div
@@ -125,8 +131,15 @@ export function Palette({
               >
                 {r.kind}
               </span>
-              <span style={{ fontSize: 13 }}>{r.label}</span>
-              <span style={{ marginLeft: 'auto', ...mono(400, 10), color: 'var(--tx3)' }}>{r.hint}</span>
+              <span style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+                <span style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.label}</span>
+                {r.description && (
+                  <span style={{ fontSize: 11, color: 'var(--tx3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {r.description}
+                  </span>
+                )}
+              </span>
+              <span style={{ marginLeft: 'auto', flex: 'none', ...mono(400, 10), color: 'var(--tx3)' }}>{r.hint}</span>
             </div>
           ))}
         </div>
