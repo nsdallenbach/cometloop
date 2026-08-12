@@ -35,6 +35,7 @@ a:hover {
   --bad: #ff4d33;
   --agent: #7a8ff5;
   --agentsoft: rgba(122, 143, 245, 0.13);
+  --link: #6ba5ff;
   --rowpad: 9px 12px;
 
   /* shadcn token bridge (appkit-ui + Bklit components inherit the console palette) */
@@ -96,6 +97,7 @@ a:hover {
   --bad: #d42b14;
   --agent: #4a63d8;
   --agentsoft: rgba(74, 99, 216, 0.1);
+  --link: #2563eb;
   --rowpad: 9px 12px;
 
   /* shadcn token bridge */
@@ -387,7 +389,7 @@ tr.hv-row:hover td {
   color: var(--tx3);
 }
 .md a {
-  color: var(--acc);
+  color: var(--link);
   word-break: break-all;
 }
 .md table {

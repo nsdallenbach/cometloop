@@ -134,10 +134,29 @@ async function mirrorToTicketComment(q: Query, msg: CoordinationMessage): Promis
     if (fromRecipient) tickets.add(fromRecipient);
   }
   if (tickets.size === 0) return;
-  const tags = [msg.type.replace(/_/g, ' '), ...(msg.sla ? [`SLA: ${msg.sla}`] : []), ...(msg.branch ? [`branch ${msg.branch}`] : [])];
-  const body = `${msg.recipient ? `@${msg.recipient} ` : '(broadcast) '}[${tags.join(' · ')}] ${msg.body}`;
+  // Structured sentinel: the client parses the metadata into a styled agent-
+  // comment header (type badge, → recipient, branch) and renders the message
+  // body with ticket-key and @mention highlighting. A client without support
+  // still shows the plain header line after the sentinel.
+  const header = `${msg.recipient ? `→ @${msg.recipient}` : 'broadcast'} · ${msg.type.replace(/_/g, ' ')}${msg.sla ? ` · SLA ${msg.sla}` : ''}${msg.branch ? ` · ${msg.branch}` : ''}`;
+  const meta = JSON.stringify({ type: msg.type, to: msg.recipient ?? null, branch: msg.branch ?? null, sla: msg.sla ?? null });
+  const body = `::coord::${meta}\n${header}\n${msg.body}`;
   for (const ticketKey of tickets) {
     await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [ticketKey, msg.sender, body]);
+  }
+  // Surface in each affected engagement's status feed too, so agent-to-agent
+  // traffic is visible on the feed, not just inside ticket threads.
+  const engagements = (
+    await q('SELECT DISTINCT engagement_id FROM app.tickets WHERE key = ANY($1)', [[...tickets]])
+  ).rows;
+  const short = msg.body.replace(/\s+/g, ' ').trim().slice(0, 140);
+  const feedText = `${msg.sender} ${msg.recipient ? `→ @${msg.recipient}` : '(broadcast)'} · ${msg.type.replace(/_/g, ' ')}: ${short}`;
+  for (const e of engagements) {
+    await q(
+      `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
+       VALUES ($1, 'AGENT', $2, 'JUST NOW', false)`,
+      [String(e.engagement_id), feedText],
+    );
   }
 }
 

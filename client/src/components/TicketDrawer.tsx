@@ -4,6 +4,7 @@ import { api } from '../api';
 import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
 import { STATUS_LABEL, initials, mono } from '../util';
 import { Markdown } from './Markdown';
+import { CoordCommentBody, parseCoordComment } from './AgentComment';
 
 const AGENT_STATE_LABEL: Record<AgentTask['state'], string> = {
   queued: 'QUEUED — WAITING FOR A RUNNER',
@@ -1123,7 +1124,9 @@ export function TicketDrawer({
             {comments && comments.length === 0 && (
               <div style={{ fontSize: 12, color: 'var(--tx3)' }}>No comments yet — start the thread below.</div>
             )}
-            {(comments ?? []).map((c) => (
+            {(comments ?? []).map((c) => {
+              const coord = parseCoordComment(c.body);
+              return (
               <motion.div
                 key={c.id}
                 initial={{ opacity: 0, transform: 'translateY(4px)' }}
@@ -1137,26 +1140,42 @@ export function TicketDrawer({
                     width: 22,
                     height: 22,
                     borderRadius: '50%',
-                    background: 'var(--bg3)',
-                    border: '1px solid var(--line2)',
+                    background: coord ? 'var(--agentsoft)' : 'var(--bg3)',
+                    border: `1px solid ${coord ? 'var(--agent)' : 'var(--line2)'}`,
                     display: 'grid',
                     placeItems: 'center',
                     ...mono(500, 9),
-                    color: 'var(--tx2)',
+                    color: coord ? 'var(--agent)' : 'var(--tx2)',
                   }}
                   title={c.author}
                 >
-                  {initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
+                  {coord ? '◆' : initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
                 </span>
-                <div style={{ flex: 1, minWidth: 0, border: '1px solid var(--line)', borderRadius: 3, padding: '7px 10px', background: 'var(--bg)' }}>
-                  <div style={{ display: 'flex', gap: 8, marginBottom: 3 }}>
-                    <span style={{ fontSize: 11.5, fontWeight: 600 }}>{c.author}</span>
+                <div
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    border: `1px solid ${coord ? 'var(--agent)' : 'var(--line)'}`,
+                    borderLeft: coord ? '3px solid var(--agent)' : '1px solid var(--line)',
+                    borderRadius: 3,
+                    padding: '7px 10px',
+                    background: coord ? 'var(--agentsoft)' : 'var(--bg)',
+                  }}
+                >
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: coord ? 5 : 3 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: coord ? 'var(--agent)' : 'var(--tx)' }}>{c.author}</span>
+                    {coord && <span style={{ ...mono(500, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>AGENT&nbsp;COMMS</span>}
                     <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 'auto' }}>{fmtTime(c.createdAt)}</span>
                   </div>
-                  <Markdown text={c.body} />
+                  {coord ? (
+                    <CoordCommentBody meta={coord.meta} text={coord.text} onOpenTicket={onOpenTicket} />
+                  ) : (
+                    <Markdown text={c.body} />
+                  )}
                 </div>
               </motion.div>
-            ))}
+              );
+            })}
             {(planningActive || (agentTask !== null && ['claimed', 'working'].includes(agentTask.state))) && (
               <motion.div
                 key="agent-typing"

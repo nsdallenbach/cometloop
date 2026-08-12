@@ -7,6 +7,7 @@ import { dropBoardTicket, laneOf } from '../lib/board-order';
 import { Analytics } from './Analytics';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
+import { RichText } from './AgentComment';
 import type { Tab } from '../App';
 
 const COLS: [TicketStatus, string][] = [
@@ -1376,7 +1377,9 @@ export function Workspace({
                   {f.actor}
                 </span>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5, lineHeight: 1.45 }}>{f.text}</div>
+                  <div style={{ fontSize: 12.5, lineHeight: 1.45 }}>
+                    <RichText text={f.text} onOpenTicket={openTicket} />
+                  </div>
                   <div style={{ display: 'flex', gap: 8, ...mono(400, 10), color: 'var(--tx3)', marginTop: 3 }}>
                     <span>{f.timeLabel}</span>
                     {f.source && <span style={{ color: 'var(--agent)' }}>{f.source}</span>}
