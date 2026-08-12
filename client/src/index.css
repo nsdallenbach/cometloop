@@ -526,6 +526,60 @@ tr.hv-row:hover td {
 .md-diagram .loopLine {
   stroke: var(--line2) !important;
 }
+/* Semantic role classes — the planning agent tags nodes with :::agent /
+   :::app / :::good / :::risk / :::bad, mirroring the hand-drawn architecture
+   diagrams' color language: violet = agent/AI, blue = the console/system,
+   green = success/end states, amber = human gates and waits, red = failure
+   paths. Declared after the base overrides so they win at equal importance. */
+.md-diagram .node.agent rect,
+.md-diagram .node.agent polygon,
+.md-diagram .node.agent circle,
+.md-diagram .node.agent path {
+  stroke: var(--agent) !important;
+  stroke-width: 1.4px !important;
+}
+.md-diagram .node.app rect,
+.md-diagram .node.app polygon,
+.md-diagram .node.app circle,
+.md-diagram .node.app path {
+  stroke: var(--acc) !important;
+  stroke-width: 1.4px !important;
+}
+.md-diagram .node.good rect,
+.md-diagram .node.good polygon,
+.md-diagram .node.good circle,
+.md-diagram .node.good path {
+  stroke: var(--ok) !important;
+  stroke-width: 1.4px !important;
+}
+.md-diagram .node.risk rect,
+.md-diagram .node.risk polygon,
+.md-diagram .node.risk circle,
+.md-diagram .node.risk path {
+  stroke: var(--warn) !important;
+  stroke-width: 1.4px !important;
+}
+.md-diagram .node.bad rect,
+.md-diagram .node.bad polygon,
+.md-diagram .node.bad circle,
+.md-diagram .node.bad path {
+  stroke: var(--bad) !important;
+  stroke-width: 1.4px !important;
+}
+/* Console typography on the marks: mono edge labels like the app's own
+   uppercase micro-labels; node labels stay DM Sans. */
+.md-diagram .edgeLabel text,
+.md-diagram .edgeLabel tspan {
+  font-family: 'DM Mono', monospace !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.03em;
+}
+.md-diagram .messageText,
+.md-diagram .messageText tspan {
+  font-family: 'DM Mono', monospace !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.03em;
+}
 .md blockquote {
   margin: 0 0 10px;
   padding: 2px 12px;
