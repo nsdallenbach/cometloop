@@ -1253,7 +1253,7 @@ export function TicketDrawer({
                 if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') postComment();
               }}
               rows={2}
-              placeholder="Add a comment… (Ctrl+Enter to post)"
+              placeholder="Add a comment… markdown supported (Ctrl+Enter to post)"
               style={{
                 flex: 1,
                 boxSizing: 'border-box',
