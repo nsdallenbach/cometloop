@@ -8,6 +8,7 @@ import {
   isValidElement,
   type ReactNode,
   useCallback,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -154,13 +155,17 @@ function ChartInner({
   onPhaseChange,
 }: ChartInnerProps) {
   const lines = useMemo(() => extractAreaConfigs(children), [children]);
+  // Unique per chart instance: url(#id) resolves document-wide, so a shared
+  // literal id made every area chart on a page clip against the FIRST chart's
+  // rect — later charts rendered truncated or apparently empty.
+  const clipPathId = `${useId()}-area-grow-clip`;
 
   return (
     <TimeSeriesChartInner
       animationDuration={animationDuration}
       animationEasing={animationEasing}
       chartStatus={chartStatus}
-      clipPathId="chart-area-grow-clip"
+      clipPathId={clipPathId}
       containerRef={containerRef}
       data={data}
       enterTransition={enterTransition}
