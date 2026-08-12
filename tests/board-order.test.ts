@@ -26,6 +26,7 @@ function ticket(key: string, status: TicketStatus, doneAt: string | null = null)
     roadmapItem: null,
     branch: null,
     doneAt,
+    updatedAt: null,
     waitingOn: 0,
     activePr: null,
   };

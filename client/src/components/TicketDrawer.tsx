@@ -161,6 +161,29 @@ export function TicketDrawer({
       .catch((e: Error) => toast(`Branch update failed — ${e.message}`));
   };
 
+  // Description edits follow the same keying rule as branch edits: the draft
+  // belongs to one ticket and survives board polls until saved or cancelled.
+  const [descEdit, setDescEdit] = useState<{ key: string; value: string } | null>(null);
+  const [savingDesc, setSavingDesc] = useState(false);
+  const descValue = descEdit !== null && descEdit.key === ticket.key ? descEdit.value : null;
+  const saveDescription = () => {
+    if (descValue === null || savingDesc || !descValue.trim()) return;
+    if (descValue === ticket.description) {
+      setDescEdit(null);
+      return;
+    }
+    setSavingDesc(true);
+    api
+      .patchTicket(ticket.key, { description: descValue })
+      .then(() => {
+        setDescEdit(null);
+        toast(`${ticket.key} description updated`);
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Save failed — ${e.message}`))
+      .finally(() => setSavingDesc(false));
+  };
+
   const loadComments = useCallback(() => {
     void api
       .comments(ticket.key)
@@ -601,42 +624,140 @@ export function TicketDrawer({
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>DESCRIPTION</span>
-            {!proposed && !['done', 'dismissed'].includes(ticket.status) && (
-              <button
-                className="hv-border"
-                title="Rewrite this ticket as a planned ticket (context, approach, dependencies, acceptance criteria) via the planning model"
-                disabled={refining}
-                onClick={() => {
-                  if (refining) return;
-                  setRefining(true);
-                  api
-                    .refineTicket(ticket.key)
-                    .then(() => {
-                      toast(`${ticket.key} refined into a planned ticket`);
-                      refreshDetail();
-                    })
-                    .catch((e: Error) => toast(`Refine failed — ${e.message}`))
-                    .finally(() => setRefining(false));
-                }}
-                style={{
-                  marginLeft: 'auto',
-                  border: '1px solid var(--line2)',
-                  background: 'none',
-                  color: 'var(--tx2)',
-                  borderRadius: 3,
-                  padding: '2px 9px',
-                  fontSize: 10.5,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  opacity: refining ? 0.5 : 1,
-                }}
-              >
-                {refining ? 'Refining…' : '✦ Refine'}
-              </button>
+            {ticket.updatedAt && (
+              <span style={{ ...mono(400, 9), color: 'var(--tx3)' }} title="When the ticket content was last edited">
+                · EDITED {fmtTime(ticket.updatedAt)}
+              </span>
+            )}
+            {!proposed && !['done', 'dismissed'].includes(ticket.status) && descValue === null && (
+              <>
+                <button
+                  className="hv-border"
+                  title="Edit the ticket description"
+                  onClick={() => setDescEdit({ key: ticket.key, value: ticket.description })}
+                  style={{
+                    marginLeft: 'auto',
+                    border: '1px solid var(--line2)',
+                    background: 'none',
+                    color: 'var(--tx2)',
+                    borderRadius: 3,
+                    padding: '2px 9px',
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ✎ Edit
+                </button>
+                <button
+                  className="hv-border"
+                  title="Rewrite this ticket as a planned ticket (context, approach, dependencies, acceptance criteria) via the planning model"
+                  disabled={refining}
+                  onClick={() => {
+                    if (refining) return;
+                    setRefining(true);
+                    api
+                      .refineTicket(ticket.key)
+                      .then(() => {
+                        toast(`${ticket.key} refined into a planned ticket`);
+                        refreshDetail();
+                      })
+                      .catch((e: Error) => toast(`Refine failed — ${e.message}`))
+                      .finally(() => setRefining(false));
+                  }}
+                  style={{
+                    border: '1px solid var(--line2)',
+                    background: 'none',
+                    color: 'var(--tx2)',
+                    borderRadius: 3,
+                    padding: '2px 9px',
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    opacity: refining ? 0.5 : 1,
+                  }}
+                >
+                  {refining ? 'Refining…' : '✦ Refine'}
+                </button>
+              </>
+            )}
+            {descValue !== null && (
+              <>
+                <button
+                  title="Save the edited description (Ctrl+Enter)"
+                  disabled={savingDesc || !descValue.trim()}
+                  onClick={saveDescription}
+                  style={{
+                    marginLeft: 'auto',
+                    border: '1px solid var(--acc)',
+                    background: 'none',
+                    color: 'var(--acc)',
+                    borderRadius: 3,
+                    padding: '2px 9px',
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    opacity: savingDesc || !descValue.trim() ? 0.5 : 1,
+                  }}
+                >
+                  {savingDesc ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  className="hv-border"
+                  title="Discard the edit (Esc)"
+                  disabled={savingDesc}
+                  onClick={() => setDescEdit(null)}
+                  style={{
+                    border: '1px solid var(--line2)',
+                    background: 'none',
+                    color: 'var(--tx2)',
+                    borderRadius: 3,
+                    padding: '2px 9px',
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    opacity: savingDesc ? 0.5 : 1,
+                  }}
+                >
+                  Cancel
+                </button>
+              </>
             )}
           </div>
           <div style={{ margin: '0 0 16px' }}>
-            <Markdown text={ticket.description} />
+            {descValue !== null ? (
+              <>
+                <textarea
+                  autoFocus
+                  value={descValue}
+                  onChange={(e) => setDescEdit({ key: ticket.key, value: e.target.value })}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') saveDescription();
+                    if (e.key === 'Escape' && !savingDesc) setDescEdit(null);
+                  }}
+                  rows={14}
+                  maxLength={20000}
+                  spellCheck={false}
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg)',
+                    border: '1px solid var(--line2)',
+                    borderRadius: 3,
+                    color: 'var(--tx)',
+                    padding: '8px 10px',
+                    fontSize: 12.5,
+                    lineHeight: 1.5,
+                    resize: 'vertical',
+                  }}
+                />
+                <div style={{ ...mono(400, 9), color: 'var(--tx3)', marginTop: 4 }}>
+                  Markdown supported — Ctrl+Enter to save, Esc to cancel
+                </div>
+              </>
+            ) : (
+              <Markdown text={ticket.description} />
+            )}
           </div>
           <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>ACCEPTANCE CRITERIA</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 16 }}>

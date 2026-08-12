@@ -58,6 +58,8 @@ const MIGRATIONS = [
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS branch TEXT` },
+  // When the ticket body/description was last edited (DAT-174); null = never edited.
+  { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ` },
   // Attachments metadata: FK onto dev-owned tickets, so the table is created
   // here as the dev role; dev default privileges auto-grant the app SP.
   { sql: `CREATE TABLE IF NOT EXISTS app.ticket_attachments (
