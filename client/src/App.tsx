@@ -212,6 +212,8 @@ export default function App() {
               kind: 'ACTION',
               label: `New ticket — ${eng.client} board`,
               hint: 'N',
+              description: 'Create a ticket on the current board',
+              keywords: ['create', 'add', 'issue', 'task'],
               run: () => {
                 setTab('board');
                 setNewTicket(true);
@@ -219,27 +221,60 @@ export default function App() {
             },
           ]
         : []),
-      { kind: 'NAV', label: 'Go to Portfolio', hint: 'G P', run: () => goPortfolio() },
+      {
+        kind: 'NAV',
+        label: 'Go to Portfolio',
+        hint: 'G P',
+        description: 'All engagements overview',
+        keywords: ['home', 'engagements', 'overview'],
+        run: () => goPortfolio(),
+      },
       ...engagements.slice(0, 4).map((e) => ({
         kind: 'NAV',
         label: `${e.client} — open Board`,
         hint: '',
+        description: e.name,
+        keywords: ['board', 'kanban', 'tickets', e.id],
         run: () => openEngagement(e.id, 'board'),
       })),
-      ...(canCreate ? [{ kind: 'ACTION', label: 'New engagement (from SOW or brief)', hint: '', run: () => setRoute('setup') }] : []),
-      ...(isAdmin ? [{ kind: 'NAV', label: 'Open Admin — staffing & project lifecycle', hint: '', run: () => setRoute('admin') }] : []),
+      ...(canCreate
+        ? [
+            {
+              kind: 'ACTION',
+              label: 'New engagement (from SOW or brief)',
+              hint: '',
+              description: 'Set up a new client engagement',
+              keywords: ['create', 'add', 'project', 'setup', 'sow'],
+              run: () => setRoute('setup'),
+            },
+          ]
+        : []),
+      ...(isAdmin
+        ? [
+            {
+              kind: 'NAV',
+              label: 'Open Admin — staffing & project lifecycle',
+              hint: '',
+              keywords: ['settings', 'team', 'staffing', 'lifecycle'],
+              run: () => setRoute('admin'),
+            },
+          ]
+        : []),
       ...(engagements[0]
         ? [
             {
               kind: 'NAV',
               label: `${engagements[0].client} — open Roadmap`,
               hint: '',
+              keywords: ['timeline', 'plan', 'milestones', engagements[0].id],
               run: () => openEngagement(engagements[0].id, 'roadmap'),
             },
             {
               kind: 'NAV',
               label: 'Open status feed',
               hint: '',
+              description: 'Latest activity and updates',
+              keywords: ['activity', 'updates', 'news', 'events'],
               run: () => openEngagement(engId ?? engagements[0].id, 'feed'),
             },
           ]
@@ -248,6 +283,7 @@ export default function App() {
         kind: 'TICKET',
         label: `${t.key} — ${t.title}`,
         hint: STATUS_LABEL[t.status] ?? t.status,
+        keywords: [t.key, t.status],
         run: () => {
           setRoute('workspace');
           setDetailKey(t.key);
