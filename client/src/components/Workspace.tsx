@@ -1606,15 +1606,19 @@ export function Workspace({
         {newTicket && (
           <NewTicketModal
             key="new-ticket-modal"
+            lead={lead}
             onClose={() => setNewTicket(false)}
-            onCreate={(description) => {
+            onCreate={(description, deploy) => {
               setNewTicket(false);
               setPendingCreates((n) => n + 1);
               api
                 .createTicket(eng.id, { description })
                 .then((t) => {
                   setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
-                  toast(`${t.key} created`);
+                  // Deploy path: the ticket exists either way — if queueing
+                  // fails it simply stays in Backlog and the error is toasted.
+                  if (deploy) deployTicket(t.key);
+                  else toast(`${t.key} created`);
                 })
                 .catch((e: Error) => toast(`Create failed — ${e.message}`))
                 .finally(() => setPendingCreates((n) => n - 1));
@@ -1700,20 +1704,26 @@ export function Workspace({
   );
 }
 
-/** Modal for creating a ticket manually — one chatbox; the title is derived from the content.
- * Creation itself runs in the parent so the modal can close immediately. */
+/**
+ * Modal for creating a ticket manually — one chatbox; the title is derived
+ * from the content. Creation runs in the parent so the modal closes
+ * immediately. Two ways out: "Create ticket" lands it in Backlog, and
+ * (for leads) "Create & deploy" queues it straight to an agent in one click.
+ */
 function NewTicketModal({
+  lead,
   onClose,
   onCreate,
 }: {
+  lead: boolean;
   onClose: () => void;
-  onCreate: (description: string) => void;
+  onCreate: (description: string, deploy: boolean) => void;
 }) {
   const [description, setDescription] = useState('');
 
-  const create = () => {
+  const create = (deploy: boolean) => {
     if (!description.trim()) return;
-    onCreate(description.trim());
+    onCreate(description.trim(), deploy);
   };
 
   return (
@@ -1733,7 +1743,9 @@ function NewTicketModal({
         transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
         onKeyDown={(e) => {
           // Escape is handled by the app-level layering (palette > modal > drawer).
-          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
+          // Ctrl+Enter → Backlog; Ctrl+Shift+Enter → create & deploy (leads —
+          // for everyone else the shift is ignored and it lands in Backlog).
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create(lead && e.shiftKey);
         }}
         style={{
           position: 'fixed',
@@ -1782,7 +1794,7 @@ function NewTicketModal({
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
           <span style={{ ...mono(400, 10), color: 'var(--tx3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            LANDS IN BACKLOG · CTRL+ENTER TO CREATE
+            {lead ? 'CTRL+ENTER → BACKLOG · CTRL+SHIFT+ENTER → DEPLOY' : 'LANDS IN BACKLOG · CTRL+ENTER TO CREATE'}
           </span>
           <div style={{ flex: 1 }} />
           <button
@@ -1792,8 +1804,9 @@ function NewTicketModal({
             Cancel
           </button>
           <button
-            onClick={create}
+            onClick={() => create(false)}
             disabled={!description.trim()}
+            title="Create in Backlog (Ctrl+Enter)"
             style={{
               background: 'var(--acc)',
               color: '#fff',
@@ -1810,6 +1823,28 @@ function NewTicketModal({
           >
             Create ticket
           </button>
+          {lead && (
+            <button
+              onClick={() => create(true)}
+              disabled={!description.trim()}
+              title="Create and deploy straight to the agent queue (Ctrl+Shift+Enter)"
+              style={{
+                background: 'var(--agent)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 3,
+                padding: '7px 16px',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                opacity: !description.trim() ? 0.45 : 1,
+              }}
+            >
+              ◆ Create &amp; deploy
+            </button>
+          )}
         </div>
       </motion.div>
     </>
