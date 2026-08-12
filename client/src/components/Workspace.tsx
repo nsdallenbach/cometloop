@@ -78,7 +78,10 @@ export function Workspace({
   const [boardMode, setBoardMode] = useState<'kanban' | 'table'>('kanban');
   // Tickets being created in the background (the LLM drafts the plan, which
   // takes a while) — drives the floating progress bar instead of a frozen modal.
-  const [pendingCreates, setPendingCreates] = useState(0);
+  // Pending background ticket creations, keyed by destination: "Create ticket"
+  // lands in Backlog, "Create & deploy" goes straight to the agent queue. The
+  // creating bar reads the counts so its copy matches where the work is headed.
+  const [pendingCreates, setPendingCreates] = useState({ backlog: 0, deploy: 0 });
   const [assignPop, setAssignPop] = useState<{ key: string; x: number; y: number } | null>(null);
   const [bulk, setBulk] = useState<Record<string, boolean>>({});
   const [composer, setComposer] = useState<string | null>(null);
@@ -1629,7 +1632,8 @@ export function Workspace({
             onClose={() => setNewTicket(false)}
             onCreate={(description, deploy) => {
               setNewTicket(false);
-              setPendingCreates((n) => n + 1);
+              const dest = deploy ? 'deploy' : 'backlog';
+              setPendingCreates((p) => ({ ...p, [dest]: p[dest] + 1 }));
               api
                 .createTicket(eng.id, { description })
                 .then((t) => {
@@ -1640,7 +1644,7 @@ export function Workspace({
                   else toast(`${t.key} created`);
                 })
                 .catch((e: Error) => toast(`Create failed — ${e.message}`))
-                .finally(() => setPendingCreates((n) => n - 1));
+                .finally(() => setPendingCreates((p) => ({ ...p, [dest]: p[dest] - 1 })));
             }}
           />
         )}
@@ -1649,7 +1653,7 @@ export function Workspace({
       {/* Background ticket creation: the modal closes immediately and this bar
           rides above the toast until the AI-drafted plan lands on the board. */}
       <AnimatePresence>
-        {pendingCreates > 0 && (
+        {pendingCreates.backlog + pendingCreates.deploy > 0 && (
           <motion.div
             key="creating-bar"
             initial={{ opacity: 0, transform: 'translateX(-50%) translateY(12px)' }}
@@ -1682,7 +1686,16 @@ export function Workspace({
               }}
             />
             <span style={{ ...mono(500, 10.5), color: 'var(--agent)', letterSpacing: '.08em' }}>
-              PLANNING {pendingCreates > 1 ? `${pendingCreates} TICKETS` : 'TICKET'} WITH AI — LANDS IN BACKLOG
+              {(() => {
+                const total = pendingCreates.backlog + pendingCreates.deploy;
+                const dest =
+                  pendingCreates.deploy > 0 && pendingCreates.backlog > 0
+                    ? `${pendingCreates.deploy} TO AGENT QUEUE · ${pendingCreates.backlog} TO BACKLOG`
+                    : pendingCreates.deploy > 0
+                      ? 'DEPLOYING TO AGENT QUEUE'
+                      : 'LANDS IN BACKLOG';
+                return `PLANNING ${total > 1 ? `${total} TICKETS` : 'TICKET'} WITH AI — ${dest}`;
+              })()}
             </span>
           </motion.div>
         )}
