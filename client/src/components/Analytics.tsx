@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Engagement, EngagementDetail, VelocityReport } from '../types';
+import type { CommitDay, Engagement, EngagementDetail, VelocityReport } from '../types';
 import { api } from '../api';
 import { deliveredByDay } from '../lib/delivered-by-day';
 import { mono } from '../util';
@@ -89,6 +89,8 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
 
   return (
     <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
+      {/* Cap the column: aspect-ratio charts turn into skyscrapers on wide screens. */}
+      <div style={{ maxWidth: 1360, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
         <span style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>DELIVERY ANALYTICS</span>
         <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--ok)', animation: 'eec-pulse 2.4s infinite' }} />
@@ -124,9 +126,14 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
         </Card>
       </div>
 
+      {/* Commit activity — synced repo commits per day, GitHub-style. */}
+      <div style={{ marginBottom: 14 }}>
+        <CommitActivityCard engId={eng.id} />
+      </div>
+
       {/* Ticket pipeline — the raw counts, parked at the bottom for reference. */}
       <Card title="TICKETS BY STATUS" caption="Everything on this engagement, proposed through done.">
-        <BarChart data={statusData} xDataKey="name" aspectRatio="3.4 / 1" barGap={0.35} margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
+        <BarChart data={statusData} xDataKey="name" aspectRatio="4.5 / 1" barGap={0.35} margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
           <Grid horizontal numTicksRows={4} />
           <Bar dataKey="count" fill="var(--chart-3)" lineCap={3} />
           <BarXAxis />
@@ -134,7 +141,71 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
           <ChartTooltip showDatePill={false} showCrosshair={false} />
         </BarChart>
       </Card>
+      </div>
     </div>
+  );
+}
+
+/** Commits per day for the trailing 8 weeks, zero-filled (DAT-197). */
+function CommitActivityCard({ engId }: { engId: string }) {
+  const [days, setDays] = useState<CommitDay[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .commitActivity(engId)
+      .then((d) => alive && setDays(d))
+      .catch(() => alive && setDays([]));
+    return () => {
+      alive = false;
+    };
+  }, [engId]);
+
+  const filled = useMemo(() => {
+    const byDate = new Map((days ?? []).map((d) => [d.date, d]));
+    const out: CommitDay[] = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (let i = 55; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const iso = d.toISOString().slice(0, 10);
+      out.push(byDate.get(iso) ?? { date: iso, commits: 0, authors: 0 });
+    }
+    return out;
+  }, [days]);
+
+  const total = useMemo(() => (days ?? []).reduce((a, d) => a + d.commits, 0), [days]);
+  const busiest = useMemo(
+    () => (days ?? []).reduce<CommitDay | null>((a, d) => (a === null || d.commits > a.commits ? d : a), null),
+    [days],
+  );
+  const authors = useMemo(() => Math.max(0, ...(days ?? []).map((d) => d.authors)), [days]);
+
+  return (
+    <Card
+      title="COMMIT ACTIVITY — LAST 8 WEEKS"
+      caption={
+        days === null
+          ? 'Loading…'
+          : total === 0
+            ? 'No synced commits in the window — connect a repo or wait for the next sync.'
+            : `${total} commits · up to ${authors} authors in a day · busiest ${busiest?.date.slice(5)} (${busiest?.commits})`
+      }
+    >
+      {days !== null && total > 0 ? (
+        <BarChart data={filled} xDataKey="date" aspectRatio="6 / 1" barGap={0.25} margin={{ top: 12, right: 16, bottom: 26, left: 30 }}>
+          <Grid horizontal numTicksRows={3} />
+          <Bar dataKey="commits" fill="var(--chart-2)" lineCap={2} />
+          <BarXAxis />
+          <BarYAxis />
+          <ChartTooltip showDatePill={false} showCrosshair={false} />
+        </BarChart>
+      ) : (
+        <div style={{ ...mono(400, 10), color: 'var(--tx3)', padding: '14px 0', textAlign: 'center' }}>
+          {days === null ? 'LOADING…' : 'NO COMMITS SYNCED YET'}
+        </div>
+      )}
+    </Card>
   );
 }
 

@@ -220,6 +220,12 @@ export interface VelocityReport {
   } | null;
 }
 
+export type CommitDay = {
+  date: string;
+  commits: number;
+  authors: number;
+};
+
 export type BurndownDay = {
   date: string;
   open: number;
