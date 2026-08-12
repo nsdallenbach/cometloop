@@ -89,6 +89,7 @@ function mapTicket(r: Row): Ticket {
     assignee: s(r.assignee),
     est: s(r.est),
     estHours: r.est_hours == null ? null : n(r.est_hours),
+    humanEstHours: r.human_est_hours == null ? null : n(r.human_est_hours),
     actualHours: r.actual_hours == null ? null : n(r.actual_hours),
     workstream: s(r.workstream),
     agent: b(r.agent),
@@ -249,7 +250,7 @@ export const api = {
 
   patchTicket(
     key: string,
-    patch: { status?: TicketStatus; assignee?: string; roadmapItem?: string | null; estHours?: number | null; branch?: string; tags?: string[] },
+    patch: { status?: TicketStatus; assignee?: string; roadmapItem?: string | null; estHours?: number | null; humanEstHours?: number | null; branch?: string; tags?: string[] },
   ) {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },

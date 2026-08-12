@@ -77,6 +77,8 @@ export interface Ticket {
   est: string;
   /** Latest LLM-hours estimate from the estimation model (1 decimal), null before it runs. */
   estHours: number | null;
+  /** Estimated hours for a human developer to do the same scope, null before the model runs. */
+  humanEstHours: number | null;
   /** Actual agent working hours, logged when the ticket reached Review. */
   actualHours: number | null;
   workstream: string;
