@@ -48,10 +48,16 @@ devbox install `delivery-runner.service` so the loop survives reboots.
    If `MCP_SERVER` is set, a `.mcp.json` in the workdir gives Claude the
    delivery-console tools to post progress notes and raise flags itself.
 5. A sidecar heartbeat fires every 2 minutes so the board never shows STALLED
-   during long runs.
+   during long runs. It doubles as a liveness check: the console answers 404
+   once the task is no longer claimed/working by this agent (cancelled or
+   recalled by a lead), and the runner then kills the Claude child and goes
+   straight back to waiting instead of sitting wedged behind a dead run.
+   A `MAX_RUN_MINUTES` watchdog (default 180) likewise kills a genuinely hung
+   run and completes it `failed`.
 6. On exit, the runner reads the agent's `RESULT.md` for the completion
    summary (and PR URL) and completes `done` (exit 0 → ticket to Review) or
-   `failed` (ticket back to Backlog).
+   `failed` (ticket back to Backlog). If the console rejects the completion
+   because the task was cancelled mid-run, the runner just returns to waiting.
 
 ## Permissions note
 

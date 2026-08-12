@@ -5,6 +5,7 @@ import { resolveIdentity, type Identity } from './roles';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
+import { PROJECT_AGENTS_SCHEMA_SQL, setupProjectAgentRoutes } from './agents';
 import { COORDINATION_SCHEMA_SQL, setupCoordinationRoutes } from './coordination';
 import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
@@ -19,6 +20,7 @@ import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes
 import { setupMcpRoutes } from './mcp';
 import { extractText, refinePlan, refineTicketWithBoard, type RefinedPlan, type ScopingAction } from './scoping-agent';
 import { setupTicketOrderRoutes } from './ticket-order';
+import { clipText, installUtf8BodyRecovery } from './utf8-body';
 import { setupVelocityRoutes } from './velocity';
 import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
 import {
@@ -170,7 +172,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -378,12 +380,12 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
   const jsonMatch = /\{[\s\S]*\}/.exec(text);
   if (!jsonMatch) return;
   const plan = JSON.parse(jsonMatch[0]) as { title?: unknown; description?: unknown; acceptance_criteria?: unknown; reply?: unknown };
-  const title = typeof plan.title === 'string' && plan.title.trim() ? plan.title.trim().slice(0, 200) : asText(t.title);
+  const title = typeof plan.title === 'string' && plan.title.trim() ? clipText(plan.title.trim(), 200) : asText(t.title);
   const description = typeof plan.description === 'string' && plan.description.trim() ? plan.description.trim() : asText(t.description);
   const ac = Array.isArray(plan.acceptance_criteria)
     ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)
     : existingAc;
-  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? plan.reply.trim().slice(0, 600) : 'Updated the ticket based on your comment.';
+  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? clipText(plan.reply.trim(), 600) : 'Updated the ticket based on your comment.';
 
   console.log(`[api] comment feedback applied to ${key} — plan updated (${ac.length} AC)`);
   await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4, updated_at = NOW() WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
@@ -554,8 +556,8 @@ function fallbackTitle(description: string): string {
   const line = description.split('\n').find((l) => l.trim()) ?? 'New ticket';
   const clean = line.replace(/^[#*\->\s]+/, '').trim();
   if (clean.length <= 80) return clean || 'New ticket';
-  const cut = clean.slice(0, 80);
-  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), 40))}…`;
+  const cut = clipText(clean, 80); // surrogate-safe: never cuts an emoji in half
+  return `${clipText(cut, Math.max(cut.lastIndexOf(' '), 40))}…`;
 }
 
 function requestAuthor(req: express.Request): string {
@@ -613,6 +615,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   };
 
   appkit.server.extend((app) => {
+    // DAT-198: strict UTF-8 body decode with Windows-1252 recovery, ahead of
+    // the stock JSON parser — legacy-codepage clients must not write mojibake.
+    installUtf8BodyRecovery(app);
+
     app.get('/api/me', async (req, res) => {
       try {
         const id = await resolveIdentity(req);
@@ -643,11 +649,14 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         // Latest tracked deploy per ticket rides along so board cards can show
         // pipeline progress while the ticket holds in Review, the active PR
         // (open one if any, else most recently updated) for branch/state on
-        // cards, and waiting_on = unresolved blocking tickets for dependency chips.
+        // cards, the branch a runner announced for in-flight work (fills the
+        // gap between claim and the PR opening), and waiting_on = unresolved
+        // blocking tickets for dependency chips.
         const tickets = (
           await q(
             `SELECT t.*, d.deploy_state, d.deploy_url,
                     p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url,
+                    ba.branch_name AS active_branch,
                     (SELECT COUNT(*)::int FROM app.ticket_links l
                      JOIN app.tickets b ON b.key = l.ticket_key
                      WHERE l.linked_key = t.key AND l.type = 'blocks'
@@ -665,6 +674,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id
                ORDER BY (pr.state = 'open') DESC, pr.updated_at DESC NULLS LAST LIMIT 1
              ) p ON true
+             LEFT JOIN LATERAL (
+               SELECT b.branch_name FROM app.branch_activity b
+               WHERE b.ticket_key = t.key AND b.status = 'active'
+               ORDER BY b.last_heartbeat DESC NULLS LAST LIMIT 1
+             ) ba ON true
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
             [id],
           )
@@ -723,13 +737,33 @@ export async function setupApiRoutes(appkit: AppKitServices) {
 
     // Cross-project reads backing the /tickets and /tickets/:key routes: the
     // client resolves a deep-linked ticket to its engagement via these.
+    // Rides along per ticket: the branch for the work (runner-announced while
+    // in flight, else the latest linked PR's) and the agent on the latest
+    // agent task, so the list view can show branch + runner avatar too.
+    const crossTicketSelect = `
+      SELECT t.*, e.client, e.name AS engagement_name,
+             p.branch AS pr_branch, ba.branch_name AS active_branch, ag.agent AS task_agent
+      FROM app.tickets t
+      JOIN app.engagements e ON e.id = t.engagement_id
+      LEFT JOIN LATERAL (
+        SELECT pr.branch FROM app.repo_prs pr
+        JOIN app.repo_connections c ON c.id = pr.connection_id
+        WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id
+        ORDER BY (pr.state = 'open') DESC, pr.updated_at DESC NULLS LAST LIMIT 1
+      ) p ON true
+      LEFT JOIN LATERAL (
+        SELECT b.branch_name FROM app.branch_activity b
+        WHERE b.ticket_key = t.key AND b.status = 'active'
+        ORDER BY b.last_heartbeat DESC NULLS LAST LIMIT 1
+      ) ba ON true
+      LEFT JOIN LATERAL (
+        SELECT a.agent FROM app.agent_tasks a
+        WHERE a.ticket_key = t.key ORDER BY a.id DESC LIMIT 1
+      ) ag ON true`;
+
     app.get('/api/tickets', async (_req, res) => {
       try {
-        const { rows } = await q(
-          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
-           JOIN app.engagements e ON e.id = t.engagement_id
-           ORDER BY e.created_at, e.id, t.seq`,
-        );
+        const { rows } = await q(`${crossTicketSelect} ORDER BY e.created_at, e.id, t.seq`);
         res.json(rows);
       } catch (err) {
         console.error('list tickets failed:', err);
@@ -739,12 +773,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
 
     app.get('/api/tickets/:key', async (req, res) => {
       try {
-        const { rows } = await q(
-          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
-           JOIN app.engagements e ON e.id = t.engagement_id
-           WHERE t.key = $1`,
-          [req.params.key],
-        );
+        const { rows } = await q(`${crossTicketSelect} WHERE t.key = $1`, [req.params.key]);
         if (rows.length === 0) {
           res.status(404).json({ error: 'Ticket not found' });
           return;
@@ -1702,6 +1731,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupVelocityRoutes(app, q);
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireLead, telemetry);
+    setupProjectAgentRoutes(app, q, requireLead);
     setupToolCallRoutes(app, q);
     setupCoordinationRoutes(app, q);
     setupPrConflictRoutes(app, q);

@@ -1,5 +1,6 @@
 import { SCOPING_TOOL_LIMIT, executeScopingTool, scopingToolDefs, type ScopingToolContext } from './scoping-tools';
 import { invokeModel, type InvokeContext } from './llm-health';
+import { clipText } from './utf8-body';
 
 /**
  * Ticket scoping via the model serving endpoint (DAT-173).
@@ -80,7 +81,8 @@ function planContractLines(roadmapItems: string[]): string[] {
       '}',
     'The description becomes the prompt handed to an autonomous coding agent, so make it a compact plan in markdown with these sections (omit any that truly do not apply): ## Context (what exists today and why this is needed), ## Approach (how to implement, referencing systems/files/endpoints implied by the request), ## Dependencies (other tickets, credentials, decisions or unknowns the agent should check first).',
     'Plan only what the request implies — do not invent scope. 3-6 acceptance criteria.',
-    'When the work spans multiple components, services, or a flow with 3+ steps, include ONE compact diagram inside the ## Approach section as a fenced ```mermaid block (flowchart LR or sequenceDiagram; at most ~10 nodes; label every arrow with what moves or happens). The diagram must show the mechanism — components talking, data moving, states changing — not just name boxes. Skip it entirely when a diagram would not add real information. The fence lives INSIDE the "description" markdown string; your response overall is still only the bare JSON object.',
+    'When the work spans multiple components, services, or a flow with 3+ steps, include ONE compact diagram inside the ## Approach section as a fenced ```mermaid block (flowchart TD — top-down suits the ticket panel — or sequenceDiagram for actor interactions; at most ~10 nodes; label every arrow with what moves or happens). The diagram must show the MECHANISM, never a straight chain of boxes: include the decision points, error/rejection paths, and parallel actors that make the flow worth drawing — if the picture would be a single linear line, skip it. Skip it entirely when a diagram would not add real information. The fence lives INSIDE the "description" markdown string; your response overall is still only the bare JSON object.',
+    'In flowcharts, color-code nodes by role with these pre-styled classes (append :::name to the node, e.g. Runner[Agent runner]:::agent — no classDef needed): :::agent for AI/runner components, :::app for the console/system being changed, :::good for success/end states, :::risk for human gates or waits, :::bad for failure/error paths. Tag the nodes where the role genuinely matters; leave plumbing untagged.',
     'est_hours is the expected Claude Code agent execution time from claim to ready-for-review, in agent-hours (may be fractional, typically 0.2–8): a small well-scoped change is under an hour; only genuinely sprawling multi-system work exceeds 8.',
     'human_est_hours is an independent estimate of the same scope done by a professional human developer, in hours — usually 3–6× the agent time, but reason from the scope rather than applying a multiplier.',
     ...(roadmapItems.length > 0
@@ -106,7 +108,7 @@ export function parsePlan(text: string, roadmapItems: string[] = []): RefinedPla
   } catch {
     return null;
   }
-  const title = typeof plan.title === 'string' ? plan.title.trim().slice(0, 200) : '';
+  const title = typeof plan.title === 'string' ? clipText(plan.title.trim(), 200) : '';
   const description = typeof plan.description === 'string' ? plan.description.trim() : '';
   const ac = Array.isArray(plan.acceptance_criteria)
     ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)

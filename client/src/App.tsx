@@ -6,12 +6,14 @@ import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
 import { parsePath, paths, type Tab } from './routes';
 import { mono, STATUS_LABEL } from './util';
 import { Admin } from './components/Admin';
+import { AgentMap } from './components/AgentMap';
 import { Landing } from './components/Landing';
 import { Portfolio } from './components/Portfolio';
 import { Setup } from './components/Setup';
 import { Tickets } from './components/Tickets';
 import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
+import { prefetchMermaid } from './components/Markdown';
 import { Palette, type PaletteItem } from './components/Palette';
 
 export type { Tab } from './routes';
@@ -85,6 +87,13 @@ export default function App() {
     void refreshEngagements();
     loadMe();
   }, [refreshEngagements, loadMe]);
+
+  // Warm the mermaid chunks once the app has settled, so the first ticket
+  // with a diagram renders instantly instead of paying the lazy download.
+  useEffect(() => {
+    const t = setTimeout(prefetchMermaid, 3500);
+    return () => clearTimeout(t);
+  }, []);
 
   const refreshDetail = useCallback(() => {
     if (!engId) return;
@@ -312,6 +321,14 @@ export default function App() {
         keywords: ['tickets', 'all', 'list', 'search'],
         run: () => void navigate(paths.tickets),
       },
+      {
+        kind: 'NAV',
+        label: 'Go to Agent Map — architecture view',
+        hint: '',
+        description: 'Projects and their agents as an architecture diagram',
+        keywords: ['agents', 'map', 'runners', 'architecture', 'diagram', 'deploy'],
+        run: () => void navigate(paths.agents),
+      },
       ...engagements.slice(0, 4).map((e) => ({
         kind: 'NAV',
         label: `${e.client} — open Board`,
@@ -488,6 +505,23 @@ export default function App() {
         </button>
         <button
           className="hv-tx2"
+          onClick={() => void navigate(paths.agents)}
+          title="Agent architecture map — projects and the agents attached to them"
+          style={{
+            ...mono(400, 10),
+            background: 'none',
+            border: `1px solid ${screen.name === 'agents' ? 'var(--tx3)' : 'var(--line2)'}`,
+            color: screen.name === 'agents' ? 'var(--tx2)' : 'var(--tx3)',
+            borderRadius: 3,
+            padding: '3px 7px',
+            cursor: 'pointer',
+            letterSpacing: '.06em',
+          }}
+        >
+          AGENTS
+        </button>
+        <button
+          className="hv-tx2"
           onClick={() => void navigate(paths.tickets)}
           title="All tickets across projects"
           style={{
@@ -594,6 +628,8 @@ export default function App() {
       {screen.name === 'learn' && <Landing theme={theme} onEnter={goPortfolio} />}
 
       {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
+
+      {screen.name === 'agents' && <AgentMap canLead={canLead} toast={showToast} />}
 
       {screen.name === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
       {screen.name === 'admin' && !isAdmin && (

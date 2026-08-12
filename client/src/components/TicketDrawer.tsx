@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { motion } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
-import { STATUS_LABEL, initials, mono } from '../util';
+import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
 import { CoordCommentBody, parseCoordComment } from './AgentComment';
@@ -597,7 +597,7 @@ export function TicketDrawer({
               )}
               {ticket.actualHours != null && (
                 <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 2 }}>
-                  actual {ticket.actualHours}h
+                  actual {fmtDuration(ticket.actualHours)}
                   {estDiffPct != null && (
                     <>
                       {' ('}

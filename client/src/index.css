@@ -428,9 +428,10 @@ tr.hv-row:hover td {
   color: var(--tx3);
 }
 /* Mermaid inlines its own <style> with id-prefixed selectors, so these token
-   overrides need !important to win. Goal: diagrams read like the console —
-   quiet edge labels instead of grey chips, visible hairline node borders,
-   app type throughout. */
+   overrides need !important to win. ALL paint comes from here (the JS init
+   sets no colors): tokens follow the active [data-theme], so diagrams work
+   in light and dark alike — quiet edge labels instead of grey chips,
+   hairline node borders on themed surfaces, app type throughout. */
 .md-diagram svg {
   font-family: 'DM Sans', sans-serif !important;
 }
@@ -448,6 +449,7 @@ tr.hv-row:hover td {
 .md-diagram .node polygon,
 .md-diagram .node circle,
 .md-diagram .node path {
+  fill: var(--bg3) !important;
   stroke: var(--line2) !important;
   stroke-width: 1.2px !important;
 }
@@ -455,6 +457,14 @@ tr.hv-row:hover td {
 .md-diagram .node tspan,
 .md-diagram .nodeLabel {
   fill: var(--tx) !important;
+}
+.md-diagram .cluster rect {
+  fill: var(--bg) !important;
+  stroke: var(--line) !important;
+}
+.md-diagram .cluster text,
+.md-diagram .cluster tspan {
+  fill: var(--tx3) !important;
 }
 .md-diagram .edgePath path,
 .md-diagram .flowchart-link,
@@ -464,6 +474,111 @@ tr.hv-row:hover td {
 .md-diagram marker path {
   fill: var(--tx3) !important;
   stroke: none !important;
+}
+/* Sequence diagrams: actors, lifelines, messages, activations, notes. */
+.md-diagram rect.actor,
+.md-diagram .actor-box {
+  fill: var(--bg3) !important;
+  stroke: var(--line2) !important;
+}
+.md-diagram text.actor,
+.md-diagram text.actor tspan,
+.md-diagram .actor-box + text {
+  fill: var(--tx) !important;
+}
+.md-diagram line.actor-line,
+.md-diagram .actor-line {
+  stroke: var(--line2) !important;
+}
+.md-diagram .messageLine0,
+.md-diagram .messageLine1 {
+  stroke: var(--tx3) !important;
+}
+.md-diagram .messageText,
+.md-diagram .messageText tspan {
+  fill: var(--tx2) !important;
+  stroke: none !important;
+}
+.md-diagram .activation0,
+.md-diagram .activation1,
+.md-diagram .activation2 {
+  fill: var(--accsoft) !important;
+  stroke: var(--acc) !important;
+}
+.md-diagram .note {
+  fill: var(--agentsoft) !important;
+  stroke: var(--agent) !important;
+}
+.md-diagram .noteText,
+.md-diagram .noteText tspan {
+  fill: var(--tx2) !important;
+}
+.md-diagram .labelBox {
+  fill: var(--bg3) !important;
+  stroke: var(--line2) !important;
+}
+.md-diagram .labelText,
+.md-diagram .labelText tspan,
+.md-diagram .loopText,
+.md-diagram .loopText tspan {
+  fill: var(--tx2) !important;
+}
+.md-diagram .loopLine {
+  stroke: var(--line2) !important;
+}
+/* Semantic role classes — the planning agent tags nodes with :::agent /
+   :::app / :::good / :::risk / :::bad, mirroring the hand-drawn architecture
+   diagrams' color language: violet = agent/AI, blue = the console/system,
+   green = success/end states, amber = human gates and waits, red = failure
+   paths. Declared after the base overrides so they win at equal importance. */
+.md-diagram .node.agent rect,
+.md-diagram .node.agent polygon,
+.md-diagram .node.agent circle,
+.md-diagram .node.agent path {
+  stroke: var(--agent) !important;
+  stroke-width: 1.4px !important;
+}
+.md-diagram .node.app rect,
+.md-diagram .node.app polygon,
+.md-diagram .node.app circle,
+.md-diagram .node.app path {
+  stroke: var(--acc) !important;
+  stroke-width: 1.4px !important;
+}
+.md-diagram .node.good rect,
+.md-diagram .node.good polygon,
+.md-diagram .node.good circle,
+.md-diagram .node.good path {
+  stroke: var(--ok) !important;
+  stroke-width: 1.4px !important;
+}
+.md-diagram .node.risk rect,
+.md-diagram .node.risk polygon,
+.md-diagram .node.risk circle,
+.md-diagram .node.risk path {
+  stroke: var(--warn) !important;
+  stroke-width: 1.4px !important;
+}
+.md-diagram .node.bad rect,
+.md-diagram .node.bad polygon,
+.md-diagram .node.bad circle,
+.md-diagram .node.bad path {
+  stroke: var(--bad) !important;
+  stroke-width: 1.4px !important;
+}
+/* Console typography on the marks: mono edge labels like the app's own
+   uppercase micro-labels; node labels stay DM Sans. */
+.md-diagram .edgeLabel text,
+.md-diagram .edgeLabel tspan {
+  font-family: 'DM Mono', monospace !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.03em;
+}
+.md-diagram .messageText,
+.md-diagram .messageText tspan {
+  font-family: 'DM Mono', monospace !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.03em;
 }
 .md blockquote {
   margin: 0 0 10px;

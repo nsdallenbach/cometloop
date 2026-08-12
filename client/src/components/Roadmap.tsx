@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { animate as anime, stagger } from 'animejs';
 import { api } from '../api';
 import type { Engagement, EngagementDetail, RoadmapSettings, Ticket } from '../types';
-import { STATUS_LABEL, fmtD, mono, pct, todayIso } from '../util';
+import { STATUS_LABEL, fmtD, fmtDuration, mono, pct, todayIso } from '../util';
 
 const DEFAULT_ROADMAP_SETTINGS: RoadmapSettings = { hoursPerDay: 6, bufferPct: 20, workdaysPerWeek: 5 };
 
@@ -498,7 +498,7 @@ function ItemDetail({ item, settings, openTicket }: { item: RoadmapItemView; set
           PLAN {fmtD(item.s)} – {fmtD(item.e)}
         </span>
         <span style={{ ...mono(400, 10), color: 'var(--tx2)' }}>
-          {item.doneHours}H DONE / {item.totalHours}H LINKED{remaining > 0 ? ` · ${remaining}H (≈${Math.ceil((remaining / settings.hoursPerDay) * (1 + settings.bufferPct / 100))} DAYS) REMAINING` : ''}
+          {fmtDuration(item.doneHours).toUpperCase()} DONE / {fmtDuration(item.totalHours).toUpperCase()} LINKED{remaining > 0 ? ` · ${fmtDuration(remaining).toUpperCase()} (≈${Math.ceil((remaining / settings.hoursPerDay) * (1 + settings.bufferPct / 100))} DAYS) REMAINING` : ''}
           {item.unsized > 0 ? ` · ${item.unsized} UNSIZED` : ''}
         </span>
         <span style={{ fontSize: 11.5, color: projColor }}>{projection}</span>
@@ -522,7 +522,7 @@ function TicketChip({ t, onClick }: { t: Ticket; onClick: () => void }) {
       className="hv-border-bg"
       onClick={onClick}
       whileHover={{ transform: 'translateY(-1px)' }}
-      title={`${t.title} · ${STATUS_LABEL[t.status] ?? t.status}${t.estHours != null ? ` · ${t.estHours}h` : ''}`}
+      title={`${t.title} · ${STATUS_LABEL[t.status] ?? t.status}${t.estHours != null ? ` · ${fmtDuration(t.estHours)}` : ''}`}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -538,7 +538,7 @@ function TicketChip({ t, onClick }: { t: Ticket; onClick: () => void }) {
       <span style={{ width: 7, height: 7, borderRadius: '50%', background: STATUS_DOT[t.status] ?? 'var(--tx3)', flex: 'none' }} />
       <span style={{ ...mono(500, 10.5) }}>{t.key}</span>
       <span style={{ fontSize: 11.5, color: 'var(--tx2)', maxWidth: 200, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</span>
-      {t.estHours != null && <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{t.estHours}h</span>}
+      {t.estHours != null && <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{fmtDuration(t.estHours)}</span>}
     </motion.button>
   );
 }
