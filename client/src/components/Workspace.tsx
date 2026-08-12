@@ -2,8 +2,9 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
-import { HEALTH_COLOR, HEALTH_LABEL, fmtD, initials, mono, pct, todayIso } from '../util';
+import { HEALTH_COLOR, HEALTH_LABEL, initials, mono } from '../util';
 import { Analytics } from './Analytics';
+import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
 import type { Tab } from '../App';
 
@@ -60,7 +61,7 @@ export function Workspace({
   setTab: (t: Tab) => void;
   goPortfolio: () => void;
   openTicket: (key: string) => void;
-  setTicket: (key: string, patch: { status?: TicketStatus; assignee?: string }) => void;
+  setTicket: (key: string, patch: { status?: TicketStatus; assignee?: string; tags?: string[] }) => void;
   setDetail: React.Dispatch<React.SetStateAction<EngagementDetail | null>>;
   toast: (msg: string) => void;
   onEngagementChanged: () => void;
@@ -98,12 +99,22 @@ export function Workspace({
   // window covers async drops (agent deploy/complete land after an API round
   // trip, not in the drop's render).
   const justDropped = useRef<{ key: string; until: number } | null>(null);
+  // eslint-disable-next-line react-hooks/purity -- called from pointer-event handlers, not render
   const markDropped = (key: string) => (justDropped.current = { key, until: Date.now() + 700 });
   const isJustDropped = (key: string) => {
     const j = justDropped.current;
+    // eslint-disable-next-line react-hooks/purity -- drop-window check against wall clock is intentional
     return j !== null && j.key === key && Date.now() < j.until;
   };
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Minute tick so Done cards crossing the 24h age-out threshold drop off the
+  // lane without a refresh.
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
@@ -143,28 +154,6 @@ export function Workspace({
     { key: 'team', label: 'Team' },
     { key: 'feed', label: 'Status Feed' },
   ];
-
-  // roadmap geometry — derive the window from the phase schedule when the
-  // engagement row has no explicit range, never from invented dates
-  const rmS = eng.rmStart ?? eng.phases?.[0]?.s ?? todayIso();
-  const rmE = eng.rmEnd ?? eng.phases?.[eng.phases.length - 1]?.e ?? todayIso();
-  const months = useMemo(() => {
-    // Iterate in UTC: date-only strings parse as UTC, so local-time month math
-    // would duplicate the first tick in negative-offset timezones.
-    const out: { label: string; l: number }[] = [];
-    const end = new Date(`${rmE}T00:00:00Z`);
-    let d = new Date(`${rmS}T00:00:00Z`);
-    while (d < end) {
-      out.push({
-        label:
-          d.toLocaleString('en', { month: 'short', timeZone: 'UTC' }).toUpperCase() +
-          (d.getUTCMonth() === 0 ? ` ${String(d.getUTCFullYear()).slice(2)}` : ''),
-        l: pct(rmS, rmE, d.toISOString().slice(0, 10)),
-      });
-      d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
-    }
-    return out;
-  }, [rmS, rmE]);
 
   const acceptTicket = (t: Ticket) => {
     setTicket(t.key, { status: 'backlog' });
@@ -244,8 +233,78 @@ export function Workspace({
           <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ DEPLOY FAILED</span>
         )}
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
+        {!isDone && t.waitingOn > 0 && (
+          <span
+            title={`Waiting on ${t.waitingOn} linked ticket${t.waitingOn === 1 ? '' : 's'} — see Linked work in the ticket`}
+            style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}
+          >
+            ⧗ WAITING ON {t.waitingOn}
+          </span>
+        )}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
+      {t.branch && !t.activePr && (
+        <div
+          title={t.branch}
+          style={{ ...mono(400, 9.5), color: 'var(--tx3)', marginBottom: 7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          ⎇ {t.branch}
+        </div>
+      )}
+      {t.tags.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 7 }}>
+          {t.tags.slice(0, 4).map((tag) => (
+            <span key={tag} style={{ ...mono(500, 9), color: 'var(--tx3)', border: '1px solid var(--line2)', borderRadius: 2, padding: '1px 5px' }}>
+              {tag}
+            </span>
+          ))}
+          {t.tags.length > 4 && (
+            <span title={t.tags.slice(4).join(', ')} style={{ ...mono(400, 9), color: 'var(--tx3)', padding: '1px 0' }}>
+              +{t.tags.length - 4}
+            </span>
+          )}
+        </div>
+      )}
+      {t.activePr && (
+        <a
+          href={t.activePr.url}
+          target="_blank"
+          rel="noreferrer"
+          title={`PR #${t.activePr.number}: ${t.activePr.title} — ${t.activePr.state}`}
+          className="hv-border"
+          // Keep the link from starting a card drag or opening the drawer.
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            marginBottom: 7,
+            border: '1px solid var(--line)',
+            borderRadius: 2,
+            padding: '3px 7px',
+            background: 'var(--bg)',
+            textDecoration: 'none',
+          }}
+        >
+          <span
+            style={{
+              ...mono(500, 8.5),
+              flex: 'none',
+              color: PR_STATE_COLOR[t.activePr.state],
+              border: `1px solid ${PR_STATE_COLOR[t.activePr.state]}`,
+              borderRadius: 2,
+              padding: '0 4px',
+              letterSpacing: '.06em',
+            }}
+          >
+            PR {t.activePr.state.toUpperCase()}
+          </span>
+          <span style={{ ...mono(400, 9.5), color: 'var(--tx2)', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            ⎇ {t.activePr.branch || `#${t.activePr.number}`}
+          </span>
+        </a>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
         <span
           className="hv-border"
@@ -312,6 +371,7 @@ export function Workspace({
 
   const ago = (iso: string | null) => {
     if (!iso) return '';
+    // eslint-disable-next-line react-hooks/purity -- relative times refresh with the board poll by design
     const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
     return s < 60 ? `${Math.floor(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`;
   };
@@ -481,6 +541,7 @@ export function Workspace({
     const running = at.state !== 'queued';
     // Warning states: an explicit runner-raised flag, or a silent heartbeat.
     const flagged = running && at.flag != null && at.flag !== '';
+    // eslint-disable-next-line react-hooks/purity -- staleness re-evaluates with the board poll by design
     const stale = running && !flagged && at.lastHeartbeat != null && Date.now() - new Date(at.lastHeartbeat).getTime() > 3 * 60_000;
     // Status dot: grey ring queued → green spinner running → yellow ⚠ warning.
     const statusDot = flagged || stale ? (
@@ -848,9 +909,17 @@ export function Workspace({
                 {COLS.map(([k, label]) => {
                   // No In Progress lane: human-active tickets sit in Backlog
                   // until they reach Review; agent-active ones sit in the lane.
-                  const colTickets = tickets.filter(
+                  let colTickets = tickets.filter(
                     (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key),
                   );
+                  if (k === 'done') {
+                    // Done auto-hides work completed more than 24h ago (tickets
+                    // without a completion time age out too) and shows the rest
+                    // newest-first.
+                    const cutoff = now - 24 * 60 * 60 * 1000;
+                    const doneTs = (t: Ticket) => (t.doneAt ? Date.parse(t.doneAt) : NaN);
+                    colTickets = colTickets.filter((t) => doneTs(t) >= cutoff).sort((a, b) => doneTs(b) - doneTs(a));
+                  }
                   return (
                     <Fragment key={k}>
                     {k === 'review' && agentLane}
@@ -895,6 +964,7 @@ export function Workspace({
                     <th style={thStyle}>ASSIGNEE</th>
                     <th style={thStyle}>EST</th>
                     <th style={thStyle}>WORKSTREAM</th>
+                    <th style={thStyle}>TAGS</th>
                     <th style={thStyle}>SOURCE</th>
                   </tr>
                 </thead>
@@ -973,6 +1043,15 @@ export function Workspace({
                         </td>
                         <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>{t.est}</td>
                         <td style={{ ...tdBase, fontSize: 12, color: 'var(--tx2)', whiteSpace: 'nowrap' }}>{t.workstream}</td>
+                        <td style={tdBase}>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 200 }}>
+                            {t.tags.map((tag) => (
+                              <span key={tag} style={{ ...mono(500, 9), color: 'var(--tx3)', border: '1px solid var(--line2)', borderRadius: 2, padding: '1px 5px', whiteSpace: 'nowrap' }}>
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
                         <td style={{ ...tdBase, ...mono(400, 10.5), color: 'var(--agent)', whiteSpace: 'nowrap' }}>{t.sources[0]?.type ?? ''}</td>
                       </tr>
                     ))}
@@ -985,182 +1064,7 @@ export function Workspace({
 
       {/* ===== ROADMAP ===== */}
       {detail && tab === 'roadmap' && (
-        <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: 22 }}>
-          <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', padding: '20px 24px 26px' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 20 }}>
-              <span style={{ fontSize: 14, fontWeight: 600 }}>Roadmap</span>
-              <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.06em' }}>
-                {eng.sowStatus === 'BRIEF' ? 'DERIVED FROM PROJECT BRIEF' : 'DERIVED FROM SOW'} · AGENT-MAINTAINED
-              </span>
-            </div>
-            {!eng.phases && <div style={{ color: 'var(--tx3)', fontSize: 12.5 }}>No phase schedule captured for this engagement yet.</div>}
-            {eng.phases && (
-              <div style={{ position: 'relative' }}>
-                <div style={{ display: 'flex', marginLeft: 190, borderBottom: '1px solid var(--line)', paddingBottom: 6 }}>
-                  {months.map((m) => (
-                    <div key={m.label + m.l} style={{ flex: 1, ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
-                      {m.label}
-                    </div>
-                  ))}
-                </div>
-                <div style={{ position: 'absolute', top: 24, bottom: 0, left: 190, right: 0, pointerEvents: 'none' }}>
-                  {months.map((m) => (
-                    <div key={`l${m.l}`} style={{ position: 'absolute', top: 0, bottom: 0, left: `${m.l}%`, width: 1, background: 'var(--line)' }} />
-                  ))}
-                  <div style={{ position: 'absolute', top: -24, bottom: 0, left: `${Math.max(3, pct(rmS, rmE, todayIso()))}%`, width: 1, background: 'var(--acc)' }} />
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: -24,
-                      left: `${Math.max(3, pct(rmS, rmE, todayIso()))}%`,
-                      transform: 'translateX(-50%)',
-                      background: 'var(--acc)',
-                      color: '#fff',
-                      ...mono(500, 9),
-                      padding: '1px 6px',
-                      borderRadius: 2,
-                      letterSpacing: '.06em',
-                    }}
-                  >
-                    TODAY
-                  </div>
-                </div>
-                <div style={{ paddingTop: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  {eng.phases.map((p) => {
-                    const l = pct(rmS, rmE, p.s);
-                    const w = pct(rmS, rmE, p.e) - l;
-                    const done = p.pct === 100;
-                    const active = (p.pct ?? 0) > 0 && (p.pct ?? 0) < 100;
-                    return (
-                      <div key={p.name} style={{ display: 'flex', alignItems: 'center' }}>
-                        <div style={{ width: 190, flex: 'none', paddingRight: 16 }}>
-                          <div style={{ fontSize: 12.5, fontWeight: 600 }}>{p.name}</div>
-                          <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 2 }}>
-                            {fmtD(p.s)} – {fmtD(p.e)} · {p.pct ?? 0}% COMPLETE
-                          </div>
-                        </div>
-                        <div style={{ flex: 1, height: 26, position: 'relative' }}>
-                          <div
-                            style={{
-                              position: 'absolute',
-                              top: 3,
-                              bottom: 3,
-                              left: `${l}%`,
-                              width: `${w}%`,
-                              background: 'var(--bg3)',
-                              border: `1px solid ${done ? 'var(--line2)' : active ? 'var(--acc)' : 'var(--line2)'}`,
-                              borderRadius: 3,
-                              overflow: 'hidden',
-                            }}
-                          >
-                            <div
-                              style={{
-                                position: 'absolute',
-                                top: 0,
-                                bottom: 0,
-                                left: 0,
-                                width: `${p.pct ?? 0}%`,
-                                background: done ? 'var(--line2)' : active ? 'var(--accsoft)' : 'transparent',
-                              }}
-                            />
-                            <span
-                              style={{
-                                position: 'absolute',
-                                left: 8,
-                                top: '50%',
-                                transform: 'translateY(-50%)',
-                                ...mono(500, 9),
-                                color: done ? 'var(--tx2)' : active ? 'var(--acc)' : 'var(--tx3)',
-                                letterSpacing: '.06em',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {done ? 'DONE' : active ? `${p.pct}%` : 'PLANNED'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                {eng.milestones &&
-                  (() => {
-                    // Collision-aware lanes: milestones sorted by position stack
-                    // into the first lane with enough horizontal clearance, so
-                    // clustered dates stagger vertically instead of overlapping.
-                    const MIN_GAP = 15; // % of timeline width a label roughly needs
-                    const LANE_H = 46;
-                    const laneEnd: number[] = [];
-                    const placed = eng.milestones
-                      .map((ms) => ({ ms, p: Math.max(1, Math.min(99, pct(rmS, rmE, ms.d))) }))
-                      .sort((a, b) => a.p - b.p)
-                      .map((x) => {
-                        let lane = laneEnd.findIndex((end) => x.p - end >= MIN_GAP);
-                        if (lane === -1) lane = laneEnd.length;
-                        laneEnd[lane] = x.p;
-                        return { ...x, lane };
-                      });
-                    return (
-                      <div style={{ marginTop: 20, borderTop: '1px solid var(--line)', paddingTop: 14, display: 'flex' }}>
-                        <div style={{ width: 190, flex: 'none', ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>MILESTONES</div>
-                        <div style={{ flex: 1, height: Math.max(2, laneEnd.length) * LANE_H + 4, position: 'relative' }}>
-                          {placed.map(({ ms, p, lane }) => {
-                            // Near either edge, grow the label inward instead of
-                            // centering (centered labels clip at the container edge).
-                            const nearRight = p > 85;
-                            const nearLeft = p < 8;
-                            const align = nearRight ? 'flex-end' : nearLeft ? 'flex-start' : 'center';
-                            const tx = nearRight ? 'translateX(-100%)' : nearLeft ? 'none' : 'translateX(-50%)';
-                            return (
-                              <div
-                                key={ms.label + ms.d}
-                                title={`${ms.label} · ${fmtD(ms.d)}`}
-                                style={{
-                                  position: 'absolute',
-                                  left: `${p}%`,
-                                  top: lane * LANE_H,
-                                  transform: tx,
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  alignItems: align,
-                                  gap: 4,
-                                  maxWidth: 240,
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    width: 9,
-                                    height: 9,
-                                    flex: 'none',
-                                    transform: 'rotate(45deg)',
-                                    background: ms.done ? 'var(--ok)' : 'var(--bg2)',
-                                    border: `1.5px solid ${ms.done ? 'var(--ok)' : 'var(--tx3)'}`,
-                                  }}
-                                />
-                                <div
-                                  style={{
-                                    ...mono(400, 9),
-                                    color: ms.done ? 'var(--tx2)' : 'var(--tx)',
-                                    whiteSpace: 'nowrap',
-                                    maxWidth: 240,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                  }}
-                                >
-                                  {ms.label.toUpperCase()}
-                                </div>
-                                <div style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtD(ms.d)}</div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })()}
-              </div>
-            )}
-          </div>
-        </div>
+        <Roadmap eng={eng} detail={detail} lead={lead} openTicket={openTicket} toast={toast} onEngagementChanged={onEngagementChanged} />
       )}
 
       {/* ===== SOURCES ===== */}
@@ -1606,15 +1510,19 @@ export function Workspace({
         {newTicket && (
           <NewTicketModal
             key="new-ticket-modal"
+            lead={lead}
             onClose={() => setNewTicket(false)}
-            onCreate={(description) => {
+            onCreate={(description, deploy) => {
               setNewTicket(false);
               setPendingCreates((n) => n + 1);
               api
                 .createTicket(eng.id, { description })
                 .then((t) => {
                   setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
-                  toast(`${t.key} created`);
+                  // Deploy path: the ticket exists either way — if queueing
+                  // fails it simply stays in Backlog and the error is toasted.
+                  if (deploy) deployTicket(t.key);
+                  else toast(`${t.key} created`);
                 })
                 .catch((e: Error) => toast(`Create failed — ${e.message}`))
                 .finally(() => setPendingCreates((n) => n - 1));
@@ -1700,20 +1608,26 @@ export function Workspace({
   );
 }
 
-/** Modal for creating a ticket manually — one chatbox; the title is derived from the content.
- * Creation itself runs in the parent so the modal can close immediately. */
+/**
+ * Modal for creating a ticket manually — one chatbox; the title is derived
+ * from the content. Creation runs in the parent so the modal closes
+ * immediately. Two ways out: "Create ticket" lands it in Backlog, and
+ * (for leads) "Create & deploy" queues it straight to an agent in one click.
+ */
 function NewTicketModal({
+  lead,
   onClose,
   onCreate,
 }: {
+  lead: boolean;
   onClose: () => void;
-  onCreate: (description: string) => void;
+  onCreate: (description: string, deploy: boolean) => void;
 }) {
   const [description, setDescription] = useState('');
 
-  const create = () => {
+  const create = (deploy: boolean) => {
     if (!description.trim()) return;
-    onCreate(description.trim());
+    onCreate(description.trim(), deploy);
   };
 
   return (
@@ -1733,7 +1647,9 @@ function NewTicketModal({
         transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
         onKeyDown={(e) => {
           // Escape is handled by the app-level layering (palette > modal > drawer).
-          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create();
+          // Ctrl+Enter → Backlog; Ctrl+Shift+Enter → create & deploy (leads —
+          // for everyone else the shift is ignored and it lands in Backlog).
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create(lead && e.shiftKey);
         }}
         style={{
           position: 'fixed',
@@ -1782,7 +1698,7 @@ function NewTicketModal({
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
           <span style={{ ...mono(400, 10), color: 'var(--tx3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            LANDS IN BACKLOG · CTRL+ENTER TO CREATE
+            {lead ? 'CTRL+ENTER → BACKLOG · CTRL+SHIFT+ENTER → DEPLOY' : 'LANDS IN BACKLOG · CTRL+ENTER TO CREATE'}
           </span>
           <div style={{ flex: 1 }} />
           <button
@@ -1792,8 +1708,9 @@ function NewTicketModal({
             Cancel
           </button>
           <button
-            onClick={create}
+            onClick={() => create(false)}
             disabled={!description.trim()}
+            title="Create in Backlog (Ctrl+Enter)"
             style={{
               background: 'var(--acc)',
               color: '#fff',
@@ -1810,6 +1727,28 @@ function NewTicketModal({
           >
             Create ticket
           </button>
+          {lead && (
+            <button
+              onClick={() => create(true)}
+              disabled={!description.trim()}
+              title="Create and deploy straight to the agent queue (Ctrl+Shift+Enter)"
+              style={{
+                background: 'var(--agent)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 3,
+                padding: '7px 16px',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                opacity: !description.trim() ? 0.45 : 1,
+              }}
+            >
+              ◆ Create &amp; deploy
+            </button>
+          )}
         </div>
       </motion.div>
     </>

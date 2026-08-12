@@ -2,8 +2,13 @@ import { z } from 'zod';
 import type express from 'express';
 import { resolveIdentity, type Identity } from './roles';
 import { listContextFiles, type FilesVolume } from './context-files';
+import { listTicketAttachments } from './ticket-attachments';
 import { loadConnection } from './repos';
 import { installationToken } from './github-app';
+import { completeAgentBranches, postCoordinationMessage } from './coordination';
+import { recordActualHours } from './estimates';
+import { archiveToolCalls } from './tool-calls';
+import { setTicketStatus } from './ticket-events';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -99,7 +104,7 @@ export function startMockRunner(q: Query): void {
         )
       ).rows;
       for (const t of claimed) {
-        await q(`UPDATE app.tickets SET status = 'progress', assignee = $2 WHERE key = $1`, [String(t.ticket_key), AGENT]);
+        await setTicketStatus(q, String(t.ticket_key), 'progress', { assignee: AGENT });
       }
       await q(
         `UPDATE app.agent_tasks
@@ -134,6 +139,7 @@ function renderPrompt(
   engagement: Record<string, unknown> | null,
   repo: Record<string, unknown> | null,
   contextFiles: { name: string }[],
+  attachments: { filename: string; size: number }[],
 ): string {
   const key = txt(task.ticket_key);
   const ac = (() => {
@@ -156,6 +162,11 @@ function renderPrompt(
     `- work-package.json — full task payload (task id ${txt(task.id)}; you are agent "${txt(task.agent) || 'agent'}")`,
     ...(contextFiles.length > 0 ? [`- ./context/ — engagement reference files: ${contextFiles.map((f) => f.name).join(', ')}`] : []),
     ...(repo ? [`- ./repo/ — clone of ${txt(repo.repo_name)} (default branch ${txt(repo.default_branch)})`] : []),
+    ...(attachments.length > 0
+      ? [
+          `- Ticket attachments (fetch via the list_ticket_attachments / read_ticket_attachment MCP tools or GET /api/tickets/${key}/attachments): ${attachments.map((a) => `${a.filename} (${Math.ceil(a.size / 1024)} KB)`).join(', ')}`,
+        ]
+      : []),
     '',
     '## Delivery expectations',
     `- Work in ./repo. Create a branch named ${key}-<short-slug> — the branch or PR title MUST contain ${key} so the console auto-links your work.`,
@@ -163,6 +174,15 @@ function renderPrompt(
     '- If the GIT_TOKEN environment variable is set, push with https://x-access-token:$GIT_TOKEN@github.com/<owner>/<repo>.git and open the PR via the GitHub REST API with that token; otherwise use local git credentials / gh.',
     '- If delivery-console MCP tools are available, post report_agent_progress at plan time and before pushing, and raise flag_agent_work if you get blocked instead of guessing.',
     '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
+    '',
+    '## Coordinating with other agents',
+    `Other agents may be working other branches of the same repo right now. Your agent id is "${txt(task.agent) || 'agent'}". Use the delivery-console MCP coordination tools (or the /api/agent/coordination REST endpoints) to avoid colliding with them:`,
+    '- Before creating your branch, call list_active_branches and check whether an active branch/task overlaps your scope; if it does, message that agent (request_for_info) before duplicating or contradicting its work.',
+    '- As soon as you create your branch, announce it with announce_branch_activity (branch, your agent id, ticket key, one-line task description). Re-announce to heartbeat if you work for a long time.',
+    '- Check get_coordination_messages (pass your agent id and the last next_since_id you saw) at natural checkpoints: after planning, before pushing, and before finishing. All targeted messages are also mirrored as comments on the relevant ticket so humans can follow along.',
+    "- If another agent pokes you or asks for info: SLA 'interrupt' means answer (post_coordination_message type response) before continuing your work; SLA 'wait' means answer before you complete your ticket. Never finish a task while an unanswered 'interrupt' request addressed to you is pending.",
+    "- If you discover you are touching the same files as another active branch, post a conflict_warning naming the files. If you need another agent's attention, use poke_agent with an SLA chosen by real urgency — 'interrupt' only when you are blocked.",
+    '- Post a final status_update (your branch, PR URL) before completing, so waiting agents are released.',
     ...(repo
       ? [
           '',
@@ -182,7 +202,10 @@ export function setupAgentRoutes(
   q: Query,
   files: FilesVolume,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  telemetry: FilesVolume | null = null,
 ) {
+  /** Fire-and-forget: archive a finished run's tool-call log to the telemetry volume. */
+  const archive = (taskId: number) => void archiveToolCalls(q, telemetry, taskId);
   const feed = (engagementId: string, actor: string, text: string) =>
     q(
       `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -208,7 +231,17 @@ export function setupAgentRoutes(
         ])
       ).rows[0] ?? null;
     const contextFiles = await listContextFiles(files, engagementId);
-    return { task, ticket, engagement, comments, repo, contextFiles, prompt: renderPrompt(task, ticket, engagement, repo, contextFiles) };
+    const attachments = await listTicketAttachments(q, ticketKey).catch(() => []);
+    return {
+      task,
+      ticket,
+      engagement,
+      comments,
+      repo,
+      contextFiles,
+      attachments,
+      prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, attachments),
+    };
   };
 
   // ---------- console side (lead actions) ----------
@@ -273,8 +306,11 @@ export function setupAgentRoutes(
         task.id,
         'Marked done from the board.',
       ]);
-      await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+      await setTicketStatus(q, key, 'review');
+      // Ready for review: log the actual LLM working time against the estimate.
+      void recordActualHours(q, key, 'board-complete');
       console.log(`[agent] task ${String(task.id)} (${key}) marked done from the board — ticket moved to review`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Marked agent work on ${key} done — moved to Review.`);
       res.json({ ok: true });
     } catch (err) {
@@ -298,13 +334,11 @@ export function setupAgentRoutes(
       await q(`UPDATE app.agent_tasks SET state = 'cancelled', updated_at = NOW() WHERE id = $1`, [task.id]);
       // A claimed ticket goes back to the backlog; drop the agent as assignee.
       if (task.state !== 'queued') {
-        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—' WHERE key = $1 AND assignee = $2`, [
-          key,
-          typeof task.agent === 'string' ? task.agent : '',
-        ]);
-        await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
+        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: typeof task.agent === 'string' ? task.agent : '' });
+        await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       console.log(`[agent] task ${String(task.id)} (${key}) cancelled from state '${String(task.state)}'`);
+      archive(Number(task.id));
       await feed(engagementId, 'YOU', `Cancelled agent work on ${key}.`);
       res.json({ ok: true });
     } catch (err) {
@@ -437,7 +471,7 @@ export function setupAgentRoutes(
       }
       const key = String(claimed.ticket_key);
       console.log(`[agent] ${agent} claimed task ${String(claimed.id)} (${key}) — ticket moved to progress`);
-      await q(`UPDATE app.tickets SET status = 'progress', assignee = $2 WHERE key = $1`, [key, agent]);
+      await setTicketStatus(q, key, 'progress', { assignee: agent });
       await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work.`);
       res.json(await workPackage(claimed));
     } catch (err) {
@@ -680,11 +714,34 @@ export function setupAgentRoutes(
          WHERE id = $1`,
         [task.id, outcome, summary.trim(), url ?? null],
       );
+      // Coordination channel: close the agent's branch announcements and tell
+      // the other agents this run is over, so nobody waits on it (best-effort).
+      try {
+        const closed = await completeAgentBranches(q, agent, key);
+        // The complete endpoint already posts its own ticket comment — log the
+        // broadcast without mirroring it a second time.
+        await postCoordinationMessage(
+          q,
+          {
+            sender: agent,
+            type: 'status_update',
+            body: `Finished ${key} (${outcome}).${url ? ` ${url}` : ''}`,
+            ticket: key,
+            branch: closed[0] ?? null,
+          },
+          { mirror: false },
+        );
+      } catch (err) {
+        console.warn('[agent] coordination close-out failed:', (err as Error).message);
+      }
+      archive(Number(task.id));
       if (outcome === 'done') {
-        await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+        await setTicketStatus(q, key, 'review');
+        // Ready for review: log the actual LLM working time against the estimate.
+        void recordActualHours(q, key, 'agent-complete');
       } else {
-        await q(`UPDATE app.tickets SET status = 'backlog', assignee = '—' WHERE key = $1 AND assignee = $2`, [key, agent]);
-        await q(`UPDATE app.tickets SET status = 'backlog' WHERE key = $1 AND status = 'progress'`, [key]);
+        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: agent });
+        await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
         key,
