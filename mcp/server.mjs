@@ -18,21 +18,38 @@ const APP_URL = (process.env.DELIVERY_CONSOLE_URL ?? 'https://delivery-console-7
 const HOST = process.env.DATABRICKS_HOST ?? 'https://dbc-96494b8f-6b86.cloud.databricks.com';
 const CLI = process.env.DATABRICKS_CLI ?? 'databricks';
 
+// Short TTL: workspace tokens live ~1h, so a 10-minute cache never hands out
+// a token near death; a 401 busts the cache and retries once regardless.
 let cachedTok = null; // { token, exp }
 function token() {
   if (process.env.DATABRICKS_TOKEN) return process.env.DATABRICKS_TOKEN;
   if (cachedTok && Date.now() < cachedTok.exp) return cachedTok.token;
   const out = execFileSync(CLI, ['auth', 'token', '--host', HOST], { encoding: 'utf8' });
-  cachedTok = { token: JSON.parse(out).access_token, exp: Date.now() + 45 * 60_000 };
+  cachedTok = { token: JSON.parse(out).access_token, exp: Date.now() + 10 * 60_000 };
   return cachedTok.token;
 }
 
+/** Authorized fetch with one transparent token refresh on 401. */
+async function authedFetch(url, init = {}) {
+  for (let attempt = 0; ; attempt++) {
+    const resp = await fetch(url, {
+      ...init,
+      headers: { Authorization: `Bearer ${token()}`, ...(init.headers ?? {}) },
+      signal: AbortSignal.timeout(init.timeoutMs ?? 30_000),
+    });
+    if (resp.status === 401 && attempt === 0 && !process.env.DATABRICKS_TOKEN) {
+      cachedTok = null; // token died mid-flight — mint fresh and retry once
+      continue;
+    }
+    return resp;
+  }
+}
+
 async function call(method, path, body) {
-  const resp = await fetch(`${APP_URL}${path}`, {
+  const resp = await authedFetch(`${APP_URL}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${token()}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
   });
   const raw = await resp.text();
   if (!resp.ok) {
@@ -282,9 +299,8 @@ tool(
   'Read a context file as text (up to 200 KB; binary files are refused).',
   { engagement_id: z.string(), name: z.string() },
   async ({ engagement_id, name }) => {
-    const resp = await fetch(
+    const resp = await authedFetch(
       `${APP_URL}/api/engagements/${encodeURIComponent(engagement_id)}/context-files/${encodeURIComponent(name)}`,
-      { headers: { Authorization: `Bearer ${token()}` }, signal: AbortSignal.timeout(30_000) },
     );
     if (!resp.ok) throw new Error(`Download failed (${resp.status})`);
     const buf = Buffer.from(await resp.arrayBuffer());

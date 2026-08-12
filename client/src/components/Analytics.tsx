@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import NumberFlow from '@number-flow/react';
-import type { Engagement, EngagementDetail } from '../types';
+import type { BurndownDay, Engagement, EngagementDetail } from '../types';
+import { api } from '../api';
 import { mono } from '../util';
 import { AreaChart } from './charts/area-chart';
 import { Area } from './charts/area';
@@ -18,9 +19,13 @@ import { ChartTooltip } from './charts/tooltip';
 const ACTIVITY_DAYS = 14;
 
 /** Series colors follow the entity everywhere on this tab:
- *  team = --chart-1 (brand red), agent = --chart-2 (periwinkle). */
+ *  team = --chart-1 (brand red), agent = --chart-2 (periwinkle).
+ *  The burndown card carries its own two-entity legend on the same pair:
+ *  open remaining = --chart-1, done = --chart-2. */
 const TEAM_COLOR = 'var(--chart-1)';
 const AGENT_COLOR = 'var(--chart-2)';
+const OPEN_COLOR = 'var(--chart-1)';
+const DONE_COLOR = 'var(--chart-2)';
 
 const STATUS_ORDER: [string, string][] = [
   ['proposed', 'PROPOSED'],
@@ -71,6 +76,17 @@ function LegendRow({ items }: { items: { label: string; color: string; n?: numbe
 
 export function Analytics({ eng, detail }: { eng: Engagement; detail: EngagementDetail }) {
   const tickets = detail.tickets;
+  const [burndown, setBurndown] = useState<BurndownDay[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .burndown(eng.id)
+      .then((days) => alive && setBurndown(days))
+      .catch(() => alive && setBurndown([]));
+    return () => {
+      alive = false;
+    };
+  }, [eng.id, tickets]);
   const board = useMemo(() => tickets.filter((t) => t.status !== 'proposed' && t.status !== 'dismissed'), [tickets]);
   const done = board.filter((t) => t.status === 'done').length;
   const blocked = board.filter((t) => t.blocked).length;
@@ -167,6 +183,44 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
             <XAxis numTicks={5} />
             <ChartTooltip />
           </AreaChart>
+        </Card>
+      </div>
+
+      {/* Burndown — remaining open tickets by day, replayed from the status event trail */}
+      <div style={{ marginBottom: 14 }}>
+        <Card
+          title="BURNDOWN — OPEN TICKETS BY DAY"
+          caption={
+            burndown == null
+              ? 'Loading…'
+              : burndown.length === 0
+                ? 'No ticket history yet — the trail starts with the first ticket.'
+                : burndown.length < 2
+                  ? `${burndown[burndown.length - 1].open} open of ${burndown[burndown.length - 1].total} on board — history builds from today.`
+                  : `${burndown[burndown.length - 1].open} open of ${burndown[burndown.length - 1].total} on board`
+          }
+        >
+          {burndown != null && burndown.length >= 2 ? (
+            <>
+              <LegendRow
+                items={[
+                  { label: 'OPEN', color: OPEN_COLOR, n: burndown[burndown.length - 1].open },
+                  { label: 'DONE', color: DONE_COLOR, n: burndown[burndown.length - 1].done },
+                ]}
+              />
+              <AreaChart data={burndown} xDataKey="date" aspectRatio="3.4 / 1" margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
+                <Grid horizontal numTicksRows={4} />
+                <Area dataKey="open" fill={OPEN_COLOR} fillOpacity={0.25} />
+                <Area dataKey="done" fill={DONE_COLOR} fillOpacity={0.25} />
+                <XAxis numTicks={5} />
+                <ChartTooltip />
+              </AreaChart>
+            </>
+          ) : (
+            <div style={{ ...mono(400, 10), color: 'var(--tx3)', padding: '14px 0', textAlign: 'center' }}>
+              {burndown == null ? 'LOADING BURNDOWN…' : 'THE CHART DRAWS ITSELF ONCE THERE ARE TWO DAYS OF HISTORY.'}
+            </div>
+          )}
         </Card>
       </div>
 
