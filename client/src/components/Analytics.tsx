@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import NumberFlow from '@number-flow/react';
 import type { BurndownDay, Engagement, EngagementDetail } from '../types';
 import { api } from '../api';
+import { deliveredByDay } from '../lib/delivered-by-day';
 import { mono } from '../util';
 import { AreaChart } from './charts/area-chart';
 import { Area } from './charts/area';
@@ -16,14 +17,18 @@ import { Ring } from './charts/ring';
 import { RingCenter } from './charts/ring-center';
 import { ChartTooltip } from './charts/tooltip';
 
-const ACTIVITY_DAYS = 14;
+const DELIVERED_DAYS = 14;
 
 /** Series colors follow the entity everywhere on this tab:
  *  team = --chart-1 (brand red), agent = --chart-2 (periwinkle).
- *  The burndown card carries its own two-entity legend on the same pair:
+ *  The delivered card pairs ticket volume with agent effort on the same pair:
+ *  tickets done = --chart-1, agent hours = --chart-2. The burndown card
+ *  carries its own two-entity legend likewise:
  *  open remaining = --chart-1, done = --chart-2. */
 const TEAM_COLOR = 'var(--chart-1)';
 const AGENT_COLOR = 'var(--chart-2)';
+const TICKETS_COLOR = 'var(--chart-1)';
+const HOURS_COLOR = 'var(--chart-2)';
 const OPEN_COLOR = 'var(--chart-1)';
 const DONE_COLOR = 'var(--chart-2)';
 
@@ -95,29 +100,16 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
   const burnDelta = eng.burn - eng.plan;
   const burnColor = eng.burn > eng.plan + 5 ? 'var(--bad)' : eng.burn > eng.plan ? 'var(--warn)' : 'var(--ok)';
 
-  // Feed events bucketed per day for the trailing window, split by actor.
-  const activity = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const buckets = Array.from({ length: ACTIVITY_DAYS }, (_, i) => {
-      const d = new Date(today);
-      d.setDate(d.getDate() - (ACTIVITY_DAYS - 1 - i));
-      return { date: d.toISOString().slice(0, 10), team: 0, agent: 0 };
-    });
-    const idx = new Map(buckets.map((b, i) => [b.date, i]));
-    for (const f of detail.feed) {
-      const i = idx.get(f.createdAt.slice(0, 10));
-      if (i == null) continue;
-      if (f.actor === 'AGENT') buckets[i].agent += 1;
-      else buckets[i].team += 1;
-    }
-    return buckets;
-  }, [detail.feed]);
-  const activityTotals = useMemo(
-    () => activity.reduce((a, b) => ({ team: a.team + b.team, agent: a.agent + b.agent }), { team: 0, agent: 0 }),
-    [activity],
+  // Done tickets bucketed per day for the trailing window: agent hours + count.
+  const delivered = useMemo(() => deliveredByDay(tickets, DELIVERED_DAYS), [tickets]);
+  const deliveredTotals = useMemo(
+    () =>
+      delivered.reduce(
+        (a, b) => ({ hours: Math.round((a.hours + b.hours) * 10) / 10, tickets: a.tickets + b.tickets }),
+        { hours: 0, tickets: 0 },
+      ),
+    [delivered],
   );
-  const activityTotal = activityTotals.team + activityTotals.agent;
 
   const statusData = useMemo(
     () =>
@@ -160,26 +152,26 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
         />
       </div>
 
-      {/* Activity over time */}
+      {/* Delivery over time — agent hours (left y-scale) vs tickets done (right y-scale) */}
       <div style={{ marginBottom: 14 }}>
         <Card
-          title={`ACTIVITY — LAST ${ACTIVITY_DAYS} DAYS`}
+          title={`DELIVERED — LAST ${DELIVERED_DAYS} DAYS`}
           caption={
-            activityTotal === 0
-              ? 'No recorded activity in this window yet.'
-              : `${activityTotal} actions · agent carried ${Math.round((activityTotals.agent / activityTotal) * 100)}%`
+            deliveredTotals.tickets === 0
+              ? 'No tickets done in this window yet.'
+              : `${deliveredTotals.hours}h agent hours across ${deliveredTotals.tickets} done ticket${deliveredTotals.tickets === 1 ? '' : 's'}`
           }
         >
           <LegendRow
             items={[
-              { label: 'TEAM', color: TEAM_COLOR, n: activityTotals.team },
-              { label: 'AGENT', color: AGENT_COLOR, n: activityTotals.agent },
+              { label: 'AGENT HOURS', color: HOURS_COLOR, n: deliveredTotals.hours },
+              { label: 'TICKETS DONE', color: TICKETS_COLOR, n: deliveredTotals.tickets },
             ]}
           />
-          <AreaChart data={activity} xDataKey="date" aspectRatio="3.4 / 1" margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
+          <AreaChart data={delivered} xDataKey="date" aspectRatio="3.4 / 1" margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
             <Grid horizontal numTicksRows={4} />
-            <Area dataKey="team" fill={TEAM_COLOR} fillOpacity={0.25} />
-            <Area dataKey="agent" fill={AGENT_COLOR} fillOpacity={0.25} />
+            <Area dataKey="hours" fill={HOURS_COLOR} fillOpacity={0.25} />
+            <Area dataKey="tickets" fill={TICKETS_COLOR} fillOpacity={0.25} yAxisId="right" />
             <XAxis numTicks={5} />
             <ChartTooltip />
           </AreaChart>

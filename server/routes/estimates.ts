@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
+import { invokeModel } from './llm-health';
 
 /**
  * LLM-hours estimation loop (DAT-120): the serving endpoint reviews each
@@ -248,10 +249,10 @@ export async function estimateTicket(
       .filter(Boolean)
       .join('\n\n');
 
-    const response = await serving('default').invoke({
+    const response = await invokeModel(serving, q, 'estimate', {
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 400,
-    });
+    }, { engagementId: input.engagementId, ticketKey: input.key });
     const parsed = parseEstimateOutput(extractModelText(response));
     if (!parsed) {
       console.warn(`[estimate] ${input.key}: model response held no usable estimate`);

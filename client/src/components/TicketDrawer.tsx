@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
 import { STATUS_LABEL, initials, mono } from '../util';
+import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
 import { CoordCommentBody, parseCoordComment } from './AgentComment';
 
@@ -159,6 +160,29 @@ export function TicketDrawer({
         refreshDetail();
       })
       .catch((e: Error) => toast(`Branch update failed — ${e.message}`));
+  };
+
+  // Description edits follow the same keying rule as branch edits: the draft
+  // belongs to one ticket and survives board polls until saved or cancelled.
+  const [descEdit, setDescEdit] = useState<{ key: string; value: string } | null>(null);
+  const [savingDesc, setSavingDesc] = useState(false);
+  const descValue = descEdit !== null && descEdit.key === ticket.key ? descEdit.value : null;
+  const saveDescription = () => {
+    if (descValue === null || savingDesc || !descValue.trim()) return;
+    if (descValue === ticket.description) {
+      setDescEdit(null);
+      return;
+    }
+    setSavingDesc(true);
+    api
+      .patchTicket(ticket.key, { description: descValue })
+      .then(() => {
+        setDescEdit(null);
+        toast(`${ticket.key} description updated`);
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Save failed — ${e.message}`))
+      .finally(() => setSavingDesc(false));
   };
 
   const loadComments = useCallback(() => {
@@ -427,6 +451,12 @@ export function TicketDrawer({
 
   const assigneeOptions = [...new Set(['—', ...team, ticket.assignee])];
 
+  // Signed % over/under estimate, from the rounded value so ±0.4% shows as neutral 0%, not a colored +0%.
+  const estDiffPct =
+    ticket.actualHours != null && ticket.estHours != null && ticket.estHours > 0
+      ? Math.round(((ticket.actualHours - ticket.estHours) / ticket.estHours) * 100)
+      : null;
+
   return (
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 40 }} />
@@ -509,7 +539,16 @@ export function TicketDrawer({
               {ticket.actualHours != null && (
                 <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 2 }}>
                   actual {ticket.actualHours}h
-                  {ticket.estHours != null && ticket.estHours > 0 && ` (${Math.round((ticket.actualHours / ticket.estHours) * 100)}%)`}
+                  {estDiffPct != null && (
+                    <>
+                      {' ('}
+                      <span style={{ color: estDiffPct > 0 ? 'var(--bad)' : estDiffPct < 0 ? 'var(--ok)' : undefined }}>
+                        {estDiffPct > 0 ? '+' : ''}
+                        {estDiffPct}%
+                      </span>
+                      {')'}
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -601,42 +640,140 @@ export function TicketDrawer({
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>DESCRIPTION</span>
-            {!proposed && !['done', 'dismissed'].includes(ticket.status) && (
-              <button
-                className="hv-border"
-                title="Rewrite this ticket as a planned ticket (context, approach, dependencies, acceptance criteria) via the planning model"
-                disabled={refining}
-                onClick={() => {
-                  if (refining) return;
-                  setRefining(true);
-                  api
-                    .refineTicket(ticket.key)
-                    .then(() => {
-                      toast(`${ticket.key} refined into a planned ticket`);
-                      refreshDetail();
-                    })
-                    .catch((e: Error) => toast(`Refine failed — ${e.message}`))
-                    .finally(() => setRefining(false));
-                }}
-                style={{
-                  marginLeft: 'auto',
-                  border: '1px solid var(--line2)',
-                  background: 'none',
-                  color: 'var(--tx2)',
-                  borderRadius: 3,
-                  padding: '2px 9px',
-                  fontSize: 10.5,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  opacity: refining ? 0.5 : 1,
-                }}
-              >
-                {refining ? 'Refining…' : '✦ Refine'}
-              </button>
+            {ticket.updatedAt && (
+              <span style={{ ...mono(400, 9), color: 'var(--tx3)' }} title="When the ticket content was last edited">
+                · EDITED {fmtTime(ticket.updatedAt)}
+              </span>
+            )}
+            {!proposed && !['done', 'dismissed'].includes(ticket.status) && descValue === null && (
+              <>
+                <button
+                  className="hv-border"
+                  title="Edit the ticket description"
+                  onClick={() => setDescEdit({ key: ticket.key, value: ticket.description })}
+                  style={{
+                    marginLeft: 'auto',
+                    border: '1px solid var(--line2)',
+                    background: 'none',
+                    color: 'var(--tx2)',
+                    borderRadius: 3,
+                    padding: '2px 9px',
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ✎ Edit
+                </button>
+                <button
+                  className="hv-border"
+                  title="Rewrite this ticket as a planned ticket (context, approach, dependencies, acceptance criteria) via the planning model"
+                  disabled={refining}
+                  onClick={() => {
+                    if (refining) return;
+                    setRefining(true);
+                    api
+                      .refineTicket(ticket.key)
+                      .then(() => {
+                        toast(`${ticket.key} refined into a planned ticket`);
+                        refreshDetail();
+                      })
+                      .catch((e: Error) => toast(`Refine failed — ${e.message}`))
+                      .finally(() => setRefining(false));
+                  }}
+                  style={{
+                    border: '1px solid var(--line2)',
+                    background: 'none',
+                    color: 'var(--tx2)',
+                    borderRadius: 3,
+                    padding: '2px 9px',
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    opacity: refining ? 0.5 : 1,
+                  }}
+                >
+                  {refining ? 'Refining…' : '✦ Refine'}
+                </button>
+              </>
+            )}
+            {descValue !== null && (
+              <>
+                <button
+                  title="Save the edited description (Ctrl+Enter)"
+                  disabled={savingDesc || !descValue.trim()}
+                  onClick={saveDescription}
+                  style={{
+                    marginLeft: 'auto',
+                    border: '1px solid var(--acc)',
+                    background: 'none',
+                    color: 'var(--acc)',
+                    borderRadius: 3,
+                    padding: '2px 9px',
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    opacity: savingDesc || !descValue.trim() ? 0.5 : 1,
+                  }}
+                >
+                  {savingDesc ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  className="hv-border"
+                  title="Discard the edit (Esc)"
+                  disabled={savingDesc}
+                  onClick={() => setDescEdit(null)}
+                  style={{
+                    border: '1px solid var(--line2)',
+                    background: 'none',
+                    color: 'var(--tx2)',
+                    borderRadius: 3,
+                    padding: '2px 9px',
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    opacity: savingDesc ? 0.5 : 1,
+                  }}
+                >
+                  Cancel
+                </button>
+              </>
             )}
           </div>
           <div style={{ margin: '0 0 16px' }}>
-            <Markdown text={ticket.description} />
+            {descValue !== null ? (
+              <>
+                <textarea
+                  autoFocus
+                  value={descValue}
+                  onChange={(e) => setDescEdit({ key: ticket.key, value: e.target.value })}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') saveDescription();
+                    if (e.key === 'Escape' && !savingDesc) setDescEdit(null);
+                  }}
+                  rows={14}
+                  maxLength={20000}
+                  spellCheck={false}
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg)',
+                    border: '1px solid var(--line2)',
+                    borderRadius: 3,
+                    color: 'var(--tx)',
+                    padding: '8px 10px',
+                    fontSize: 12.5,
+                    lineHeight: 1.5,
+                    resize: 'vertical',
+                  }}
+                />
+                <div style={{ ...mono(400, 9), color: 'var(--tx3)', marginTop: 4 }}>
+                  Markdown supported — Ctrl+Enter to save, Esc to cancel
+                </div>
+              </>
+            ) : (
+              <Markdown text={ticket.description} />
+            )}
           </div>
           <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>ACCEPTANCE CRITERIA</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 16 }}>
@@ -754,7 +891,15 @@ export function TicketDrawer({
                       <span style={{ ...mono(500, 9), color: 'var(--agent)', border: '1px solid var(--agent)', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
                         ◆ {AGENT_STATE_LABEL[agentTask.state]}
                       </span>
-                      {agentTask.agent && <span style={{ ...mono(400, 10), color: 'var(--tx2)' }}>{agentTask.agent}</span>}
+                      {agentTask.agent && (
+                        <span
+                          title={`${agentTask.agent} (${runnerBrand(agentTask.agent).label} runner)`}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 5, ...mono(400, 10), color: 'var(--tx2)' }}
+                        >
+                          {runnerBrand(agentTask.agent).mark(11)}
+                          {agentTask.agent}
+                        </span>
+                      )}
                       {agentActive && lead && (
                         <button
                           className="hv-bad"
@@ -1197,9 +1342,15 @@ export function TicketDrawer({
                     ...mono(500, 10),
                     color: 'var(--agent)',
                   }}
-                  title={planningActive ? 'Planning Agent' : (agentTask?.agent ?? 'Agent')}
+                  title={
+                    planningActive
+                      ? 'Planning Agent'
+                      : agentTask?.agent
+                        ? `${agentTask.agent} (${runnerBrand(agentTask.agent).label} runner)`
+                        : 'Agent'
+                  }
                 >
-                  ◆
+                  {!planningActive && agentTask?.agent ? runnerBrand(agentTask.agent).mark(13) : '◆'}
                 </span>
                 <div
                   style={{
@@ -1238,7 +1389,7 @@ export function TicketDrawer({
                 if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') postComment();
               }}
               rows={2}
-              placeholder="Add a comment… (Ctrl+Enter to post)"
+              placeholder="Add a comment… markdown supported (Ctrl+Enter to post)"
               style={{
                 flex: 1,
                 boxSizing: 'border-box',

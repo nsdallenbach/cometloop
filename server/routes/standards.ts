@@ -2,6 +2,7 @@ import express from 'express';
 import { z } from 'zod';
 import { resolveIdentity, type Identity } from './roles';
 import type { FilesVolume } from './context-files';
+import { invokeModel } from './llm-health';
 
 /**
  * Per-engagement Project Standards: a single markdown document the team
@@ -148,10 +149,10 @@ export function setupStandardsRoutes(
         content,
         '---',
       ].join('\n\n');
-      const response = await serving('default').invoke({
+      const response = await invokeModel(serving, q, 'standards-refine', {
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 8000,
-      });
+      }, { engagementId: req.params.id });
       const revised = unwrapFence(extractModelText(response));
       if (!revised) throw new Error('empty model response');
       res.json({ content: revised });

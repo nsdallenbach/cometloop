@@ -1,4 +1,5 @@
 import { SCOPING_TOOL_LIMIT, executeScopingTool, scopingToolDefs, type ScopingToolContext } from './scoping-tools';
+import { invokeModel, type InvokeContext } from './llm-health';
 
 /**
  * Ticket scoping via the model serving endpoint (DAT-173).
@@ -129,9 +130,17 @@ export function parsePlan(text: string, roadmapItems: string[] = []): RefinedPla
  * is unavailable or the response holds no usable JSON — callers fall back to
  * the raw content.
  */
-export async function refinePlan(serving: Serving, content: string, roadmapItems: string[] = []): Promise<RefinedPlan | null> {
+export async function refinePlan(
+  serving: Serving,
+  content: string,
+  roadmapItems: string[] = [],
+  q: Query | null = null,
+  ictx: InvokeContext = {},
+): Promise<RefinedPlan | null> {
   try {
-    const response = await serving('default').invoke({
+    // Through the DAT-180 reliability wrapper: retry-once on transients,
+    // per-flow failure counters, throttled ⚠ feed item on failure.
+    const response = await invokeModel(serving, q, 'ticket-refine', {
       messages: [
         {
           role: 'user',
@@ -144,7 +153,7 @@ export async function refinePlan(serving: Serving, content: string, roadmapItems
         },
       ],
       max_tokens: 1500,
-    });
+    }, ictx);
     return parsePlan(extractText(response), roadmapItems);
   } catch (err) {
     console.warn('[scoping] ticket refinement failed:', (err as Error).message);
@@ -200,7 +209,10 @@ export async function refineTicketWithBoard(
   const actions: ScopingAction[] = [];
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = await serving('default').invoke({ messages, tools, max_tokens: 2500 });
+      const response = await invokeModel(serving, q, 'ticket-refine', { messages, tools, max_tokens: 2500 }, {
+        engagementId: opts.engagementId,
+        ticketKey: opts.key,
+      });
       const message = extractMessage(response);
       if (!message) return null;
       const toolCalls = Array.isArray(message.tool_calls) ? (message.tool_calls as ServingToolCall[]) : [];

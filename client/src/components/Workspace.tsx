@@ -3,6 +3,7 @@ import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/rea
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, initials, mono } from '../util';
+import { runnerBrand } from './RunnerLogo';
 import { dropBoardTicket, laneOf } from '../lib/board-order';
 import { Analytics } from './Analytics';
 import { Roadmap } from './Roadmap';
@@ -78,7 +79,10 @@ export function Workspace({
   const [boardMode, setBoardMode] = useState<'kanban' | 'table'>('kanban');
   // Tickets being created in the background (the LLM drafts the plan, which
   // takes a while) — drives the floating progress bar instead of a frozen modal.
-  const [pendingCreates, setPendingCreates] = useState(0);
+  // Pending background ticket creations, keyed by destination: "Create ticket"
+  // lands in Backlog, "Create & deploy" goes straight to the agent queue. The
+  // creating bar reads the counts so its copy matches where the work is headed.
+  const [pendingCreates, setPendingCreates] = useState({ backlog: 0, deploy: 0 });
   const [assignPop, setAssignPop] = useState<{ key: string; x: number; y: number } | null>(null);
   const [bulk, setBulk] = useState<Record<string, boolean>>({});
   const [composer, setComposer] = useState<string | null>(null);
@@ -139,6 +143,15 @@ export function Workspace({
     }
     return map;
   }, [detail?.agentTasks]);
+  /**
+   * The runner id behind a ticket's avatar, when the assignee is the runner
+   * that claimed it (claiming records the runner as assignee). Human
+   * assignees — and unassigned tickets — resolve to null.
+   */
+  const runnerFor = (t: Ticket): string | null => {
+    const at = agentTaskByTicket.get(t.key);
+    return at?.agent != null && at.agent !== '' && at.agent === t.assignee ? at.agent : null;
+  };
   // Deploy-to-Agent lane: running work on top (claim order), then the queue
   // in claim priority. Tickets shown here are hidden from the status lanes.
   const laneTasks = useMemo(() => {
@@ -209,6 +222,7 @@ export function Workspace({
 
   const ticketCardInner = (t: Ticket, clone = false) => {
     const at = agentTaskByTicket.get(t.key);
+    const runner = runnerFor(t);
     // Agent finished → parked in Review awaiting human sign-off (yellow).
     const agentDone = at?.state === 'done' && t.status === 'review';
     const agentFailed = at?.state === 'failed' && t.status === 'backlog';
@@ -338,7 +352,13 @@ export function Workspace({
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
         <span
           className="hv-border"
-          title={t.assignee === '—' ? 'Unassigned — click to assign' : `${t.assignee} — click to reassign`}
+          title={
+            t.assignee === '—'
+              ? 'Unassigned — click to assign'
+              : runner !== null
+                ? `${t.assignee} (${runnerBrand(runner).label} runner) — click to reassign`
+                : `${t.assignee} — click to reassign`
+          }
           onClick={(e) => {
             e.stopPropagation();
             const r = e.currentTarget.getBoundingClientRect();
@@ -357,12 +377,34 @@ export function Workspace({
             cursor: 'pointer',
           }}
         >
-          {initials(t.assignee)}
+          {runner !== null ? runnerBrand(runner).mark(12) : initials(t.assignee)}
         </span>
         <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{t.est}</span>
         <span style={{ ...mono(400, 10), color: 'var(--tx3)', marginLeft: 'auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>
           {t.sources[0]?.type ?? ''}
         </span>
+        {lead && t.status === 'backlog' && (
+          <button
+            className="hv-border"
+            title="Deploy to agent queue"
+            onClick={(e) => {
+              e.stopPropagation();
+              deployTicket(t.key);
+            }}
+            style={{
+              ...mono(500, 9),
+              flex: 'none',
+              border: '1px dashed var(--agent)',
+              background: 'none',
+              color: 'var(--agent)',
+              borderRadius: 2,
+              padding: '1px 5px',
+              cursor: 'pointer',
+            }}
+          >
+            ◇ DEPLOY TO QUEUE
+          </button>
+        )}
       </div>
     </div>
     );
@@ -1084,7 +1126,9 @@ export function Workspace({
                 <tbody>
                   {tickets
                     .filter((t) => t.status !== 'proposed' && t.status !== 'dismissed')
-                    .map((t) => (
+                    .map((t) => {
+                      const runner = runnerFor(t);
+                      return (
                       <tr key={t.key} style={{ background: bulk[t.key] ? 'var(--accsoft)' : 'transparent' }}>
                         <td style={{ ...tdBase, textAlign: 'center' }}>
                           <input
@@ -1116,7 +1160,13 @@ export function Workspace({
                         <td style={{ ...tdBase, whiteSpace: 'nowrap' }}>
                           <button
                             className="hv-border"
-                            title={t.assignee === '—' ? 'Unassigned — click to assign' : `${t.assignee} — click to reassign`}
+                            title={
+                              t.assignee === '—'
+                                ? 'Unassigned — click to assign'
+                                : runner !== null
+                                  ? `${t.assignee} (${runnerBrand(runner).label} runner) — click to reassign`
+                                  : `${t.assignee} — click to reassign`
+                            }
                             onClick={(e) => {
                               const r = e.currentTarget.getBoundingClientRect();
                               setAssignPop({ key: t.key, x: r.left, y: r.bottom + 4 });
@@ -1147,7 +1197,7 @@ export function Workspace({
                                 color: 'var(--tx2)',
                               }}
                             >
-                              {initials(t.assignee)}
+                              {runner !== null ? runnerBrand(runner).mark(12) : initials(t.assignee)}
                             </span>
                             <span style={{ fontSize: 11.5, color: 'var(--tx2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {t.assignee}
@@ -1167,7 +1217,8 @@ export function Workspace({
                         </td>
                         <td style={{ ...tdBase, ...mono(400, 10.5), color: 'var(--agent)', whiteSpace: 'nowrap' }}>{t.sources[0]?.type ?? ''}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                 </tbody>
               </table>
             </div>
@@ -1545,6 +1596,7 @@ export function Workspace({
         (() => {
           const t = tickets.find((x) => x.key === assignPop.key);
           if (!t) return null;
+          const runner = runnerFor(t);
           const names = [...new Set(['—', ...(detail?.team.map((m) => m.name) ?? []), t.assignee])];
           return (
             <>
@@ -1608,9 +1660,12 @@ export function Workspace({
                         color: 'var(--tx2)',
                       }}
                     >
-                      {initials(name)}
+                      {name !== '—' && name === runner ? runnerBrand(name).mark(12) : initials(name)}
                     </span>
-                    <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <span
+                      title={name !== '—' && name === runner ? `${name} (${runnerBrand(name).label} runner)` : undefined}
+                      style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    >
                       {name === '—' ? 'Unassigned' : name}
                     </span>
                     {name === t.assignee && <span style={{ color: 'var(--ok)', fontSize: 11 }}>✓</span>}
@@ -1629,7 +1684,8 @@ export function Workspace({
             onClose={() => setNewTicket(false)}
             onCreate={(description, deploy) => {
               setNewTicket(false);
-              setPendingCreates((n) => n + 1);
+              const dest = deploy ? 'deploy' : 'backlog';
+              setPendingCreates((p) => ({ ...p, [dest]: p[dest] + 1 }));
               api
                 .createTicket(eng.id, { description })
                 .then((t) => {
@@ -1640,7 +1696,7 @@ export function Workspace({
                   else toast(`${t.key} created`);
                 })
                 .catch((e: Error) => toast(`Create failed — ${e.message}`))
-                .finally(() => setPendingCreates((n) => n - 1));
+                .finally(() => setPendingCreates((p) => ({ ...p, [dest]: p[dest] - 1 })));
             }}
           />
         )}
@@ -1649,7 +1705,7 @@ export function Workspace({
       {/* Background ticket creation: the modal closes immediately and this bar
           rides above the toast until the AI-drafted plan lands on the board. */}
       <AnimatePresence>
-        {pendingCreates > 0 && (
+        {pendingCreates.backlog + pendingCreates.deploy > 0 && (
           <motion.div
             key="creating-bar"
             initial={{ opacity: 0, transform: 'translateX(-50%) translateY(12px)' }}
@@ -1682,7 +1738,16 @@ export function Workspace({
               }}
             />
             <span style={{ ...mono(500, 10.5), color: 'var(--agent)', letterSpacing: '.08em' }}>
-              PLANNING {pendingCreates > 1 ? `${pendingCreates} TICKETS` : 'TICKET'} WITH AI — LANDS IN BACKLOG
+              {(() => {
+                const total = pendingCreates.backlog + pendingCreates.deploy;
+                const dest =
+                  pendingCreates.deploy > 0 && pendingCreates.backlog > 0
+                    ? `${pendingCreates.deploy} TO AGENT QUEUE · ${pendingCreates.backlog} TO BACKLOG`
+                    : pendingCreates.deploy > 0
+                      ? 'DEPLOYING TO AGENT QUEUE'
+                      : 'LANDS IN BACKLOG';
+                return `PLANNING ${total > 1 ? `${total} TICKETS` : 'TICKET'} WITH AI — ${dest}`;
+              })()}
             </span>
           </motion.div>
         )}

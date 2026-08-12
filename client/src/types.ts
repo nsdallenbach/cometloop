@@ -96,6 +96,8 @@ export interface Ticket {
   branch: string | null;
   /** When the ticket entered Done (null while in any other status). */
   doneAt: string | null;
+  /** When the ticket body/description was last edited (null = never edited). */
+  updatedAt: string | null;
   /** Unresolved blocking tickets (open `blocks` links pointing at this ticket). */
   waitingOn: number;
   activePr: ActivePr | null;

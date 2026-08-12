@@ -6,6 +6,7 @@ import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
 import { parsePath, paths, type Tab } from './routes';
 import { mono, STATUS_LABEL } from './util';
 import { Admin } from './components/Admin';
+import { Landing } from './components/Landing';
 import { Portfolio } from './components/Portfolio';
 import { Setup } from './components/Setup';
 import { Tickets } from './components/Tickets';
@@ -466,6 +467,26 @@ export default function App() {
           </button>
         )}
         <button
+          className="hv-lift"
+          onClick={() => void navigate(paths.learn)}
+          title="What the Delivery Console does"
+          style={{
+            ...mono(500, 10),
+            background: screen.name === 'learn' ? 'var(--accsoft)' : 'none',
+            border: `1px solid ${screen.name === 'learn' ? 'var(--acc)' : 'var(--acc)'}`,
+            color: 'var(--acc)',
+            borderRadius: 3,
+            padding: '3px 9px',
+            cursor: 'pointer',
+            letterSpacing: '.06em',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+          }}
+        >
+          <span>◆</span> LEARN MORE
+        </button>
+        <button
           className="hv-tx2"
           onClick={() => void navigate(paths.tickets)}
           title="All tickets across projects"
@@ -569,6 +590,8 @@ export default function App() {
           canManage={canLead}
         />
       )}
+
+      {screen.name === 'learn' && <Landing theme={theme} onEnter={goPortfolio} />}
 
       {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
 

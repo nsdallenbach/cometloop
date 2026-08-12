@@ -103,6 +103,7 @@ function mapTicket(r: Row): Ticket {
     roadmapItem: r.roadmap_item == null ? null : s(r.roadmap_item),
     branch: r.branch != null && s(r.branch) !== '' ? s(r.branch) : r.pr_branch != null && s(r.pr_branch) !== '' ? s(r.pr_branch) : null,
     doneAt: r.done_at == null ? null : s(r.done_at),
+    updatedAt: r.updated_at == null ? null : s(r.updated_at),
     waitingOn: n(r.waiting_on),
     activePr:
       r.pr_number == null
@@ -250,7 +251,7 @@ export const api = {
 
   patchTicket(
     key: string,
-    patch: { status?: TicketStatus; assignee?: string; roadmapItem?: string | null; estHours?: number | null; humanEstHours?: number | null; branch?: string; tags?: string[] },
+    patch: { status?: TicketStatus; assignee?: string; description?: string; roadmapItem?: string | null; estHours?: number | null; humanEstHours?: number | null; branch?: string; tags?: string[] },
   ) {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },
