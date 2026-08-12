@@ -455,7 +455,7 @@ export function TicketDrawer({
               </select>
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>ESTIMATE</div>
+              <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>◆ AGENT ESTIMATE</div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.est}</div>
               {ticket.actualHours != null && (
                 <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 2 }}>
@@ -465,6 +465,12 @@ export function TicketDrawer({
               )}
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>HUMAN DEV ESTIMATE</div>
+              <div style={{ fontSize: 12.5, fontWeight: 600 }} title="Estimated time for a human developer to deliver the same scope">
+                {ticket.humanEstHours != null ? `${ticket.humanEstHours}h` : '—'}
+              </div>
+            </div>
+            <div style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>WORKSTREAM</div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.workstream}</div>
             </div>

@@ -150,6 +150,7 @@ const SCHEMA_SQL = [
   // effort in LLM-hours; per-engagement settings translate hours to days.
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS roadmap_item TEXT`,
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS est_hours REAL`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS human_est_hours REAL`,
   `ALTER TABLE app.engagements ADD COLUMN IF NOT EXISTS roadmap_settings JSONB`,
 ];
 
@@ -274,7 +275,7 @@ async function refinePlan(
   appkit: AppKitServices,
   content: string,
   roadmapItems: string[] = [],
-): Promise<{ title: string; description: string; ac: string[]; estHours: number | null; roadmapItem: string | null } | null> {
+): Promise<{ title: string; description: string; ac: string[]; estHours: number | null; humanEstHours: number | null; roadmapItem: string | null } | null> {
   try {
     const response = await appkit.serving('default').invoke({
       messages: [
@@ -283,12 +284,13 @@ async function refinePlan(
           content: [
             'You are the delivery-planning agent for a consulting delivery board. A team member typed a work request into a chat box. Turn it into a well-formed delivery ticket.',
             'Respond with ONLY a JSON object, no code fences:',
-            '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "est_hours": number' +
+            '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "est_hours": number, "human_est_hours": number' +
               (roadmapItems.length > 0 ? ', "roadmap_item": "one of the roadmap items below"' : '') +
               '}',
             'The description becomes the prompt handed to an autonomous coding agent, so make it a compact plan in markdown with these sections (omit any that truly do not apply): ## Context (what exists today and why this is needed), ## Approach (how to implement, referencing systems/files/endpoints implied by the request), ## Dependencies (other tickets, credentials, decisions or unknowns the agent should check first).',
             'Plan only what the request implies — do not invent scope. 3-6 acceptance criteria.',
-            'est_hours is the effort for an autonomous coding agent to complete the work, in agent-hours (a number, may be fractional, typically 0.5–40).',
+            'est_hours is the expected Claude Code agent execution time from claim to ready-for-review, in agent-hours (may be fractional, typically 0.2–8): a small well-scoped change is under an hour; only genuinely sprawling multi-system work exceeds 8.',
+            'human_est_hours is an independent estimate of the same scope done by a professional human developer, in hours — usually 3–6× the agent time, but reason from the scope rather than applying a multiplier.',
             ...(roadmapItems.length > 0
               ? [`roadmap_item must be exactly one of: ${roadmapItems.map((p) => JSON.stringify(p)).join(', ')} — pick the item this work belongs to.`]
               : []),
@@ -307,6 +309,7 @@ async function refinePlan(
       description?: unknown;
       acceptance_criteria?: unknown;
       est_hours?: unknown;
+      human_est_hours?: unknown;
       roadmap_item?: unknown;
     };
     const title = typeof plan.title === 'string' ? plan.title.trim().slice(0, 200) : '';
@@ -318,11 +321,15 @@ async function refinePlan(
       typeof plan.est_hours === 'number' && Number.isFinite(plan.est_hours) && plan.est_hours > 0
         ? Math.min(400, Math.round(plan.est_hours * 2) / 2)
         : null;
+    const humanEstHours =
+      typeof plan.human_est_hours === 'number' && Number.isFinite(plan.human_est_hours) && plan.human_est_hours > 0
+        ? Math.min(999, Math.round(plan.human_est_hours * 2) / 2)
+        : null;
     // Only accept an item that actually exists on the roadmap — the model must not invent one.
     const roadmapItem =
       typeof plan.roadmap_item === 'string' && roadmapItems.includes(plan.roadmap_item.trim()) ? plan.roadmap_item.trim() : null;
     if (!title && !description) return null;
-    return { title, description, ac, estHours, roadmapItem };
+    return { title, description, ac, estHours, humanEstHours, roadmapItem };
   } catch (err) {
     console.warn('[api] ticket refinement failed:', (err as Error).message);
     return null;
@@ -500,6 +507,7 @@ const PatchTicketBody = z.object({
   assignee: z.string().optional(),
   roadmapItem: z.string().max(120).nullable().optional(),
   estHours: z.number().min(0).max(400).nullable().optional(),
+  humanEstHours: z.number().min(0).max(999).nullable().optional(),
   // Git refs cap out around 255 bytes; empty string clears the manual value so
   // the card falls back to the branch of the latest linked PR.
   branch: z.string().trim().max(255).optional(),
@@ -815,6 +823,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           params.push(parsed.data.estHours);
           sets.push(`est_hours = $${params.length}`);
         }
+        if (parsed.data.humanEstHours !== undefined) {
+          params.push(parsed.data.humanEstHours);
+          sets.push(`human_est_hours = $${params.length}`);
+        }
         if (branch !== undefined) {
           params.push(branch === '' ? null : branch);
           sets.push(`branch = $${params.length}`);
@@ -924,7 +936,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         console.log(`[api] ticket ${key} refined — ${plan.ac.length > 0 ? plan.ac.length : existingAc.length} AC`);
         const updated = await q(
           `UPDATE app.tickets SET title = $2, description = $3, ac = $4,
-             est_hours = COALESCE($5, est_hours), roadmap_item = COALESCE($6, roadmap_item)
+             est_hours = COALESCE($5, est_hours), human_est_hours = COALESCE($6, human_est_hours),
+             roadmap_item = COALESCE($7, roadmap_item)
            WHERE key = $1 RETURNING *`,
           [
             key,
@@ -932,6 +945,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             description,
             JSON.stringify(plan.ac.length > 0 ? plan.ac : existingAc),
             plan.estHours,
+            plan.humanEstHours,
             plan.roadmapItem,
           ],
         );
@@ -991,6 +1005,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         let title = parsed.data.title?.trim() ?? '';
         let ac: string[] = [];
         let estHours: number | null = null;
+        let humanEstHours: number | null = null;
         let roadmapItem: string | null = null;
         if (!title) {
           // Single-chatbox flow: refine the raw request into a planned ticket.
@@ -1006,6 +1021,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             }
             ac = plan.ac;
             estHours = plan.estHours;
+            humanEstHours = plan.humanEstHours;
             roadmapItem = plan.roadmapItem;
           }
           if (!title) title = fallbackTitle(content);
@@ -1015,8 +1031,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         if (!roadmapItem) roadmapItem = activeRoadmapItem(eng.phases);
         const author = requestAuthor(req);
         const result = await q(
-          `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, est_hours, roadmap_item)
-           VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,$9,false,$10,$11) RETURNING *`,
+          `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, est_hours, human_est_hours, roadmap_item)
+           VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,$9,false,$10,$11,$12) RETURNING *`,
           [
             key,
             engId,
@@ -1028,6 +1044,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             description,
             JSON.stringify(ac),
             estHours,
+            humanEstHours,
             roadmapItem,
           ],
         );

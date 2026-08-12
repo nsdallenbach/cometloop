@@ -39,8 +39,11 @@ describe('calibrationFactor', () => {
 
 describe('parseEstimateOutput', () => {
   it('parses a clean JSON response', () => {
-    expect(parseEstimateOutput('{"hours": 2.5, "confidence": "high", "rationale": "Small change."}')).toEqual({
+    expect(
+      parseEstimateOutput('{"hours": 2.5, "human_hours": 10, "confidence": "high", "rationale": "Small change."}')
+    ).toEqual({
       hours: 2.5,
+      humanHours: 10,
       confidence: 'high',
       rationale: 'Small change.',
     });
@@ -48,10 +51,17 @@ describe('parseEstimateOutput', () => {
 
   it('extracts JSON from surrounding prose and rounds hours', () => {
     const parsed = parseEstimateOutput(
-      'Sure! Here is the estimate:\n{"hours": 1.234, "confidence": "low", "rationale": "x"}\nDone.'
+      'Sure! Here is the estimate:\n{"hours": 1.234, "human_hours": 4.56, "confidence": "low", "rationale": "x"}\nDone.'
     );
     expect(parsed?.hours).toBe(1.2);
+    expect(parsed?.humanHours).toBe(4.6);
     expect(parsed?.confidence).toBe('low');
+  });
+
+  it('tolerates a missing or unusable human estimate (agent hours still parse)', () => {
+    expect(parseEstimateOutput('{"hours": 1}')?.humanHours).toBeNull();
+    expect(parseEstimateOutput('{"hours": 1, "human_hours": "a lot"}')?.humanHours).toBeNull();
+    expect(parseEstimateOutput('{"hours": 1, "human_hours": -4}')?.humanHours).toBeNull();
   });
 
   it('defaults a missing or unknown confidence to medium', () => {

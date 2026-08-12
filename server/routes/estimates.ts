@@ -11,6 +11,11 @@ import type express from 'express';
  * actual/estimate ratio) applied to every subsequent estimate, and the most
  * recent estimate-vs-actual pairs are fed back to the model as examples, so
  * estimates converge on each project's real velocity over time.
+ *
+ * DAT-175: the same model call also produces an independently reasoned
+ * human-developer estimate for the scope (tickets.human_est_hours), displayed
+ * next to the agent estimate for planning/comparison. Calibration only ever
+ * applies to the agent figure — actuals are agent run durations.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -25,6 +30,7 @@ export const ESTIMATE_SCHEMA_SQL = [
     kind TEXT NOT NULL DEFAULT 'initial',
     raw_hours NUMERIC(6,1) NOT NULL,
     est_hours NUMERIC(6,1) NOT NULL,
+    human_hours NUMERIC(6,1),
     calibration NUMERIC(6,3) NOT NULL DEFAULT 1,
     confidence TEXT NOT NULL DEFAULT 'medium',
     rationale TEXT NOT NULL DEFAULT '',
@@ -34,10 +40,12 @@ export const ESTIMATE_SCHEMA_SQL = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
   `CREATE INDEX IF NOT EXISTS ticket_estimates_engagement ON app.ticket_estimates (engagement_id, created_at)`,
+  `ALTER TABLE app.ticket_estimates ADD COLUMN IF NOT EXISTS human_hours NUMERIC(6,1)`,
   // Latest estimate and recorded actual, denormalized onto the ticket so the
   // board and drawer get them with the row they already load.
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS est_hours NUMERIC(6,1)`,
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS actual_hours NUMERIC(7,1)`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS human_est_hours REAL`,
 ];
 
 // ---------- pure helpers (unit-tested) ----------
@@ -66,14 +74,23 @@ export function calibrationFactor(ratios: number[]): number {
   return Math.round(Math.min(3, Math.max(0.3, median)) * 1000) / 1000;
 }
 
+/**
+ * Fallback ratio when the model returns no human estimate: past tickets on
+ * this board show a human developer typically needs ~4× the agent's
+ * wall-clock time for the same scope.
+ */
+export const HUMAN_FALLBACK_RATIO = 4;
+
 const EstimateOutput = z.object({
   hours: z.number().positive(),
+  human_hours: z.number().positive().optional().catch(undefined),
   confidence: z.enum(['low', 'medium', 'high']).catch('medium'),
   rationale: z.string().catch(''),
 });
 
 export interface ParsedEstimate {
   hours: number;
+  humanHours: number | null;
   confidence: 'low' | 'medium' | 'high';
   rationale: string;
 }
@@ -87,6 +104,7 @@ export function parseEstimateOutput(text: string): ParsedEstimate | null {
     if (!parsed.success) return null;
     return {
       hours: clampHours(parsed.data.hours),
+      humanHours: parsed.data.human_hours != null ? clampHours(parsed.data.human_hours) : null,
       confidence: parsed.data.confidence,
       rationale: parsed.data.rationale.trim().slice(0, 1000),
     };
@@ -211,7 +229,7 @@ export async function estimateTicket(
       .map((h) => `- "${txt(h.title)}" — estimated ${num(h.est_hours)}h, actually took ${num(h.actual_hours)}h`);
 
     const prompt = [
-      'You are the delivery-estimation agent for a consulting delivery board. Tickets on this board are worked by autonomous LLM coding agents (Claude Code on devbox runners). Estimate how many hours of actual agent working time this ticket will take from claim to ready-for-review.',
+      'You are the delivery-estimation agent for a consulting delivery board. Tickets on this board are worked by autonomous LLM coding agents (Claude Code on devbox runners). Produce two estimates for this ticket: the actual agent working time from claim to ready-for-review, and the time a human developer would need for the same scope.',
       `Engagement: ${txt(engagement?.name) || input.engagementId} for ${txt(engagement?.client) || 'the client'}. Phase: ${txt(engagement?.phase) || 'n/a'}.`,
       `Ticket ${input.key}: ${input.title}`,
       input.description.trim()
@@ -221,10 +239,11 @@ export async function estimateTicket(
       examples.length > 0
         ? `Completed tickets on this engagement, estimated vs actual agent hours — weigh these heavily, they reflect this project's real velocity:\n${examples.join('\n')}`
         : 'No completed history for this engagement yet — estimate from the ticket scope alone.',
-      'Agent working time is typically far less than human effort for the same scope: a small well-scoped change is often under an hour; multi-system work with tests and review rounds can take several.',
+      'Calibrate agent hours to how Claude Code actually executes, not generic effort sizing: it reads a codebase and writes code in minutes, so wall-clock time is dominated by build/test cycles, tool round-trips and review passes. Typical anchors — config or copy tweak, single-file fix: 0.1–0.3h; small well-scoped feature: 0.3–1h; feature across several files with tests: 1–3h; multi-system work with migrations or cross-service coordination: 3–8h. Estimates above 10h should be rare and mean genuinely sprawling scope.',
+      'human_hours is an independent estimate of the same scope done by a professional human developer: reading the code, implementing, testing and preparing the PR. It usually lands at 3–6× the agent time, but reason from the scope itself rather than applying a multiplier — boilerplate-heavy work skews higher, work dominated by external waiting skews lower.',
       'Respond with ONLY a JSON object, no code fences:',
-      '{"hours": 1.5, "confidence": "low|medium|high", "rationale": "1-2 sentences on what drives the estimate"}',
-      'hours is a decimal with at most one digit after the point, minimum 0.1.',
+      '{"hours": 1.5, "human_hours": 6, "confidence": "low|medium|high", "rationale": "1-2 sentences on what drives the estimate"}',
+      'hours (agent time) and human_hours are decimals with at most one digit after the point, minimum 0.1.',
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -239,18 +258,22 @@ export async function estimateTicket(
       return null;
     }
     const calibrated = clampHours(parsed.hours * factor);
+    // Calibration tracks agent estimate-vs-actual only, so it never applies to
+    // the human figure; a missing human estimate falls back to the ratio.
+    const humanHours = parsed.humanHours ?? clampHours(calibrated * HUMAN_FALLBACK_RATIO);
     await q(
-      `INSERT INTO app.ticket_estimates (ticket_key, engagement_id, kind, raw_hours, est_hours, calibration, confidence, rationale)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [input.key, input.engagementId, kind, parsed.hours, calibrated, factor, parsed.confidence, parsed.rationale]
+      `INSERT INTO app.ticket_estimates (ticket_key, engagement_id, kind, raw_hours, est_hours, human_hours, calibration, confidence, rationale)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [input.key, input.engagementId, kind, parsed.hours, calibrated, humanHours, factor, parsed.confidence, parsed.rationale]
     );
-    await q(`UPDATE app.tickets SET est = $2, est_hours = $3 WHERE key = $1`, [
+    await q(`UPDATE app.tickets SET est = $2, est_hours = $3, human_est_hours = $4 WHERE key = $1`, [
       input.key,
       `${calibrated}h`,
       calibrated,
+      humanHours,
     ]);
     console.log(
-      `[estimate] ${input.key} ${kind}: ${calibrated}h agent time (model ${parsed.hours}h × calibration ${factor}, ${parsed.confidence} confidence, ${ratios.length} samples)`
+      `[estimate] ${input.key} ${kind}: ${calibrated}h agent time (model ${parsed.hours}h × calibration ${factor}, ${parsed.confidence} confidence, ${ratios.length} samples), ${humanHours}h human dev time${parsed.humanHours == null ? ' (fallback ratio)' : ''}`
     );
     return calibrated;
   } catch (err) {
@@ -321,7 +344,7 @@ export function setupEstimateRoutes(app: express.Application, q: Query) {
       }
       const rows = (
         await q(
-          `SELECT e.ticket_key, t.title, e.kind, e.est_hours, e.actual_hours, e.confidence, e.rationale,
+          `SELECT e.ticket_key, t.title, e.kind, e.est_hours, e.human_hours, e.actual_hours, e.confidence, e.rationale,
                   e.calibration, e.actual_recorded_at, e.created_at
            FROM app.ticket_estimates e JOIN app.tickets t ON t.key = e.ticket_key
            WHERE e.engagement_id = $1

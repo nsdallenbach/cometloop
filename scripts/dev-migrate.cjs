@@ -48,6 +48,13 @@ const MIGRATIONS = [
   // returns JS numbers to both features.
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS est_hours REAL` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS actual_hours REAL` },
+  // Human-dev estimate next to the agent estimate (DAT-175). Existing tickets
+  // are backfilled at 4× the agent estimate — the fallback ratio the
+  // estimation code uses when the model returns no human figure; new tickets
+  // get an independently reasoned value from the model.
+  { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS human_est_hours REAL` },
+  { sql: `UPDATE app.tickets SET human_est_hours = LEAST(999, round((est_hours * 4)::numeric, 1))
+          WHERE human_est_hours IS NULL AND est_hours IS NOT NULL` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS branch TEXT` },
