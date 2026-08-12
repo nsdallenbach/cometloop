@@ -132,6 +132,22 @@ export function TicketDrawer({
     onTags([...ticket.tags, tag]);
   };
 
+  // Branch edits are keyed to the ticket so a draft never bleeds into another
+  // ticket, and board polls don't clobber text mid-edit.
+  const [branchEdit, setBranchEdit] = useState<{ key: string; value: string } | null>(null);
+  const branchValue = branchEdit && branchEdit.key === ticket.key ? branchEdit.value : (ticket.branch ?? '');
+  const saveBranch = () => {
+    const next = branchValue.trim();
+    if (next === (ticket.branch ?? '')) return;
+    api
+      .patchTicket(ticket.key, { branch: next })
+      .then(() => {
+        toast(next ? `${ticket.key} branch set to ${next}` : `${ticket.key} branch cleared`);
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(`Branch update failed — ${e.message}`));
+  };
+
   const loadComments = useCallback(() => {
     void api
       .comments(ticket.key)
@@ -384,6 +400,31 @@ export function TicketDrawer({
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>WORKSTREAM</div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.workstream}</div>
+            </div>
+            <div style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>BRANCH</div>
+              <input
+                value={branchValue}
+                onChange={(e) => setBranchEdit({ key: ticket.key, value: e.target.value })}
+                onBlur={saveBranch}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                }}
+                maxLength={255}
+                spellCheck={false}
+                placeholder="Set the git branch — auto-filled from the latest linked PR"
+                title="Git branch for this ticket's work — shown on the board card"
+                style={{
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  background: 'var(--bg)',
+                  border: '1px solid var(--line2)',
+                  color: 'var(--tx)',
+                  borderRadius: 3,
+                  padding: '3px 6px',
+                  ...mono(400, 11),
+                }}
+              />
             </div>
           </div>
           <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>TAGS</div>

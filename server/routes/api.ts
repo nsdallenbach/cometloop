@@ -84,6 +84,7 @@ const SCHEMA_SQL = [
     seq SERIAL,
     done_at TIMESTAMPTZ
   )`,
+  `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS branch TEXT`,
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'`,
   `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ`,
   // Pre-migration done tickets have no completion time; stamp them at first
@@ -438,6 +439,9 @@ const ProposalPlanSchema = z.object({
 const PatchTicketBody = z.object({
   status: z.enum(['backlog', 'progress', 'review', 'done', 'proposed', 'dismissed']).optional(),
   assignee: z.string().optional(),
+  // Git refs cap out around 255 bytes; empty string clears the manual value so
+  // the card falls back to the branch of the latest linked PR.
+  branch: z.string().trim().max(255).optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
 });
 
@@ -701,7 +705,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         return;
       }
       try {
-        const { status, assignee } = parsed.data;
+        const { status, assignee, branch } = parsed.data;
         const tags = parsed.data.tags === undefined ? undefined : normalizeTags(parsed.data.tags);
         let review: { engagementId: string; from: string } | null = null;
         let before: { engagementId: string; status: string } | null = null;
@@ -733,6 +737,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           params.push(assignee);
           sets.push(`assignee = $${params.length}`);
         }
+        if (branch !== undefined) {
+          params.push(branch === '' ? null : branch);
+          sets.push(`branch = $${params.length}`);
+        }
         if (tags !== undefined) {
           params.push(JSON.stringify(tags));
           sets.push(`tags = $${params.length}`);
@@ -748,7 +756,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         const updated = result.rows[0] as { key: string; title: string; status: string };
         console.log(
-          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${tags !== undefined ? ` — tags → [${tags.join(', ')}]` : ''}`,
+          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${branch !== undefined ? ` — branch → '${branch}'` : ''}${tags !== undefined ? ` — tags → [${tags.join(', ')}]` : ''}`,
         );
         if (status !== undefined && before) {
           await recordTicketEvent(q, updated.key, before.engagementId, before.status, status);

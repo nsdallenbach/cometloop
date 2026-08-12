@@ -262,6 +262,14 @@ export function Workspace({
         )}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
+      {t.branch && !t.activePr && (
+        <div
+          title={t.branch}
+          style={{ ...mono(400, 9.5), color: 'var(--tx3)', marginBottom: 7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          ⎇ {t.branch}
+        </div>
+      )}
       {t.tags.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 7 }}>
           {t.tags.slice(0, 4).map((tag) => (

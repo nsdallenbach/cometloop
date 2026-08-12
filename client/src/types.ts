@@ -73,6 +73,8 @@ export interface Ticket {
   tags: string[];
   deployState: DeployState | null;
   deployUrl: string | null;
+  /** Git branch for the work: manual value, else the latest linked PR's branch. */
+  branch: string | null;
   /** When the ticket entered Done (null while in any other status). */
   doneAt: string | null;
   /** Unresolved blocking tickets (open `blocks` links pointing at this ticket). */
