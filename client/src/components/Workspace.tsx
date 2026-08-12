@@ -362,6 +362,28 @@ export function Workspace({
         <span style={{ ...mono(400, 10), color: 'var(--tx3)', marginLeft: 'auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>
           {t.sources[0]?.type ?? ''}
         </span>
+        {lead && t.status === 'backlog' && (
+          <button
+            className="hv-border"
+            title="Deploy to agent queue"
+            onClick={(e) => {
+              e.stopPropagation();
+              deployTicket(t.key);
+            }}
+            style={{
+              ...mono(500, 9),
+              flex: 'none',
+              border: '1px dashed var(--agent)',
+              background: 'none',
+              color: 'var(--agent)',
+              borderRadius: 2,
+              padding: '1px 5px',
+              cursor: 'pointer',
+            }}
+          >
+            ◇ DEPLOY TO QUEUE
+          </button>
+        )}
       </div>
     </div>
     );
