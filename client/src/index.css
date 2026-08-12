@@ -407,3 +407,12 @@ tr.hv-row:hover td {
   border-top: 1px solid var(--line);
   margin: 10px 0;
 }
+
+/* Landing-page hover lift for CTAs and the Learn More button */
+.hv-lift {
+  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+}
+.hv-lift:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.06);
+}
