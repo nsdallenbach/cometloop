@@ -18,7 +18,7 @@ export interface RunnerBrand {
  * eye cutouts (transparent, so the avatar background shows through), four
  * legs. Scales crisply with the avatar.
  */
-const CLAUDE_CODE: RunnerBrand = {
+export const CLAUDE_CODE: RunnerBrand = {
   label: 'Claude Code',
   mark: (size) => (
     <svg width={size} height={size * 0.7} viewBox="0 0 20 14" aria-hidden="true" focusable="false" style={{ display: 'block' }}>

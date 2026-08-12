@@ -3,6 +3,7 @@ import type {
   AdminData,
   AgentTask,
   AgentTaskState,
+  AgentsOverview,
   BurndownDay,
   CommitDay,
   ContextFile,
@@ -14,6 +15,7 @@ import type {
   Me,
   ParsedPlan,
   Phase,
+  ProjectAgentType,
   ProjectStandards,
   RepoCommit,
   RepoConnection,
@@ -483,6 +485,46 @@ export const api = {
 
   reorderAgentQueue(engId: string, order: number[]) {
     return http(`/api/engagements/${engId}/agent-queue/order`, { method: 'PUT', ...json({ order }) });
+  },
+
+  // ---- agent map ----
+
+  async agentsOverview(): Promise<AgentsOverview> {
+    const d = await http<{ projects: Row[]; agents: Row[] }>('/api/agents/overview');
+    return {
+      projects: (d.projects ?? []).map((r) => ({
+        id: s(r.id),
+        client: s(r.client),
+        name: s(r.name),
+        health: (s(r.health) as AgentsOverview['projects'][number]['health']) || 'ok',
+        phase: s(r.phase),
+      })),
+      agents: (d.agents ?? []).map((r) => ({
+        id: s(r.id),
+        engagementId: s(r.engagementId),
+        name: s(r.name),
+        agentType: (s(r.agentType) as ProjectAgentType) || 'runner',
+        harness: r.harness == null ? null : s(r.harness),
+        modelProvider: r.modelProvider == null ? null : s(r.modelProvider),
+        model: r.model == null ? null : s(r.model),
+        endpointType: r.endpointType == null ? null : s(r.endpointType),
+        status: s(r.status) || 'configured',
+        source: s(r.source) === 'observed' ? 'observed' : 'configured',
+        tasks: n(r.tasks),
+        activeTasks: n(r.activeTasks),
+        lastSeen: r.lastSeen == null ? null : s(r.lastSeen),
+        createdAt: r.createdAt == null ? null : s(r.createdAt),
+      })),
+    };
+  },
+
+  /** Scaffolded deploy: persists the configuration; rollout itself is future work.
+   *  Returns the raw stored row — callers refetch the overview for mapped data. */
+  deployAgent(
+    projectId: string,
+    payload: { name: string; agentType?: ProjectAgentType; harness?: string; modelProvider?: string; model?: string; notes?: string },
+  ): Promise<unknown> {
+    return http(`/api/projects/${encodeURIComponent(projectId)}/agents`, { method: 'POST', ...json(payload) });
   },
 
   // ---- ticket attachments ----

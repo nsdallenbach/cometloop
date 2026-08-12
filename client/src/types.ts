@@ -166,6 +166,43 @@ export interface AgentTask {
   createdAt: string;
 }
 
+/** Node kinds on the /agents map; only 'runner' has real data today. */
+export type ProjectAgentType = 'runner' | 'serving-endpoint' | 'agentbricks' | 'foundry';
+
+/** One agent node on the /agents architecture map. */
+export interface ProjectAgent {
+  id: string;
+  engagementId: string;
+  name: string;
+  agentType: ProjectAgentType;
+  /** Harness id ('claude-code', 'codex', …); null when only a provider is known. */
+  harness: string | null;
+  modelProvider: string | null;
+  model: string | null;
+  endpointType: string | null;
+  /** 'active' | 'idle' (observed runners) or 'configured'/'planned' (stub deploys). */
+  status: string;
+  /** observed = derived from real agent_tasks history; configured = deploy-flow record. */
+  source: 'configured' | 'observed';
+  tasks: number;
+  activeTasks: number;
+  lastSeen: string | null;
+  createdAt: string | null;
+}
+
+export interface AgentsOverviewProject {
+  id: string;
+  client: string;
+  name: string;
+  health: Health;
+  phase: string;
+}
+
+export interface AgentsOverview {
+  projects: AgentsOverviewProject[];
+  agents: ProjectAgent[];
+}
+
 /** One tool invocation streamed from an agent run (live feed in the ticket drawer). */
 export interface ToolCall {
   id: number;
