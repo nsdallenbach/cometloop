@@ -152,6 +152,15 @@ export interface ProjectStandards {
   updatedAt: string | null;
 }
 
+/** One end-of-day snapshot of the ticket burndown series.
+ *  (Type alias, not interface, so it stays assignable to the charts' Record data prop.) */
+export type BurndownDay = {
+  date: string;
+  open: number;
+  done: number;
+  total: number;
+};
+
 export interface EngagementDetail {
   tickets: Ticket[];
   sources: ContextSource[];

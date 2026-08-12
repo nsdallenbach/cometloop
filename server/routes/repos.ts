@@ -2,6 +2,7 @@ import { z } from 'zod';
 import express from 'express';
 import type { Identity } from './roles';
 import { githubAppConfigured, installationToken, verifyWebhookSignature, WEBHOOK_SECRET } from './github-app';
+import { setTicketStatus } from './ticket-events';
 
 /**
  * Git repository integration: one repo per engagement, GitHub or Azure DevOps.
@@ -471,7 +472,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
     if (!ticketKey) continue;
     const status = ticketStatus.get(ticketKey);
     if (p.state === 'open' && (status === 'backlog' || status === 'progress')) {
-      await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'review']);
+      await setTicketStatus(q, ticketKey, 'review');
       ticketStatus.set(ticketKey, 'review');
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
@@ -487,7 +488,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
           [conn.id, p.number],
         );
         if (status === 'backlog' || status === 'progress') {
-          await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'review']);
+          await setTicketStatus(q, ticketKey, 'review');
           ticketStatus.set(ticketKey, 'review');
         }
         await q(
@@ -498,7 +499,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
       } else {
         // First sight of an already-merged PR (initial sync of a connection):
         // history, not a live event — keep the old straight-to-Done behavior.
-        await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'done']);
+        await setTicketStatus(q, ticketKey, 'done');
         ticketStatus.set(ticketKey, 'done');
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
@@ -607,7 +608,7 @@ async function settleDeploy(
     );
     return;
   }
-  await q('UPDATE app.tickets SET status = $2 WHERE key = $1', [ticketKey, 'done']);
+  await setTicketStatus(q, ticketKey, 'done');
   const text =
     outcome === 'success'
       ? `Deploy pipeline succeeded for PR #${prNumber} — ${ticketKey} moved to Done.`
@@ -878,7 +879,7 @@ export function setupRepoRoutes(
         [conn.id, number, sha],
       );
       if (['backlog', 'progress'].includes(String(ticket.status))) {
-        await q(`UPDATE app.tickets SET status = 'review' WHERE key = $1`, [key]);
+        await setTicketStatus(q, key, 'review');
       }
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
