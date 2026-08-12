@@ -12,6 +12,7 @@ import { setupContextFileRoutes } from './context-files';
 import { ATTACHMENT_SCHEMA_SQL, deleteAttachmentFiles, setupTicketAttachmentRoutes } from './ticket-attachments';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
 import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
+import { invokeModel, setupLlmHealthRoutes, type InvokeContext } from './llm-health';
 import { normalizeTags } from './ticket-tags';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
 import { setupTicketOrderRoutes } from './ticket-order';
@@ -278,9 +279,10 @@ async function refinePlan(
   appkit: AppKitServices,
   content: string,
   roadmapItems: string[] = [],
+  ctx: InvokeContext = {},
 ): Promise<{ title: string; description: string; ac: string[]; estHours: number | null; humanEstHours: number | null; roadmapItem: string | null } | null> {
   try {
-    const response = await appkit.serving('default').invoke({
+    const response = await invokeModel(appkit.serving.bind(appkit), (text, params) => appkit.lakebase.query(text, params), 'ticket-refine', {
       messages: [
         {
           role: 'user',
@@ -303,7 +305,7 @@ async function refinePlan(
         },
       ],
       max_tokens: 1500,
-    });
+    }, ctx);
     const text = extractText(response);
     const jsonMatch = /\{[\s\S]*\}/.exec(text);
     if (!jsonMatch) return null;
@@ -399,7 +401,7 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
     }
   })();
 
-  const response = await appkit.serving('default').invoke({
+  const response = await invokeModel(appkit.serving.bind(appkit), q, 'comment-rework', {
     messages: [
       {
         role: 'user',
@@ -420,7 +422,7 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
       },
     ],
     max_tokens: 2000,
-  });
+  }, { engagementId: String(t.engagement_id), ticketKey: key });
   const text = extractText(response);
   const jsonMatch = /\{[\s\S]*\}/.exec(text);
   if (!jsonMatch) return;
@@ -931,7 +933,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const content = [asText(t.title), asText(t.description).trim()].filter(Boolean).join('\n\n');
         console.log(`[api] refining ticket ${key} via the planning model (${content.length} chars of context)`);
         const engRow = (await q('SELECT phases FROM app.engagements WHERE id = $1', [String(t.engagement_id)])).rows[0];
-        const plan = await refinePlan(appkit, content, roadmapItemNames(engRow?.phases));
+        const plan = await refinePlan(appkit, content, roadmapItemNames(engRow?.phases), { engagementId: String(t.engagement_id), ticketKey: key });
         if (!plan) {
           res.status(502).json({ error: 'The planning model is unavailable — try again shortly' });
           return;
@@ -1026,7 +1028,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           // The description doubles as the agent prompt, so it should read like
           // the output of planning: context, approach, dependencies, AC.
           const content = description;
-          const plan = await refinePlan(appkit, content, roadmapItemNames(eng.phases));
+          const plan = await refinePlan(appkit, content, roadmapItemNames(eng.phases), { engagementId: engId });
           if (plan) {
             if (plan.title) title = plan.title;
             if (plan.description) {
@@ -1250,10 +1252,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           `Risks: <1-2 sentences>`,
           `Next: <1-2 sentences>`,
         ].join('\n\n');
-        const response = await appkit.serving('default').invoke({
+        const response = await invokeModel(appkit.serving.bind(appkit), q, 'status-draft', {
           messages: [{ role: 'user', content: prompt }],
           max_tokens: 400,
-        });
+        }, { engagementId: id });
         const text = extractText(response).trim();
         if (!text) throw new Error('empty model response');
         console.log(`[api] weekly draft generated for ${id} (${text.length} chars)`);
@@ -1377,7 +1379,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             `- summary: 1-2 sentences stating which sections the schedule was derived from and the overall date range.`,
           ].join('\n'),
         ].join('\n\n');
-        const response = await appkit.serving('default').invoke({
+        // No engagement exists yet at SOW-parse time, so there is no feed to
+        // surface a failure on — the 502 with the failure reason is the signal.
+        const response = await invokeModel(appkit.serving.bind(appkit), null, 'sow-parse', {
           messages: [{ role: 'user', content: prompt }],
           max_tokens: 8000,
         });
@@ -1679,6 +1683,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
     setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
+    setupLlmHealthRoutes(app, appkit.serving.bind(appkit));
 
     app.post('/api/tickets/:key/comments', async (req, res) => {
       const parsed = CommentBody.safeParse(req.body);

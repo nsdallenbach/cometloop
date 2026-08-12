@@ -92,6 +92,12 @@ that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
   never fail the user's action.
 - Preserve human words: refinement flows keep the original request verbatim
   under `## Original request`.
+- Model calls go through `invokeModel()` (`server/routes/llm-health.ts`),
+  never `serving('default').invoke` directly — that is what retries transient
+  errors, counts failures per flow, and posts the ⚠ feed item when a call
+  fails (DAT-180: a model outage must never be silent). Fallback behavior per
+  flow is documented in `docs/llm-fallbacks.md`; endpoint health is
+  `GET /api/llm/health`.
 
 ## Client code
 
