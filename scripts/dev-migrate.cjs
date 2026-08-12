@@ -141,6 +141,27 @@ const MIGRATIONS = [
   },
   // When the ticket body/description was last edited (DAT-174); null = never edited.
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ` },
+  // --- DAT-195: both time estimates become mandatory. Rows missing either
+  // are tagged for lead review (the content-based backfill endpoint from
+  // DAT-197 can then re-estimate them), backfilled deterministically —
+  // est_hours from an hour-suffixed est label when one exists, else 1h;
+  // human_est_hours at the DAT-175 4× ratio — and the columns locked NOT
+  // NULL. Tag guard keeps the append idempotent across reruns.
+  {
+    sql: `UPDATE app.tickets SET tags = tags || '["needs-estimate-review"]'::jsonb
+    WHERE (est_hours IS NULL OR human_est_hours IS NULL)
+      AND NOT tags @> '["needs-estimate-review"]'::jsonb`,
+  },
+  {
+    sql: `UPDATE app.tickets
+    SET est_hours = LEAST(400, GREATEST(0.1, (substring(est from '^([0-9]+\\.?[0-9]*)\\s*[hH]$'))::real))
+    WHERE est_hours IS NULL AND est ~ '^[0-9]+\\.?[0-9]*\\s*[hH]$'`,
+  },
+  { sql: `UPDATE app.tickets SET est_hours = 1 WHERE est_hours IS NULL` },
+  { sql: `UPDATE app.tickets SET human_est_hours = LEAST(999, round((est_hours * 4)::numeric, 1))
+          WHERE human_est_hours IS NULL` },
+  { sql: `ALTER TABLE app.tickets ALTER COLUMN est_hours SET NOT NULL` },
+  { sql: `ALTER TABLE app.tickets ALTER COLUMN human_est_hours SET NOT NULL` },
   // Attachments metadata: FK onto dev-owned tickets, so the table is created
   // here as the dev role; dev default privileges auto-grant the app SP.
   { sql: `CREATE TABLE IF NOT EXISTS app.ticket_attachments (

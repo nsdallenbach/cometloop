@@ -179,7 +179,7 @@ tool(
 
 tool(
   'create_ticket',
-  'Create a ticket in an engagement backlog. Returns the new key.',
+  'Create a ticket in an engagement backlog. Both time estimates are mandatory (DAT-195). Returns the new key.',
   {
     engagement_id: z.string(),
     title: z.string().min(3),
@@ -187,9 +187,15 @@ tool(
     assignee: z.string().optional(),
     est: z.string().optional().describe('Estimate label, e.g. "3d"'),
     workstream: z.string().optional(),
+    est_hours: z.number().gt(0).max(400).describe('Agent (LLM) time estimate in hours — required'),
+    human_est_hours: z.number().gt(0).max(999).describe('Human developer time estimate in hours — required'),
   },
-  async ({ engagement_id, ...payload }) => {
-    const t = await call('POST', `/api/engagements/${encodeURIComponent(engagement_id)}/tickets`, payload);
+  async ({ engagement_id, est_hours, human_est_hours, ...payload }) => {
+    const t = await call('POST', `/api/engagements/${encodeURIComponent(engagement_id)}/tickets`, {
+      ...payload,
+      estHours: est_hours,
+      humanEstHours: human_est_hours,
+    });
     return trimTicket(t);
   },
 );

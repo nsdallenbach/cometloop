@@ -260,7 +260,16 @@ export const api = {
 
   async createTicket(
     engId: string,
-    payload: { title?: string; description?: string; assignee?: string; est?: string; workstream?: string },
+    // DAT-195: both time estimates are mandatory on creation.
+    payload: {
+      title?: string;
+      description?: string;
+      assignee?: string;
+      est?: string;
+      workstream?: string;
+      estHours: number;
+      humanEstHours: number;
+    },
   ): Promise<Ticket> {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
   },

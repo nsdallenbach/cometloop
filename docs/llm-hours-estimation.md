@@ -1,9 +1,16 @@
-# LLM-hours estimation (DAT-120, DAT-175)
+# LLM-hours estimation (DAT-120, DAT-175, DAT-195)
 
-Every ticket gets an automatic estimate of **actual LLM working time in hours**
-(one decimal place, e.g. `2.5h`), produced by the Databricks model serving
-endpoint the console already uses for planning (`serving('default')`, bound to
-`DATABRICKS_SERVING_ENDPOINT_NAME`).
+Every ticket gets an estimate of **actual LLM working time in hours** (one
+decimal place, e.g. `2.5h`). Model-produced estimates come from the Databricks
+model serving endpoint the console already uses for planning
+(`serving('default')`, bound to `DATABRICKS_SERVING_ENDPOINT_NAME`).
+
+Since DAT-195 both `tickets.est_hours` and `tickets.human_est_hours` are
+**mandatory** (`NOT NULL`, enforced by the create/patch endpoints and the UI):
+creation requires caller-supplied values for both, estimates can be revised
+but never cleared, and tickets that predated the rule were backfilled by
+`scripts/dev-migrate.cjs` (hour-suffixed `est` labels parsed, everything else
+defaulted to 1h/4h and tagged `needs-estimate-review`).
 
 Since DAT-175 the same model call also returns a **human-developer estimate**
 (`tickets.human_est_hours`) — an independently reasoned figure for the same
@@ -18,14 +25,16 @@ are measured from agent runs.
 
 ## Flow
 
-1. **Estimate at creation** — when a ticket is created through the console
-   (`POST /api/engagements/:id/tickets`), the estimation agent reviews the
-   title, description and acceptance criteria in the background and writes the
-   estimate to `tickets.est` / `tickets.est_hours`, with a full record
-   (raw model hours, calibration applied, confidence, rationale) appended to
-   `app.ticket_estimates`. Ticket creation never waits on, or fails with, the
-   model. A **Refine** re-plans the scope, so it also re-estimates
-   (`kind = 'revised'`).
+1. **Estimates at creation are caller-supplied (DAT-195)** — ticket creation
+   (`POST /api/engagements/:id/tickets`) requires `estHours` and
+   `humanEstHours` (> 0) in the body; the console's New Ticket modal and the
+   stdio MCP `create_ticket` tool both collect them. The model no longer
+   estimates at creation — human-entered figures must not be clobbered. A
+   **Refine** re-plans the scope, so it does re-estimate (`kind = 'revised'`,
+   written to `tickets.est` / `tickets.est_hours` with a full record — raw
+   model hours, calibration applied, confidence, rationale — appended to
+   `app.ticket_estimates`), as does the DAT-197 estimate backfill endpoint
+   (`POST /api/engagements/:id/estimates/backfill`).
 2. **Log actuals at ready-for-review** — whenever a ticket transitions into
    Review (agent `complete` with outcome `done`, the board's queue/complete
    drag, a status `PATCH`, or a bulk move), the actual agent time is computed

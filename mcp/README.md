@@ -41,9 +41,10 @@ Environment (all optional):
 **Read**: `list_engagements`, `get_board`, `get_ticket`, `search_tickets`,
 `list_context_files`, `read_context_file`
 
-**Tickets**: `create_ticket`, `move_ticket`, `assign_ticket`,
-`comment_on_ticket`, `link_tickets`, `consolidate_tickets` (consolidate is
-lead only — it dismisses the merged source tickets)
+**Tickets**: `create_ticket` (requires `est_hours` and `human_est_hours` —
+both time estimates are mandatory since DAT-195), `move_ticket`,
+`assign_ticket`, `comment_on_ticket`, `link_tickets`, `consolidate_tickets`
+(consolidate is lead only — it dismisses the merged source tickets)
 
 **Attachments**: `list_ticket_attachments`, `attach_file_to_ticket`,
 `read_ticket_attachment`, `delete_ticket_attachment` (lead only; uploads are

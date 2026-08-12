@@ -1712,12 +1712,12 @@ export function Workspace({
             key="new-ticket-modal"
             lead={lead}
             onClose={() => setNewTicket(false)}
-            onCreate={(description, deploy) => {
+            onCreate={(payload, deploy) => {
               setNewTicket(false);
               const dest = deploy ? 'deploy' : 'backlog';
               setPendingCreates((p) => ({ ...p, [dest]: p[dest] + 1 }));
               api
-                .createTicket(eng.id, { description })
+                .createTicket(eng.id, payload)
                 .then((t) => {
                   setDetail((d) => (d ? { ...d, tickets: [...d.tickets, t] } : d));
                   // Deploy path: the ticket exists either way — if queueing
@@ -1831,12 +1831,26 @@ function NewTicketModal({
 }: {
   lead: boolean;
   onClose: () => void;
-  onCreate: (description: string, deploy: boolean) => void;
+  onCreate: (payload: { description: string; estHours: number; humanEstHours: number }, deploy: boolean) => void;
 }) {
   const [description, setDescription] = useState('');
+  // DAT-195: both time estimates are mandatory — creation is blocked until
+  // each holds a positive number of hours. Inline errors appear once a field
+  // has been visited, so an untouched form isn't covered in red.
+  const [estHours, setEstHours] = useState('');
+  const [humanEstHours, setHumanEstHours] = useState('');
+  const [estTouched, setEstTouched] = useState({ agent: false, human: false });
   // Live Shift tracking so the shortcut hints show which action Ctrl+Enter
   // will actually fire (leads only — Shift is a no-op for everyone else).
   const [shiftHeld, setShiftHeld] = useState(false);
+
+  const parseHours = (v: string, max: number): number | null => {
+    const n = Number(v);
+    return v.trim() && Number.isFinite(n) && n > 0 && n <= max ? Math.round(n * 10) / 10 : null;
+  };
+  const estVal = parseHours(estHours, 400);
+  const humanVal = parseHours(humanEstHours, 999);
+  const valid = Boolean(description.trim()) && estVal != null && humanVal != null;
 
   useEffect(() => {
     if (!lead) return;
@@ -1854,8 +1868,12 @@ function NewTicketModal({
   }, [lead]);
 
   const create = (deploy: boolean) => {
-    if (!description.trim()) return;
-    onCreate(description.trim(), deploy);
+    if (!description.trim() || estVal == null || humanVal == null) {
+      // Blocked submit surfaces the inline errors on every missing field.
+      setEstTouched({ agent: true, human: true });
+      return;
+    }
+    onCreate({ description: description.trim(), estHours: estVal, humanEstHours: humanVal }, deploy);
   };
 
   // Kbd chip inside the action buttons — same shape as the header's Ctrl+K
@@ -1936,6 +1954,48 @@ function NewTicketModal({
               resize: 'vertical',
             }}
           />
+          <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+            {(
+              [
+                { id: 'agent' as const, label: '◆ AGENT EST (HOURS)', value: estHours, set: setEstHours, ok: estVal != null, max: 400, hint: 'Expected Claude Code agent time, e.g. 0.5' },
+                { id: 'human' as const, label: 'HUMAN DEV EST (HOURS)', value: humanEstHours, set: setHumanEstHours, ok: humanVal != null, max: 999, hint: 'Time a human developer would need, e.g. 4' },
+              ]
+            ).map((f) => {
+              const showError = !f.ok && (estTouched[f.id] || f.value.trim() !== '');
+              return (
+                <div key={f.id} style={{ flex: 1 }}>
+                  <div style={{ ...mono(400, 9), color: f.id === 'agent' ? 'var(--agent)' : 'var(--tx3)', letterSpacing: '.08em', marginBottom: 5 }}>
+                    {f.label} <span style={{ color: 'var(--bad)' }}>*</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={0.1}
+                    step={0.1}
+                    required
+                    value={f.value}
+                    onChange={(e) => f.set(e.target.value)}
+                    onBlur={() => setEstTouched((t) => ({ ...t, [f.id]: true }))}
+                    placeholder={f.hint}
+                    title={f.hint}
+                    style={{
+                      boxSizing: 'border-box',
+                      width: '100%',
+                      background: 'var(--bg)',
+                      border: `1px solid ${showError ? 'var(--bad)' : 'var(--line2)'}`,
+                      borderRadius: 3,
+                      color: 'var(--tx)',
+                      padding: '7px 10px',
+                      fontSize: 12.5,
+                      fontFamily: 'inherit',
+                    }}
+                  />
+                  {showError && (
+                    <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 4 }}>Required — enter hours between 0 and {f.max}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
         <div style={{ padding: '11px 18px 13px', borderTop: '1px solid var(--line)' }}>
           <div
@@ -1965,7 +2025,7 @@ function NewTicketModal({
             </button>
             <button
               onClick={() => create(false)}
-              disabled={!description.trim()}
+              disabled={!valid}
               title="Create in Backlog (Ctrl+Enter)"
               style={{
                 display: 'flex',
@@ -1981,7 +2041,7 @@ function NewTicketModal({
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
                 flexShrink: 0,
-                opacity: !description.trim() ? 0.45 : lead && shiftHeld ? 0.55 : 1,
+                opacity: !valid ? 0.45 : lead && shiftHeld ? 0.55 : 1,
                 transition: 'opacity .12s ease',
               }}
             >
@@ -1992,7 +2052,7 @@ function NewTicketModal({
             {lead && (
               <button
                 onClick={() => create(true)}
-                disabled={!description.trim()}
+                disabled={!valid}
                 title="Create and deploy straight to the agent queue (Ctrl+Shift+Enter)"
                 style={{
                   display: 'flex',
@@ -2008,7 +2068,7 @@ function NewTicketModal({
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
                   flexShrink: 0,
-                  opacity: !description.trim() ? 0.45 : 1,
+                  opacity: !valid ? 0.45 : 1,
                   boxShadow: shiftHeld ? '0 0 0 1px var(--bg2), 0 0 0 3px var(--agent)' : 'none',
                   transition: 'box-shadow .12s ease',
                 }}
