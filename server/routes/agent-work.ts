@@ -133,13 +133,18 @@ function txt(v: unknown): string {
   return typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '';
 }
 
-function renderPrompt(
+/** Comments rendered into the prompt: newest-N window so steering posted last always survives the cap. */
+const PROMPT_COMMENT_LIMIT = 20;
+const PROMPT_COMMENT_CHARS = 1500;
+
+export function renderPrompt(
   task: Record<string, unknown>,
   ticket: Record<string, unknown> | null,
   engagement: Record<string, unknown> | null,
   repo: Record<string, unknown> | null,
   contextFiles: { name: string }[],
-  attachments: { filename: string; size: number }[],
+  comments: Record<string, unknown>[] = [],
+  attachments: { filename: string; size: number }[] = [],
 ): string {
   const key = txt(task.ticket_key);
   const ac = (() => {
@@ -150,6 +155,13 @@ function renderPrompt(
       return [];
     }
   })();
+  const recent = comments.slice(-PROMPT_COMMENT_LIMIT);
+  const commentLines = recent
+    .filter((c) => txt(c.body).trim())
+    .map((c) => {
+      const at = c.created_at instanceof Date ? c.created_at.toISOString() : txt(c.created_at);
+      return `- ${txt(c.author) || 'unknown'}${at ? ` (${at})` : ''}: ${txt(c.body).trim().slice(0, PROMPT_COMMENT_CHARS)}`;
+    });
   const lines = [
     `You are an autonomous delivery agent working ticket ${key} — "${txt(ticket?.title)}" for ${txt(engagement?.client)} / ${txt(engagement?.name)}.`,
     '',
@@ -157,6 +169,14 @@ function renderPrompt(
     txt(ticket?.description).trim() || '(no description — the title is the scope)',
     ...(ac.length > 0 ? ['', 'Acceptance criteria:', ...ac.map((a) => `- ${a}`)] : []),
     ...(txt(task.instructions).trim() ? ['', '## Lead instructions', txt(task.instructions).trim()] : []),
+    ...(commentLines.length > 0
+      ? [
+          '',
+          `## Ticket comments${comments.length > recent.length ? ` (latest ${recent.length} of ${comments.length})` : ''}`,
+          ...commentLines,
+          'Comments from leads or teammates are steering — treat them as instructions that refine the ticket.',
+        ]
+      : []),
     '',
     '## Your working directory',
     `- work-package.json — full task payload (task id ${txt(task.id)}; you are agent "${txt(task.agent) || 'agent'}")`,
@@ -173,6 +193,7 @@ function renderPrompt(
     '- Commit with clear messages, push the branch, and open a PR (do NOT merge it).',
     '- If the GIT_TOKEN environment variable is set, push with https://x-access-token:$GIT_TOKEN@github.com/<owner>/<repo>.git and open the PR via the GitHub REST API with that token; otherwise use local git credentials / gh.',
     '- If delivery-console MCP tools are available, post report_agent_progress at plan time and before pushing, and raise flag_agent_work if you get blocked instead of guessing.',
+    `- Steering via comments: leads may post new ticket comments while you work. If delivery-console MCP tools are available, re-read the comments with get_ticket (key ${key}) before pushing and apply any new guidance; your own progress notes also appear there — ignore those.`,
     '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
     '',
     '## Coordinating with other agents',
@@ -240,7 +261,7 @@ export function setupAgentRoutes(
       repo,
       contextFiles,
       attachments,
-      prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, attachments),
+      prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, comments, attachments),
     };
   };
 
@@ -262,8 +283,11 @@ export function setupAgentRoutes(
       const engagementId = String(ticket.engagement_id);
       const lead = await requireLead(req, res, engagementId);
       if (!lead) return;
-      if (!['backlog', 'progress'].includes(String(ticket.status))) {
-        res.status(409).json({ error: `Only backlog or in-progress tickets can be queued (this one is ${String(ticket.status)})` });
+      // Review tickets are queueable so review feedback (posted as comments)
+      // can be sent back to a runner as rework — the comments ride along in
+      // the work package and the rendered prompt.
+      if (!['backlog', 'progress', 'review'].includes(String(ticket.status))) {
+        res.status(409).json({ error: `Only backlog, in-progress or review tickets can be queued (this one is ${String(ticket.status)})` });
         return;
       }
       const active = (

@@ -28,6 +28,13 @@ App URL: https://delivery-console-7474645607548631.aws.databricksapps.com
 4. If the runner opens a PR whose branch or title contains the ticket key
    (e.g. `NAC-104-add-auth`), the existing repo integration links it to the
    ticket automatically and moves the ticket to **Done** when the PR merges.
+5. Ticket comments are a steering channel: comments present at claim time are
+   rendered into the server-side prompt, and the prompt tells the agent to
+   re-read them (via the `get_ticket` MCP tool or
+   `GET /api/agent/work/:id`) before pushing. Tickets in **Review** can be
+   re-queued — post review feedback as comments, queue the ticket, and the
+   next run's prompt carries the feedback. See
+   [comment-steering.md](./comment-steering.md).
 
 Task lifecycle: `queued → claimed → working → done | failed`, or `cancelled`
 by a lead from the console.

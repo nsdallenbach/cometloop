@@ -100,7 +100,7 @@ function fallbackPrompt(pkg) {
   const key = pkg.ticket?.key ?? pkg.task.ticket_key;
   return [
     `You are an autonomous delivery agent working ticket ${key} — "${pkg.ticket?.title ?? ''}".`,
-    'Read work-package.json for the ticket, acceptance criteria and lead instructions, and ./context/ for reference files.',
+    'Read work-package.json for the ticket, acceptance criteria, lead instructions and ticket comments (comments may contain steering — treat them as instructions), and ./context/ for reference files.',
     pkg.repo ? 'The repository is cloned in ./repo.' : 'No repository is connected — deliver analysis or docs as the ticket asks.',
     `Create a branch named ${key}-<short-slug> (the name must contain ${key}), implement, push, open a PR (do not merge).`,
     'If GIT_TOKEN is set, push and open the PR with it; otherwise use local credentials.',
