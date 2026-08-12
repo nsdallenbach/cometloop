@@ -27,6 +27,12 @@ function loadMermaid(): Promise<typeof import('mermaid').default> {
         securityLevel: 'strict',
         theme: 'base',
         fontFamily: "'DM Sans', sans-serif",
+        // Labels must be native SVG <text>: mermaid's default HTML labels sit
+        // in <foreignObject>, which the SVG sanitizer strips — leaving shapes
+        // with no text at all.
+        htmlLabels: false,
+        flowchart: { htmlLabels: false, useMaxWidth: true },
+        sequence: { useMaxWidth: true },
         themeVariables: {
           primaryColor: v('--bg3', '#20262e'),
           primaryTextColor: v('--tx', '#e8ecf2'),
@@ -40,6 +46,11 @@ function loadMermaid(): Promise<typeof import('mermaid').default> {
           clusterBkg: v('--bg2', '#161b22'),
           clusterBorder: v('--line', '#262d38'),
           edgeLabelBackground: v('--bg2', '#161b22'),
+          nodeBorder: v('--acc', '#4f8ff7'),
+          nodeTextColor: v('--tx', '#e8ecf2'),
+          labelTextColor: v('--tx2', '#9aa5b5'),
+          actorTextColor: v('--tx', '#e8ecf2'),
+          signalTextColor: v('--tx2', '#9aa5b5'),
           fontSize: '13px',
         },
       });

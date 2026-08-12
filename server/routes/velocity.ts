@@ -353,4 +353,25 @@ export function setupVelocityRoutes(app: express.Application, q: Query) {
       res.status(500).json({ error: 'Failed to compute velocity metrics' });
     }
   });
+
+  // GitHub-style commit activity: synced commits per day for the trailing
+  // 8 weeks (DAT-197). Zero-filling is the client's job.
+  app.get('/api/engagements/:id/commit-activity', async (req, res) => {
+    try {
+      const rows = (
+        await q(
+          `SELECT to_char(date_trunc('day', c.committed_at), 'YYYY-MM-DD') AS date,
+                  COUNT(*)::int AS commits, COUNT(DISTINCT c.author)::int AS authors
+           FROM app.repo_commits c JOIN app.repo_connections rc ON rc.id = c.connection_id
+           WHERE rc.engagement_id = $1 AND c.committed_at IS NOT NULL AND c.committed_at >= NOW() - INTERVAL '56 days'
+           GROUP BY 1 ORDER BY 1`,
+          [req.params.id],
+        )
+      ).rows;
+      res.json({ days: rows });
+    } catch (err) {
+      console.error('commit activity failed:', err);
+      res.status(500).json({ error: 'Failed to load commit activity' });
+    }
+  });
 }

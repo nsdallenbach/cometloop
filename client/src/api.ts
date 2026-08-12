@@ -4,6 +4,7 @@ import type {
   AgentTask,
   AgentTaskState,
   BurndownDay,
+  CommitDay,
   ContextFile,
   ContextSource,
   DeployState,
@@ -227,6 +228,11 @@ export const api = {
       suggestions: d.suggestions.map(mapSuggestion),
       agentTasks: (d.agentTasks ?? []).map(mapAgentTask),
     };
+  },
+
+  async commitActivity(engId: string): Promise<CommitDay[]> {
+    const d = await http<{ days: CommitDay[] }>(`/api/engagements/${engId}/commit-activity`);
+    return d.days;
   },
 
   velocity(engId: string): Promise<VelocityReport> {
