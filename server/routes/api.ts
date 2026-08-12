@@ -19,6 +19,7 @@ import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes
 import { setupMcpRoutes } from './mcp';
 import { extractText, refinePlan, refineTicketWithBoard, type RefinedPlan, type ScopingAction } from './scoping-agent';
 import { setupTicketOrderRoutes } from './ticket-order';
+import { setupVelocityRoutes } from './velocity';
 import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
 import {
   SEED_ENGAGEMENTS,
@@ -1671,6 +1672,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupTicketConsolidateRoutes(app, q, requireLead);
     setupMcpRoutes(app, q);
     setupTicketOrderRoutes(app, q);
+    setupVelocityRoutes(app, q);
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireLead, telemetry);
     setupToolCallRoutes(app, q);

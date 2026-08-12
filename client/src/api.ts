@@ -31,6 +31,7 @@ import type {
   TicketStatus,
   TicketWithEngagement,
   ToolCall,
+  VelocityReport,
 } from './types';
 
 type Row = Record<string, unknown>;
@@ -226,6 +227,10 @@ export const api = {
       suggestions: d.suggestions.map(mapSuggestion),
       agentTasks: (d.agentTasks ?? []).map(mapAgentTask),
     };
+  },
+
+  velocity(engId: string): Promise<VelocityReport> {
+    return http<VelocityReport>(`/api/engagements/${engId}/velocity`);
   },
 
   async burndown(engId: string): Promise<BurndownDay[]> {
