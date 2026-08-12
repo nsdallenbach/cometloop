@@ -1,18 +1,23 @@
 /* eslint-disable react/no-array-index-key -- static decorative lists, never reordered */
-import { useEffect, useRef, useState, type ReactNode, type CSSProperties } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode, type CSSProperties, type RefObject } from 'react';
 import { motion, useScroll, useTransform, type MotionValue } from 'motion/react';
 import { animate, stagger } from 'animejs';
 import { mono } from '../util';
 
 /* ------------------------------------------------------------------ helpers */
 
+// The page scrolls inside its own container (the app shell is overflow:hidden),
+// so every scroll trigger must observe against that element, not the window.
+const ScrollRoot = createContext<RefObject<HTMLElement | null> | null>(null);
+
 /** Reveal children on scroll-in with a spring rise; runs once. */
 function Reveal({ children, delay = 0, y = 26, style }: { children: ReactNode; delay?: number; y?: number; style?: CSSProperties }) {
+  const root = useContext(ScrollRoot);
   return (
     <motion.div
       initial={{ opacity: 0, y }}
       whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: '-60px' }}
+      viewport={{ once: true, margin: '-40px', root: root ?? undefined }}
       transition={{ duration: 0.6, delay, ease: [0.22, 1, 0.36, 1] }}
       style={style}
     >
@@ -24,6 +29,7 @@ function Reveal({ children, delay = 0, y = 26, style }: { children: ReactNode; d
 /** Count a number up from 0 → value the first time it scrolls into view (anime.js). */
 function CountUp({ value, suffix = '', prefix = '', decimals = 0 }: { value: number; suffix?: string; prefix?: string; decimals?: number }) {
   const ref = useRef<HTMLSpanElement>(null);
+  const root = useContext(ScrollRoot);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -43,11 +49,11 @@ function CountUp({ value, suffix = '', prefix = '', decimals = 0 }: { value: num
           });
         }
       },
-      { threshold: 0.4 },
+      { threshold: 0.4, root: root?.current ?? null },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [value, suffix, prefix, decimals]);
+  }, [value, suffix, prefix, decimals, root]);
   return <span ref={ref}>{`${prefix}0${suffix}`}</span>;
 }
 
@@ -62,10 +68,10 @@ const chip = (bg: string, color: string): CSSProperties => ({
 });
 
 const glass: CSSProperties = {
-  background: 'linear-gradient(160deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01))',
+  background: 'color-mix(in srgb, var(--bg2) 82%, transparent)',
   border: '1px solid var(--line2)',
   borderRadius: 12,
-  backdropFilter: 'blur(6px)',
+  backdropFilter: 'blur(10px)',
 };
 
 /* ------------------------------------------------------------------- pieces */
@@ -163,6 +169,7 @@ const STATES: { label: string; color: string; note: string }[] = [
 /** A ticket card that cycles the real board's agent states, forever. */
 function LiveTicket() {
   const [i, setI] = useState(0);
+  const root = useContext(ScrollRoot);
   useEffect(() => {
     const t = setInterval(() => setI((v) => (v + 1) % STATES.length), 1900);
     return () => clearInterval(t);
@@ -174,7 +181,7 @@ function LiveTicket() {
     <motion.div
       initial={{ opacity: 0, scale: 0.94, rotateX: 8 }}
       whileInView={{ opacity: 1, scale: 1, rotateX: 0 }}
-      viewport={{ once: true }}
+      viewport={{ once: true, root: root ?? undefined }}
       transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
       style={{ ...glass, width: 300, padding: 16, border: `1px solid ${border}`, boxShadow: `0 20px 60px -20px ${border}`, transition: 'border-color .5s, box-shadow .5s' }}
     >
@@ -214,6 +221,7 @@ function LiveTicket() {
 /** The autonomous delivery loop, drawn as an animated SVG ring of stages. */
 function LoopDiagram() {
   const ref = useRef<SVGSVGElement>(null);
+  const root = useContext(ScrollRoot);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -225,11 +233,11 @@ function LoopDiagram() {
           io.disconnect();
         }
       },
-      { threshold: 0.3 },
+      { threshold: 0.3, root: root?.current ?? null },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, []);
+  }, [root]);
   const nodes = [
     { x: 90, y: 40, label: 'QUEUE', c: 'var(--tx2)' },
     { x: 310, y: 40, label: 'CLAIM', c: 'var(--agent)' },
@@ -327,7 +335,7 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
           <div style={{ fontSize: 13, color: 'var(--tx2)', marginBottom: 14, fontStyle: 'italic' }}>“ticket creation should estimate the timeframe based on actual LLM hours”</div>
           <div style={{ ...mono(400, 10), color: 'var(--agent)', marginBottom: 6 }}>◆ THE CONSOLE PLANS</div>
           {['## Context', '## Approach', '## Dependencies', '✓ 4 acceptance criteria'].map((t, i) => (
-            <motion.div key={t} initial={{ opacity: 0, x: -8 }} whileInView={{ opacity: 1, x: 0 }} viewport={{ once: true }} transition={{ delay: 0.15 + i * 0.12 }} style={{ ...mono(500, 11), color: i === 3 ? 'var(--ok)' : 'var(--tx)', padding: '3px 0' }}>
+            <motion.div key={t} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.15 + i * 0.12 }} style={{ ...mono(500, 11), color: i === 3 ? 'var(--ok)' : 'var(--tx)', padding: '3px 0' }}>
               {t}
             </motion.div>
           ))}
@@ -406,6 +414,7 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
   ];
 
   return (
+    <ScrollRoot.Provider value={scrollRef}>
     <div ref={scrollRef} data-theme={theme} style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', background: 'var(--bg)', scrollBehavior: 'smooth' }}>
       {/* HERO */}
       <section style={{ position: 'relative', minHeight: 'min(92vh, 760px)', display: 'flex', alignItems: 'center', padding: '0 8vw', overflow: 'hidden' }}>
@@ -507,5 +516,6 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
         <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 46, letterSpacing: '.1em' }}>DATAVAIL · DELIVERY CONSOLE · BUILT ON DATABRICKS</div>
       </section>
     </div>
+    </ScrollRoot.Provider>
   );
 }
