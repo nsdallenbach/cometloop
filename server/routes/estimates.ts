@@ -118,6 +118,11 @@ export interface AgentRun {
   state: string;
   claimed_at: unknown;
   updated_at: unknown;
+  /** Last runner heartbeat — stops when the Claude child exits, so it marks the true end of activity. */
+  last_heartbeat?: unknown;
+  /** Tool-call stream bounds for the run (DAT-145), when the stream exists. */
+  first_call?: unknown;
+  last_call?: unknown;
 }
 
 const TERMINAL_STATES = ['done', 'failed', 'cancelled'];
@@ -132,19 +137,41 @@ function asDate(v: unknown): Date | null {
 }
 
 /**
- * Actual LLM working time for a ticket: the sum of its agent runs' active
- * durations (claim → completion for finished runs, claim → now for a run
- * still active when the ticket is dragged to Review). Null when no run was
- * ever claimed — there is no LLM time to log for purely human work.
+ * Actual LLM working time for a ticket: the sum of its agent runs' ACTIVE
+ * windows, not wall clock (DAT-194). Wall clock (claim → task close) counts
+ * wedged-runner idle and the hours a finished ticket sat in Review waiting
+ * for a human — neither is agent work. Per run, in order of trust:
+ *
+ *   1. Tool-call stream bounds (first → last call): calls stop the moment
+ *      Claude stops working.
+ *   2. Claim → last heartbeat: heartbeats stop when the runner's child
+ *      exits, so a run completed manually hours later doesn't inflate.
+ *   3. Claim → task close (terminal) / now (active): pre-instrumentation
+ *      runs only.
+ *
+ * Null when no run was ever claimed — there is no LLM time to log for
+ * purely human work.
  */
 export function agentHoursFromRuns(runs: AgentRun[], now: Date = new Date()): number | null {
   let ms = 0;
   let counted = 0;
   for (const run of runs) {
-    const start = asDate(run.claimed_at);
-    if (!start) continue;
-    const end = (TERMINAL_STATES.includes(run.state) ? asDate(run.updated_at) : null) ?? now;
-    if (end.getTime() <= start.getTime()) continue;
+    const claimed = asDate(run.claimed_at);
+    if (!claimed) continue;
+    const start = asDate(run.first_call) ?? claimed;
+    const lastCall = asDate(run.last_call);
+    const heartbeat = asDate(run.last_heartbeat);
+    const terminal = TERMINAL_STATES.includes(run.state);
+    let end: Date | null;
+    if (lastCall) {
+      end = lastCall;
+    } else if (terminal) {
+      const closed = asDate(run.updated_at);
+      end = heartbeat && closed ? new Date(Math.min(heartbeat.getTime(), closed.getTime())) : (heartbeat ?? closed);
+    } else {
+      end = heartbeat ?? now;
+    }
+    if (!end || end.getTime() <= start.getTime()) continue;
     ms += end.getTime() - start.getTime();
     counted++;
   }
@@ -294,7 +321,10 @@ export async function recordActualHours(q: Query, ticketKey: string, source: str
   try {
     const runs = (
       await q(
-        `SELECT state, claimed_at, updated_at FROM app.agent_tasks WHERE ticket_key = $1 AND claimed_at IS NOT NULL`,
+        `SELECT at.state, at.claimed_at, at.updated_at, at.last_heartbeat,
+                (SELECT MIN(c.called_at) FROM app.agent_tool_calls c WHERE c.task_id = at.id) AS first_call,
+                (SELECT MAX(c.called_at) FROM app.agent_tool_calls c WHERE c.task_id = at.id) AS last_call
+         FROM app.agent_tasks at WHERE at.ticket_key = $1 AND at.claimed_at IS NOT NULL`,
         [ticketKey]
       )
     ).rows as unknown as AgentRun[];
