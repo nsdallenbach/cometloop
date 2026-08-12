@@ -7,6 +7,7 @@ export type Screen =
   | { name: 'admin' }
   | { name: 'learn' }
   | { name: 'tickets' }
+  | { name: 'agents' }
   | { name: 'workspace'; engId: string; tab: Tab }
   | { name: 'ticket'; ticketKey: string }
   | { name: 'redirect'; to: string };
@@ -14,6 +15,7 @@ export type Screen =
 export const paths = {
   portfolio: '/projects',
   tickets: '/tickets',
+  agents: '/agents',
   setup: '/setup',
   admin: '/admin',
   learn: '/learn',
@@ -40,6 +42,7 @@ export function parsePath(pathname: string): Screen {
     if (segs.length === 2) return { name: 'ticket', ticketKey: id };
     return { name: 'redirect', to: paths.ticket(id) };
   }
+  if (head === 'agents' && segs.length === 1) return { name: 'agents' };
   if (head === 'setup' && segs.length === 1) return { name: 'setup' };
   if (head === 'admin' && segs.length === 1) return { name: 'admin' };
   if (head === 'learn' && segs.length === 1) return { name: 'learn' };
