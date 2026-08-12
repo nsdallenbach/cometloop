@@ -62,6 +62,7 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 | `POST` | `/api/agent/work/claim` | Atomically claim the next task → returns the work package |
 | `GET` | `/api/agent/work/:id` | Re-fetch the work package for a claimed task |
 | `POST` | `/api/agent/work/:id/progress` | Heartbeat + progress note (becomes a ticket comment) |
+| `POST` | `/api/agent/work/:id/tool-calls` | Stream tool-call events (batched) → live feed in the ticket drawer, never comments |
 | `POST` | `/api/agent/work/:id/git-credential` | Short-lived clone/push token (GitHub App connections only) |
 | `POST` | `/api/agent/work/:id/flag` | Raise a warning (stuck/erroring/needs input) — yellow on the board, no lane change |
 | `DELETE` | `/api/agent/work/:id/flag` | Clear the warning after recovering |
@@ -104,6 +105,27 @@ curl -s -X POST "$APP/api/agent/work/$TASK_ID/complete" -H "$AUTH" -H 'Content-T
 
 `outcome: "failed"` returns the ticket to the backlog; put the reason in
 `summary` so the lead sees it on the ticket.
+
+### Tool-call streaming (telemetry)
+
+Runners that watch their agent's tool use (the bundled `devbox-runner` parses
+Claude Code's `stream-json` output) should batch-post each `tool_use` event —
+these render as a live **TOOL ACTIVITY** feed in the ticket drawer instead of
+flooding the comment thread, and each batch doubles as a heartbeat:
+
+```bash
+curl -s -X POST "$APP/api/agent/work/$TASK_ID/tool-calls" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"agent": "devbox-1", "calls": [
+        {"tool": "Bash", "detail": "git status", "ts": "2026-08-11T12:00:00Z"},
+        {"tool": "Read", "detail": "server/server.ts", "ts": "2026-08-11T12:00:05Z"}
+      ]}'
+```
+
+Up to 200 calls per batch; `detail` is a short human label (file path,
+command), max 600 chars. Batch every few seconds rather than per event.
+When the run completes (or is cancelled), the console archives the full log
+as NDJSON to the `sandbox.engagement_console.agent_telemetry` UC volume under
+`tool-calls/<engagement>/<ticket>/task-<id>.ndjson` for offline analysis.
 
 ## Merge conflicts on agent PRs
 
