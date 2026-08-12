@@ -371,11 +371,14 @@ export function Workspace({
     <motion.div
       key={t.key}
       data-tcard={t.key}
-      layoutId={`card-${t.key}`}
+      // Cards the user just dropped slot straight into place; springs and the
+      // cross-lane morph are for moves the user didn't make (agent claims,
+      // poll-driven updates). The layoutId must go too: a remounting card
+      // with a registered layoutId runs the shared-element morph from its old
+      // lane regardless of its own transition override.
+      {...(!isJustDropped(t.key) && { layoutId: `card-${t.key}` })}
       layout
       initial={false}
-      // Cards the user just dropped slot straight into place; springs are for
-      // moves the user didn't make (agent claims, poll-driven updates).
       transition={isJustDropped(t.key) ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
       style={{ borderRadius: 3 }}
     >
@@ -754,7 +757,9 @@ export function Workspace({
   const agentCard = (at: AgentTask, qPos: number | null) => (
     <motion.div
       key={`at-${at.id}`}
-      layoutId={`card-${at.ticketKey}`}
+      // Same layoutId skip as ticketCard: a just-dropped card must not morph
+      // over from the lane it was dragged out of.
+      {...(!isJustDropped(at.ticketKey) && { layoutId: `card-${at.ticketKey}` })}
       layout
       initial={false}
       transition={isJustDropped(at.ticketKey) ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 34 }}
