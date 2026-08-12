@@ -25,6 +25,7 @@ import type {
   TicketDev,
   TicketStatus,
   TicketWithEngagement,
+  ToolCall,
 } from './types';
 
 type Row = Record<string, unknown>;
@@ -415,6 +416,16 @@ export const api = {
 
   reorderAgentQueue(engId: string, order: number[]) {
     return http(`/api/engagements/${engId}/agent-queue/order`, { method: 'PUT', ...json({ order }) });
+  },
+
+  /** Tool-call feed for the ticket's latest agent run; `after` makes the poll incremental. */
+  async toolCalls(ticketKey: string, after?: number): Promise<{ taskId: number | null; calls: ToolCall[] }> {
+    const qs = after && after > 0 ? `?after=${after}` : '';
+    const d = await http<{ task_id: unknown; calls?: Row[] }>(`/api/tickets/${ticketKey}/tool-calls${qs}`);
+    return {
+      taskId: d.task_id == null ? null : n(d.task_id),
+      calls: (d.calls ?? []).map((r) => ({ id: n(r.id), tool: s(r.tool), detail: s(r.detail), calledAt: s(r.called_at) })),
+    };
   },
 
   // ---- context files ----
