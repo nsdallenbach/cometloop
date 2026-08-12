@@ -587,6 +587,8 @@ export default function App() {
           team={curDetail?.team.map((t) => t.name) ?? []}
           lead={eng ? canLead(eng.id) : false}
           agentTask={detailAgentTask}
+          allTickets={detail?.tickets ?? []}
+          onOpenTicket={openTicket}
           onQueueAgent={(instructions) => queueForAgent(detailTicket.key, instructions)}
           onCancelAgent={() => cancelAgent(detailTicket.key)}
           onAssign={(assignee) => setTicket(detailTicket.key, { assignee })}

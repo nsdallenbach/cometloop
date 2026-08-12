@@ -23,6 +23,9 @@ import type {
   Ticket,
   TicketComment,
   TicketDev,
+  TicketLink,
+  TicketLinkType,
+  TicketLinks,
   TicketStatus,
   TicketWithEngagement,
   ToolCall,
@@ -90,6 +93,7 @@ function mapTicket(r: Row): Ticket {
     blocked: b(r.blocked),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
+    waitingOn: n(r.waiting_on),
     activePr:
       r.pr_number == null
         ? null
@@ -393,6 +397,35 @@ export const api = {
   async ticketDev(key: string): Promise<TicketDev> {
     const d = await http<{ prs: Row[]; commits: Row[] }>(`/api/tickets/${key}/dev`);
     return { prs: d.prs.map(mapRepoPr), commits: d.commits.map(mapRepoCommit) };
+  },
+
+  // ---- linked tickets ----
+
+  async ticketLinks(key: string): Promise<TicketLinks> {
+    const d = await http<{ links: Row[]; branches: Row[] }>(`/api/tickets/${key}/links`);
+    return {
+      links: d.links.map((r) => ({
+        id: r.id == null ? null : n(r.id),
+        key: s(r.key),
+        title: s(r.title),
+        status: s(r.status) as TicketLink['status'],
+        type: s(r.type) as TicketLinkType,
+      })),
+      branches: d.branches.map((r) => ({
+        branch: s(r.branch),
+        prNumber: n(r.prNumber),
+        state: (s(r.state) as 'open' | 'merged' | 'closed') || 'closed',
+        url: s(r.url),
+      })),
+    };
+  },
+
+  addTicketLink(key: string, linkedKey: string, type: 'blocks' | 'blocked_by' | 'relates'): Promise<{ id: number }> {
+    return http(`/api/tickets/${key}/links`, { method: 'POST', ...json({ key: linkedKey, type }) });
+  },
+
+  removeTicketLink(key: string, id: number) {
+    return http(`/api/tickets/${key}/links/${id}`, { method: 'DELETE' });
   },
 
   async mergePr(ticketKey: string, number: number): Promise<RepoPr> {
