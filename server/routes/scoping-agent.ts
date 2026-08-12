@@ -1,5 +1,6 @@
 import { SCOPING_TOOL_LIMIT, executeScopingTool, scopingToolDefs, type ScopingToolContext } from './scoping-tools';
 import { invokeModel, type InvokeContext } from './llm-health';
+import { clipText } from './utf8-body';
 
 /**
  * Ticket scoping via the model serving endpoint (DAT-173).
@@ -106,7 +107,7 @@ export function parsePlan(text: string, roadmapItems: string[] = []): RefinedPla
   } catch {
     return null;
   }
-  const title = typeof plan.title === 'string' ? plan.title.trim().slice(0, 200) : '';
+  const title = typeof plan.title === 'string' ? clipText(plan.title.trim(), 200) : '';
   const description = typeof plan.description === 'string' ? plan.description.trim() : '';
   const ac = Array.isArray(plan.acceptance_criteria)
     ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)
