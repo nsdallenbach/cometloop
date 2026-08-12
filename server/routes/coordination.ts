@@ -331,7 +331,7 @@ export function setupCoordinationRoutes(app: express.Application, q: Query) {
       // A branch actively announced by another agent can't be taken over or
       // marked completed on its behalf.
       const existing = (
-        await q('SELECT agent_id, status FROM app.branch_activity WHERE branch = $1', [parsed.data.branch])
+        await q('SELECT agent_id, status FROM app.branch_activity WHERE branch_name = $1', [parsed.data.branch])
       ).rows[0];
       if (existing && String(existing.status) === 'active' && String(existing.agent_id) !== parsed.data.agent) {
         res.status(409).json({ error: `Branch is actively announced by ${String(existing.agent_id)}` });
