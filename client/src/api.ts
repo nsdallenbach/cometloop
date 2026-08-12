@@ -2,6 +2,7 @@ import type {
   AdminData,
   AgentTask,
   AgentTaskState,
+  BurndownDay,
   ContextFile,
   ContextSource,
   DeployState,
@@ -193,6 +194,11 @@ export const api = {
       suggestions: d.suggestions.map(mapSuggestion),
       agentTasks: (d.agentTasks ?? []).map(mapAgentTask),
     };
+  },
+
+  async burndown(engId: string): Promise<BurndownDay[]> {
+    const d = await http<{ days: BurndownDay[] }>(`/api/engagements/${engId}/burndown`);
+    return d.days ?? [];
   },
 
   async createTicket(
