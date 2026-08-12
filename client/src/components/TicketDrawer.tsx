@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { motion } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
-import { STATUS_LABEL, initials, mono } from '../util';
+import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
 import { CoordCommentBody, parseCoordComment } from './AgentComment';
@@ -535,10 +535,10 @@ export function TicketDrawer({
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>◆ AGENT ESTIMATE</div>
-              <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.est}</div>
+              <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.estHours != null ? fmtDuration(ticket.estHours) : ticket.est}</div>
               {ticket.actualHours != null && (
                 <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 2 }}>
-                  actual {ticket.actualHours}h
+                  actual {fmtDuration(ticket.actualHours)}
                   {estDiffPct != null && (
                     <>
                       {' ('}
@@ -555,7 +555,7 @@ export function TicketDrawer({
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>HUMAN DEV ESTIMATE</div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }} title="Estimated time for a human developer to deliver the same scope">
-                {ticket.humanEstHours != null ? `${ticket.humanEstHours}h` : '—'}
+                {fmtDuration(ticket.humanEstHours)}
               </div>
             </div>
             <div style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>

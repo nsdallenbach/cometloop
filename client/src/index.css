@@ -428,9 +428,10 @@ tr.hv-row:hover td {
   color: var(--tx3);
 }
 /* Mermaid inlines its own <style> with id-prefixed selectors, so these token
-   overrides need !important to win. Goal: diagrams read like the console —
-   quiet edge labels instead of grey chips, visible hairline node borders,
-   app type throughout. */
+   overrides need !important to win. ALL paint comes from here (the JS init
+   sets no colors): tokens follow the active [data-theme], so diagrams work
+   in light and dark alike — quiet edge labels instead of grey chips,
+   hairline node borders on themed surfaces, app type throughout. */
 .md-diagram svg {
   font-family: 'DM Sans', sans-serif !important;
 }
@@ -448,6 +449,7 @@ tr.hv-row:hover td {
 .md-diagram .node polygon,
 .md-diagram .node circle,
 .md-diagram .node path {
+  fill: var(--bg3) !important;
   stroke: var(--line2) !important;
   stroke-width: 1.2px !important;
 }
@@ -455,6 +457,14 @@ tr.hv-row:hover td {
 .md-diagram .node tspan,
 .md-diagram .nodeLabel {
   fill: var(--tx) !important;
+}
+.md-diagram .cluster rect {
+  fill: var(--bg) !important;
+  stroke: var(--line) !important;
+}
+.md-diagram .cluster text,
+.md-diagram .cluster tspan {
+  fill: var(--tx3) !important;
 }
 .md-diagram .edgePath path,
 .md-diagram .flowchart-link,
@@ -464,6 +474,57 @@ tr.hv-row:hover td {
 .md-diagram marker path {
   fill: var(--tx3) !important;
   stroke: none !important;
+}
+/* Sequence diagrams: actors, lifelines, messages, activations, notes. */
+.md-diagram rect.actor,
+.md-diagram .actor-box {
+  fill: var(--bg3) !important;
+  stroke: var(--line2) !important;
+}
+.md-diagram text.actor,
+.md-diagram text.actor tspan,
+.md-diagram .actor-box + text {
+  fill: var(--tx) !important;
+}
+.md-diagram line.actor-line,
+.md-diagram .actor-line {
+  stroke: var(--line2) !important;
+}
+.md-diagram .messageLine0,
+.md-diagram .messageLine1 {
+  stroke: var(--tx3) !important;
+}
+.md-diagram .messageText,
+.md-diagram .messageText tspan {
+  fill: var(--tx2) !important;
+  stroke: none !important;
+}
+.md-diagram .activation0,
+.md-diagram .activation1,
+.md-diagram .activation2 {
+  fill: var(--accsoft) !important;
+  stroke: var(--acc) !important;
+}
+.md-diagram .note {
+  fill: var(--agentsoft) !important;
+  stroke: var(--agent) !important;
+}
+.md-diagram .noteText,
+.md-diagram .noteText tspan {
+  fill: var(--tx2) !important;
+}
+.md-diagram .labelBox {
+  fill: var(--bg3) !important;
+  stroke: var(--line2) !important;
+}
+.md-diagram .labelText,
+.md-diagram .labelText tspan,
+.md-diagram .loopText,
+.md-diagram .loopText tspan {
+  fill: var(--tx2) !important;
+}
+.md-diagram .loopLine {
+  stroke: var(--line2) !important;
 }
 .md blockquote {
   margin: 0 0 10px;

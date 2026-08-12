@@ -52,3 +52,18 @@ export const mono = (weight: number, size: number): CSSProperties => ({
   fontWeight: weight,
   fontSize: size,
 });
+
+/** Human duration from decimal hours: 45s, 6m, 1h 12m, 2d 4h. Storage stays decimal hours. */
+export function fmtDuration(hours: number | null | undefined): string {
+  if (hours == null || !Number.isFinite(hours) || hours < 0) return '—';
+  const totalSec = Math.round(hours * 3600);
+  if (totalSec < 60) return `${totalSec}s`;
+  const totalMin = Math.round(totalSec / 60);
+  if (totalMin < 60) return `${totalMin}m`;
+  const totalHrs = Math.floor(totalMin / 60);
+  const mins = totalMin % 60;
+  if (totalHrs < 48) return mins > 0 ? `${totalHrs}h ${mins}m` : `${totalHrs}h`;
+  const days = Math.floor(totalHrs / 24);
+  const remHrs = totalHrs % 24;
+  return remHrs > 0 ? `${days}d ${remHrs}h` : `${days}d`;
+}
