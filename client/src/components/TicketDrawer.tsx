@@ -427,6 +427,12 @@ export function TicketDrawer({
 
   const assigneeOptions = [...new Set(['—', ...team, ticket.assignee])];
 
+  // Signed % over/under estimate, from the rounded value so ±0.4% shows as neutral 0%, not a colored +0%.
+  const estDiffPct =
+    ticket.actualHours != null && ticket.estHours != null && ticket.estHours > 0
+      ? Math.round(((ticket.actualHours - ticket.estHours) / ticket.estHours) * 100)
+      : null;
+
   return (
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 40 }} />
@@ -509,7 +515,16 @@ export function TicketDrawer({
               {ticket.actualHours != null && (
                 <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 2 }}>
                   actual {ticket.actualHours}h
-                  {ticket.estHours != null && ticket.estHours > 0 && ` (${Math.round((ticket.actualHours / ticket.estHours) * 100)}%)`}
+                  {estDiffPct != null && (
+                    <>
+                      {' ('}
+                      <span style={{ color: estDiffPct > 0 ? 'var(--bad)' : estDiffPct < 0 ? 'var(--ok)' : undefined }}>
+                        {estDiffPct > 0 ? '+' : ''}
+                        {estDiffPct}%
+                      </span>
+                      {')'}
+                    </>
+                  )}
                 </div>
               )}
             </div>
