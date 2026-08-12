@@ -279,10 +279,16 @@ async function runTask(pkg) {
   const resultPath = path.join(dir, 'RESULT.md');
   const result = existsSync(resultPath) ? readFileSync(resultPath, 'utf8').trim() : '';
   const prUrl = /https:\/\/github\.com\/\S+\/pull\/\d+/.exec(result)?.[0];
-  const outcome = code === 0 ? 'done' : 'failed';
+  // Delivery contract: a clean exit does NOT count as done unless the agent
+  // wrote RESULT.md. A run that worked but never shipped must land back in
+  // the backlog as failed, not park an empty "done" in Review.
+  const delivered = result.length > 0;
+  const outcome = code === 0 && delivered ? 'done' : 'failed';
   const summary =
     result.slice(0, 7900) ||
-    (code === 0 ? 'Claude Code run finished (no RESULT.md written).' : `Claude Code exited with code ${code}; see runner logs on ${os.hostname()}.`);
+    (code === 0
+      ? `Run exited cleanly but wrote no RESULT.md — delivery unverified (no PR, no summary). Work may be stranded uncommitted in the runner workdir on ${os.hostname()}.`
+      : `Claude Code exited with code ${code}; see runner logs on ${os.hostname()}.`);
 
   await call('POST', `/api/agent/work/${id}/complete`, { agent: AGENT, outcome, summary, ...(prUrl ? { url: prUrl } : {}) });
   log(`task ${id} completed ${outcome}`);
