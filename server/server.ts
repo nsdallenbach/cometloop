@@ -7,6 +7,11 @@ createApp({
       volumes: {
         // SOW uploads are performed server-side; allow writes on this volume.
         files: { policy: files.policy.allowAll(), maxUploadSize: 50_000_000 },
+        // Agent tool-call logs, archived server-side per run. Optional so the
+        // app still boots on deployments without the agent_telemetry volume.
+        ...(process.env.DATABRICKS_VOLUME_TELEMETRY
+          ? { telemetry: { policy: files.policy.allowAll(), maxUploadSize: 50_000_000 } }
+          : {}),
       },
     }),
     lakebase(),

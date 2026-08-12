@@ -2,6 +2,8 @@ command: ['npm', 'run', 'start']
 env:
   - name: DATABRICKS_VOLUME_FILES
     valueFrom: files
+  - name: DATABRICKS_VOLUME_TELEMETRY
+    valueFrom: telemetry
   - name: LAKEBASE_ENDPOINT
     valueFrom: postgres
   - name: DATABRICKS_SERVING_ENDPOINT_NAME

@@ -14,6 +14,16 @@ export interface Milestone {
   done: boolean;
 }
 
+/** How ticket effort (LLM agent-hours) translates into roadmap calendar time. */
+export interface RoadmapSettings {
+  /** Agent-hours of ticket effort that land in one working day. */
+  hoursPerDay: number;
+  /** Schedule buffer applied on top of the translated days, in percent. */
+  bufferPct: number;
+  /** Working days per week — converts working days to calendar days. */
+  workdaysPerWeek: number;
+}
+
 export interface Engagement {
   id: string;
   client: string;
@@ -38,6 +48,7 @@ export interface Engagement {
   milestones: Milestone[] | null;
   composer: string;
   pushed: boolean;
+  roadmapSettings: RoadmapSettings | null;
 }
 
 export interface TicketSource {
@@ -48,6 +59,15 @@ export interface TicketSource {
 /** Deployment pipeline progress for a merged PR ('none' = no pipeline found). */
 export type DeployState = 'pending' | 'running' | 'success' | 'failed' | 'none';
 
+/** The PR currently driving a ticket: an open one if any, else the latest. */
+export interface ActivePr {
+  number: number;
+  title: string;
+  state: 'open' | 'merged' | 'closed';
+  branch: string;
+  url: string;
+}
+
 export interface Ticket {
   key: string;
   engagementId: string;
@@ -55,14 +75,34 @@ export interface Ticket {
   status: TicketStatus;
   assignee: string;
   est: string;
+  /** Latest LLM-hours estimate from the estimation model (1 decimal), null before it runs. */
+  estHours: number | null;
+  /** Actual agent working hours, logged when the ticket reached Review. */
+  actualHours: number | null;
   workstream: string;
   agent: boolean;
   sources: TicketSource[];
   description: string;
   ac: string[];
   blocked: boolean;
+  tags: string[];
   deployState: DeployState | null;
   deployUrl: string | null;
+  /** Roadmap item (phase name) this ticket is linked to; null = unscheduled. */
+  roadmapItem: string | null;
+  /** Git branch for the work: manual value, else the latest linked PR's branch. */
+  branch: string | null;
+  /** When the ticket entered Done (null while in any other status). */
+  doneAt: string | null;
+  /** Unresolved blocking tickets (open `blocks` links pointing at this ticket). */
+  waitingOn: number;
+  activePr: ActivePr | null;
+}
+
+/** Ticket joined with its engagement, for cross-project views (/tickets). */
+export interface TicketWithEngagement extends Ticket {
+  client: string;
+  engagementName: string;
 }
 
 export interface ContextSource {
@@ -122,12 +162,47 @@ export interface AgentTask {
   createdAt: string;
 }
 
+/** One tool invocation streamed from an agent run (live feed in the ticket drawer). */
+export interface ToolCall {
+  id: number;
+  tool: string;
+  detail: string;
+  calledAt: string;
+}
+
 export interface ContextFile {
   name: string;
   size: number;
   lastModified: string | null;
   url: string;
 }
+
+export interface TicketAttachment {
+  id: string;
+  filename: string;
+  size: number;
+  contentType: string;
+  sha256: string;
+  uploader: string;
+  createdAt: string | null;
+  url: string;
+}
+
+/** Per-engagement Project Standards markdown document. */
+export interface ProjectStandards {
+  content: string;
+  updatedBy: string;
+  updatedAt: string | null;
+}
+
+/** One end-of-day snapshot of the ticket burndown series.
+ *  (Type alias, not interface, so it stays assignable to the charts' Record data prop.) */
+export type BurndownDay = {
+  date: string;
+  open: number;
+  done: number;
+  total: number;
+};
 
 export interface EngagementDetail {
   tickets: Ticket[];
@@ -218,4 +293,29 @@ export interface RepoDetail {
 export interface TicketDev {
   prs: RepoPr[];
   commits: RepoCommit[];
+}
+
+/** A link seen from one ticket's side; 'mention' = detected in text, not stored. */
+export type TicketLinkType = 'blocks' | 'blocked_by' | 'relates' | 'mention';
+
+export interface TicketLink {
+  /** Stored link id; null for detected mentions (which cannot be removed). */
+  id: number | null;
+  key: string;
+  title: string;
+  status: TicketStatus;
+  type: TicketLinkType;
+}
+
+/** A git branch linked to the ticket via its most recent synced PR. */
+export interface LinkedBranch {
+  branch: string;
+  prNumber: number;
+  state: 'open' | 'merged' | 'closed';
+  url: string;
+}
+
+export interface TicketLinks {
+  links: TicketLink[];
+  branches: LinkedBranch[];
 }

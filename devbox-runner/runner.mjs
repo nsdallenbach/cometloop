@@ -117,8 +117,53 @@ function toolLabel(input) {
   return JSON.stringify(input ?? {}).slice(0, 60);
 }
 
+/**
+ * Streams tool_use events to the console's ticket preview in small batches:
+ * flushed every few seconds (or every 25 events) so the drawer feels live
+ * without one HTTP round-trip per tool call. Losing a batch only costs
+ * telemetry, so failures are logged and dropped — never retried against a
+ * console that may be the thing that's down.
+ */
+class ToolCallStream {
+  constructor(taskId) {
+    this.taskId = taskId;
+    this.pending = [];
+    this.timer = null;
+    this.inflight = null;
+  }
+
+  push(tool, input) {
+    this.pending.push({ tool: String(tool).slice(0, 120), detail: toolLabel(input).slice(0, 600), ts: new Date().toISOString() });
+    if (this.pending.length >= 25) void this.flush();
+    else if (!this.timer) this.timer = setTimeout(() => void this.flush(), 4000);
+  }
+
+  /** One drain loop at a time keeps batches arriving in call order. */
+  flush() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.inflight ??= this.drain().finally(() => {
+      this.inflight = null;
+    });
+    return this.inflight;
+  }
+
+  async drain() {
+    while (this.pending.length > 0) {
+      const calls = this.pending.splice(0, 200);
+      try {
+        await call('POST', `/api/agent/work/${this.taskId}/tool-calls`, { agent: AGENT, calls });
+      } catch (e) {
+        log(`tool-call stream dropped ${calls.length} event(s): ${e.message}`);
+      }
+    }
+  }
+}
+
 /** Print one NDJSON line from Claude's stream-json output as a compact live feed. */
-function printEvent(line) {
+function printEvent(line, tools) {
   let evt;
   try {
     evt = JSON.parse(line);
@@ -129,7 +174,10 @@ function printEvent(line) {
   if (evt.type === 'assistant') {
     for (const block of evt.message?.content ?? []) {
       if (block.type === 'text' && block.text) console.log(block.text);
-      else if (block.type === 'tool_use') console.log(`  > ${block.name} ${toolLabel(block.input)}`);
+      else if (block.type === 'tool_use') {
+        console.log(`  > ${block.name} ${toolLabel(block.input)}`);
+        tools?.push(block.name, block.input);
+      }
     }
   } else if (evt.type === 'result') {
     console.log(JSON.stringify(evt, null, 2)); // final result event in full
@@ -138,7 +186,7 @@ function printEvent(line) {
   }
 }
 
-function runClaude(prompt, cwd, extraEnv) {
+function runClaude(prompt, cwd, extraEnv, tools) {
   return new Promise((resolve) => {
     const child = spawn(CLAUDE_BIN, ['-p', '--output-format', 'stream-json', '--verbose', ...CLAUDE_ARGS], {
       cwd,
@@ -152,10 +200,10 @@ function runClaude(prompt, cwd, extraEnv) {
       buf += chunk;
       const lines = buf.split('\n');
       buf = lines.pop();
-      for (const l of lines) if (l.trim()) printEvent(l);
+      for (const l of lines) if (l.trim()) printEvent(l, tools);
     });
     child.stdout.on('end', () => {
-      if (buf.trim()) printEvent(buf);
+      if (buf.trim()) printEvent(buf, tools);
     });
     child.stdin.write(prompt);
     child.stdin.end();
@@ -223,7 +271,9 @@ async function runTask(pkg) {
   }).catch(() => {});
 
   const prompt = pkg.prompt ?? fallbackPrompt(pkg);
-  const code = await runClaude(prompt, dir, gitToken ? { GIT_TOKEN: gitToken } : {});
+  const tools = new ToolCallStream(id);
+  const code = await runClaude(prompt, dir, gitToken ? { GIT_TOKEN: gitToken } : {}, tools);
+  await tools.flush(); // drain the tail of the feed before completing
   clearInterval(heartbeat);
 
   const resultPath = path.join(dir, 'RESULT.md');
