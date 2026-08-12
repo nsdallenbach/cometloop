@@ -41,6 +41,29 @@ const MIGRATIONS = [
   { sql: `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_state TEXT` },
   { sql: `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_url TEXT` },
   { sql: `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_started_at TIMESTAMPTZ` },
+  // --- feature-PR columns on dev-owned tables (merge train, Aug 2026) ---
+  { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS roadmap_item TEXT` },
+  { sql: `ALTER TABLE app.engagements ADD COLUMN IF NOT EXISTS roadmap_settings JSONB` },
+  // est_hours settled as REAL (PR #24 wanted REAL, #34 NUMERIC) so node-pg
+  // returns JS numbers to both features.
+  { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS est_hours REAL` },
+  { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS actual_hours REAL` },
+  { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ` },
+  { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'` },
+  { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS branch TEXT` },
+  // Attachments metadata: FK onto dev-owned tickets, so the table is created
+  // here as the dev role; dev default privileges auto-grant the app SP.
+  { sql: `CREATE TABLE IF NOT EXISTS app.ticket_attachments (
+    id TEXT PRIMARY KEY,
+    ticket_key TEXT NOT NULL REFERENCES app.tickets(key) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+    sha256 TEXT NOT NULL,
+    uploader TEXT NOT NULL,
+    storage_path TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )` },
 ];
 
 (async () => {
