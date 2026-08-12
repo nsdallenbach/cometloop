@@ -267,6 +267,11 @@ export const api = {
     return mapTicket(await http<Row>(`/api/tickets/${key}/refine`, { method: 'POST', ...json({}) }));
   },
 
+  /** Persist the board's ticket order (all keys, top to bottom). */
+  reorderTickets(engId: string, order: string[]) {
+    return http(`/api/engagements/${engId}/tickets/order`, { method: 'PUT', ...json({ order }) });
+  },
+
   bulkTickets(keys: string[], patch: { status?: TicketStatus; assignee?: string }) {
     return http('/api/tickets/bulk', { method: 'POST', ...json({ keys, patch }) });
   },
