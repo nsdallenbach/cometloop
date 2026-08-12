@@ -16,12 +16,30 @@ import { agentBrand, HARNESS_OPTIONS, PROVIDER_OPTIONS } from './AgentLogos';
  */
 
 // Cluster geometry: one fixed-size tile per project, spokes on an ellipse.
-const W = 384;
-const H = 336;
-const CX = W / 2;
-const CY = 158;
-const RX = 142;
-const RY = 106;
+/**
+ * Cluster geometry scales with spoke count — a fixed orbit crammed 10 nodes
+ * of 124px into overlap. Crowded orbits (7+) also stagger alternate spokes
+ * outward so neighbors clear each other.
+ */
+interface ClusterGeom {
+  w: number;
+  h: number;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  stagger: boolean;
+}
+
+function clusterGeometry(count: number): ClusterGeom {
+  const rx = Math.max(150, 27 * count);
+  const ry = Math.max(112, 20 * count);
+  const stagger = count > 6;
+  const pad = stagger ? 1.16 : 1;
+  const w = 2 * (rx * pad + 80);
+  const h = 2 * (ry * pad + 66);
+  return { w, h, cx: w / 2, cy: h / 2, rx, ry, stagger };
+}
 
 const FUTURE_LABEL: Record<string, string> = {
   'serving-endpoint': 'SERVING ENDPOINT',
@@ -30,9 +48,10 @@ const FUTURE_LABEL: Record<string, string> = {
 };
 
 /** Spoke positions: first node at 12 o'clock, then evenly around the ellipse. */
-function spokeXY(i: number, count: number): { x: number; y: number } {
+function spokeXY(i: number, count: number, g: ClusterGeom): { x: number; y: number } {
   const a = -Math.PI / 2 + (i * 2 * Math.PI) / count;
-  return { x: CX + RX * Math.cos(a), y: CY + RY * Math.sin(a) };
+  const r = g.stagger && i % 2 === 1 ? 1.16 : 1;
+  return { x: g.cx + g.rx * r * Math.cos(a), y: g.cy + g.ry * r * Math.sin(a) };
 }
 
 function relTime(iso: string | null): string {
@@ -73,7 +92,7 @@ function FutureSpoke({ x, y }: { x: number; y: number }) {
   );
 }
 
-function AgentSpoke({ agent, x, y }: { agent: ProjectAgent; x: number; y: number }) {
+function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number; y: number; onSelect: (agent: ProjectAgent) => void }) {
   const brand = agentBrand(agent);
   const future = agent.agentType !== 'runner';
   const staged = agent.source === 'configured';
@@ -81,21 +100,15 @@ function AgentSpoke({ agent, x, y }: { agent: ProjectAgent; x: number; y: number
   const sub = future
     ? (FUTURE_LABEL[agent.agentType] ?? agent.agentType.toUpperCase())
     : (brand?.label ?? agent.modelProvider ?? 'Runner');
-  const detail = [
-    agent.name,
-    brand ? `harness: ${brand.label}` : null,
-    agent.model ? `model: ${agent.model}` : null,
-    agent.source === 'observed' ? `${agent.tasks} task${agent.tasks === 1 ? '' : 's'} · last seen ${relTime(agent.lastSeen)}` : 'configured — rollout pending',
-  ]
-    .filter(Boolean)
-    .join('\n');
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.85 }}
       animate={{ opacity: 1, scale: 1 }}
+      whileHover={{ scale: 1.05 }}
       transition={{ type: 'spring', visualDuration: 0.3, bounce: 0.25 }}
-      title={detail}
-      style={{ position: 'absolute', left: x - 62, top: y - 30, width: 124, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}
+      title={`${agent.name} — click for details`}
+      onClick={() => onSelect(agent)}
+      style={{ position: 'absolute', left: x - 62, top: y - 30, width: 124, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, cursor: 'pointer' }}
     >
       <div
         style={{
@@ -154,18 +167,21 @@ function ProjectCluster({
   agents,
   lead,
   onDeploy,
+  onSelectAgent,
 }: {
   project: AgentsOverviewProject;
   agents: ProjectAgent[];
   lead: boolean;
   onDeploy: () => void;
+  onSelectAgent: (agent: ProjectAgent) => void;
 }) {
   // Spokes: every agent plus one dashed placeholder for the future node kinds.
   const count = agents.length + 1;
-  const spots = Array.from({ length: count }, (_, i) => spokeXY(i, count));
+  const geom = clusterGeometry(count);
+  const spots = Array.from({ length: count }, (_, i) => spokeXY(i, count, geom));
   return (
-    <div style={{ position: 'relative', width: W, height: H, flex: 'none' }}>
-      <svg width={W} height={H} aria-hidden="true" style={{ position: 'absolute', inset: 0 }}>
+    <div style={{ position: 'relative', width: geom.w, height: geom.h, flex: 'none' }}>
+      <svg width={geom.w} height={geom.h} aria-hidden="true" style={{ position: 'absolute', inset: 0 }}>
         {spots.map((p, i) => {
           const agent = agents[i];
           const ghost = !agent;
@@ -174,8 +190,8 @@ function ProjectCluster({
           return (
             <line
               key={agent?.id ?? 'future'}
-              x1={CX}
-              y1={CY}
+              x1={geom.cx}
+              y1={geom.cy}
               x2={p.x}
               y2={p.y}
               stroke={active ? 'var(--agent)' : staged ? 'var(--warn)' : 'var(--line2)'}
@@ -187,14 +203,18 @@ function ProjectCluster({
         })}
       </svg>
       {spots.map((p, i) =>
-        agents[i] ? <AgentSpoke key={agents[i].id} agent={agents[i]} x={p.x} y={p.y} /> : <FutureSpoke key="future" x={p.x} y={p.y} />,
+        agents[i] ? (
+          <AgentSpoke key={agents[i].id} agent={agents[i]} x={p.x} y={p.y} onSelect={onSelectAgent} />
+        ) : (
+          <FutureSpoke key="future" x={p.x} y={p.y} />
+        ),
       )}
       {/* Hub */}
       <div
         style={{
           position: 'absolute',
-          left: CX - 78,
-          top: CY - 44,
+          left: geom.cx - 78,
+          top: geom.cy - 44,
           width: 156,
           background: 'var(--bg2)',
           border: '1px solid var(--line2)',
@@ -435,10 +455,109 @@ function DeployModal({
   );
 }
 
+/** Click-through detail for any node on the map (DAT-197 follow-up). */
+function AgentDetailModal({ agent, projectName, onClose }: { agent: ProjectAgent; projectName: string; onClose: () => void }) {
+  const brand = agentBrand(agent);
+  const staged = agent.source === 'configured';
+  const statusColor = agent.status === 'active' ? 'var(--ok)' : staged ? 'var(--warn)' : 'var(--tx3)';
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const rows: [string, string][] = [
+    ['PROJECT', projectName],
+    ['TYPE', agent.agentType === 'runner' ? 'Runner (devbox harness)' : (FUTURE_LABEL[agent.agentType] ?? agent.agentType)],
+    ['HARNESS', brand?.label ?? agent.harness ?? '—'],
+    ['MODEL PROVIDER', agent.modelProvider ?? '—'],
+    ['MODEL', agent.model ?? '—'],
+    ['SOURCE', agent.source === 'observed' ? 'Observed — real runner from task history' : 'Configured — rollout pending'],
+    ['TASKS WORKED', agent.source === 'observed' ? `${agent.tasks} total · ${agent.activeTasks} active now` : '—'],
+    ['LAST SEEN', agent.lastSeen ? relTime(agent.lastSeen) : '—'],
+    ['FIRST SEEN', agent.createdAt ? relTime(agent.createdAt) : '—'],
+  ];
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.15, ease: 'easeOut' }}
+        onClick={onClose}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 40 }}
+      />
+      <motion.div
+        initial={{ opacity: 0, transform: 'translate(-50%,-50%) scale(0.97) translateY(6px)' }}
+        animate={{ opacity: 1, transform: 'translate(-50%,-50%) scale(1) translateY(0px)' }}
+        exit={{ opacity: 0, transform: 'translate(-50%,-50%) scale(0.98) translateY(4px)' }}
+        transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
+        role="dialog"
+        aria-label={`Agent details: ${agent.name}`}
+        style={{
+          position: 'fixed',
+          top: '50%',
+          left: '50%',
+          width: 400,
+          maxWidth: 'calc(100vw - 40px)',
+          background: 'var(--bg2)',
+          border: '1px solid var(--line)',
+          borderRadius: 4,
+          zIndex: 41,
+          boxShadow: '0 12px 40px rgba(0,0,0,.45)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '13px 16px', borderBottom: '1px solid var(--line)' }}>
+          <div
+            style={{
+              position: 'relative',
+              width: 34,
+              height: 34,
+              borderRadius: 8,
+              background: 'var(--bg3)',
+              border: staged ? '1px dashed var(--warn)' : '1px solid var(--line2)',
+              display: 'grid',
+              placeItems: 'center',
+              flex: 'none',
+            }}
+          >
+            {brand ? brand.mark(20) : <span style={{ ...mono(700, 14), color: 'var(--agent)' }}>{agent.name.charAt(0).toUpperCase()}</span>}
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ ...mono(600, 12), letterSpacing: '.04em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{agent.name}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, ...mono(400, 9), color: statusColor, letterSpacing: '.08em' }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor, animation: agent.status === 'active' ? 'eec-pulse 2.4s infinite' : undefined }} />
+              {staged ? 'STAGED' : agent.status.toUpperCase()}
+            </div>
+          </div>
+          <button
+            className="hv-tx"
+            onClick={onClose}
+            aria-label="Close"
+            style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 16, cursor: 'pointer', padding: '2px 6px' }}
+          >
+            ×
+          </button>
+        </div>
+        <div style={{ padding: '12px 16px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {rows.map(([label, value]) => (
+            <div key={label} style={{ display: 'flex', gap: 12, alignItems: 'baseline' }}>
+              <span style={{ ...mono(500, 9), color: 'var(--tx3)', letterSpacing: '.08em', width: 118, flex: 'none' }}>{label}</span>
+              <span style={{ fontSize: 12.5, color: 'var(--tx)', minWidth: 0, overflowWrap: 'anywhere' }}>{value}</span>
+            </div>
+          ))}
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
 export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) => boolean; toast: (msg: string) => void }) {
   const [data, setData] = useState<AgentsOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deployFor, setDeployFor] = useState<AgentsOverviewProject | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<ProjectAgent | null>(null);
 
   const load = useCallback(() => {
     return api
@@ -539,9 +658,21 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
             agents={byProject.get(p.id) ?? []}
             lead={canLead(p.id)}
             onDeploy={() => setDeployFor(p)}
+            onSelectAgent={setSelectedAgent}
           />
         ))}
       </div>
+
+      <AnimatePresence>
+        {selectedAgent && (
+          <AgentDetailModal
+            key={selectedAgent.id}
+            agent={selectedAgent}
+            projectName={data?.projects.find((p) => p.id === selectedAgent.engagementId)?.name ?? selectedAgent.engagementId}
+            onClose={() => setSelectedAgent(null)}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {deployFor && (
