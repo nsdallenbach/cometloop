@@ -48,6 +48,15 @@ export interface TicketSource {
 /** Deployment pipeline progress for a merged PR ('none' = no pipeline found). */
 export type DeployState = 'pending' | 'running' | 'success' | 'failed' | 'none';
 
+/** The PR currently driving a ticket: an open one if any, else the latest. */
+export interface ActivePr {
+  number: number;
+  title: string;
+  state: 'open' | 'merged' | 'closed';
+  branch: string;
+  url: string;
+}
+
 export interface Ticket {
   key: string;
   engagementId: string;
@@ -63,6 +72,13 @@ export interface Ticket {
   blocked: boolean;
   deployState: DeployState | null;
   deployUrl: string | null;
+  activePr: ActivePr | null;
+}
+
+/** Ticket joined with its engagement, for cross-project views (/tickets). */
+export interface TicketWithEngagement extends Ticket {
+  client: string;
+  engagementName: string;
 }
 
 export interface ContextSource {
@@ -143,6 +159,15 @@ export interface ProjectStandards {
   updatedBy: string;
   updatedAt: string | null;
 }
+
+/** One end-of-day snapshot of the ticket burndown series.
+ *  (Type alias, not interface, so it stays assignable to the charts' Record data prop.) */
+export type BurndownDay = {
+  date: string;
+  open: number;
+  done: number;
+  total: number;
+};
 
 export interface EngagementDetail {
   tickets: Ticket[];

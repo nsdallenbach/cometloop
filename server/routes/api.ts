@@ -9,6 +9,7 @@ import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
 import { setupContextFileRoutes } from './context-files';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
+import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
 import {
   SEED_ENGAGEMENTS,
   SEED_TICKETS,
@@ -137,7 +138,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -203,6 +204,8 @@ async function initSchema(appkit: AppKitServices) {
       g.id, g.ticket, g.person, g.rationale,
     ]);
   }
+  // The seeded tickets need baseline events too — the schema-time backfill ran before they existed.
+  await appkit.lakebase.query(TICKET_EVENTS_BACKFILL_SQL);
   console.log('[api] Seed complete');
   await backfillMemberships(appkit);
 }
@@ -563,16 +566,26 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         const id = req.params.id;
         // Latest tracked deploy per ticket rides along so board cards can show
-        // pipeline progress while the ticket holds in Review.
+        // pipeline progress while the ticket holds in Review, and the active
+        // PR (an open one if any, else the most recently updated) so cards can
+        // surface the working branch and PR state at a glance.
         const tickets = (
           await q(
-            `SELECT t.*, d.deploy_state, d.deploy_url FROM app.tickets t
+            `SELECT t.*, d.deploy_state, d.deploy_url,
+                    p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url
+             FROM app.tickets t
              LEFT JOIN LATERAL (
                SELECT pr.deploy_state, pr.deploy_url FROM app.repo_prs pr
                JOIN app.repo_connections c ON c.id = pr.connection_id
                WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id AND pr.deploy_state IS NOT NULL
                ORDER BY pr.updated_at DESC NULLS LAST LIMIT 1
              ) d ON true
+             LEFT JOIN LATERAL (
+               SELECT pr.number, pr.title, pr.state, pr.branch, pr.url FROM app.repo_prs pr
+               JOIN app.repo_connections c ON c.id = pr.connection_id
+               WHERE pr.ticket_key = t.key AND c.engagement_id = t.engagement_id
+               ORDER BY (pr.state = 'open') DESC, pr.updated_at DESC NULLS LAST LIMIT 1
+             ) p ON true
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
             [id],
           )
@@ -603,6 +616,67 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
     });
 
+    // Daily open/done ticket counts replayed from the status event trail.
+    // Empty trail (zero tickets, fresh engagement) → { days: [] }.
+    app.get('/api/engagements/:id/burndown', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const exists = await q('SELECT 1 FROM app.engagements WHERE id = $1', [id]);
+        if (exists.rows.length === 0) {
+          res.status(404).json({ error: 'Engagement not found' });
+          return;
+        }
+        const { rows } = await q(
+          'SELECT ticket_key, to_status, created_at FROM app.ticket_events WHERE engagement_id = $1 ORDER BY created_at, id',
+          [id],
+        );
+        const events = rows.map((r) => ({
+          ticketKey: String(r.ticket_key),
+          toStatus: String(r.to_status),
+          createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        }));
+        res.json({ days: computeBurndown(events, new Date().toISOString().slice(0, 10)) });
+      } catch (err) {
+        console.error('burndown failed:', err);
+        res.status(500).json({ error: 'Failed to load burndown' });
+      }
+    });
+
+    // Cross-project reads backing the /tickets and /tickets/:key routes: the
+    // client resolves a deep-linked ticket to its engagement via these.
+    app.get('/api/tickets', async (_req, res) => {
+      try {
+        const { rows } = await q(
+          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
+           JOIN app.engagements e ON e.id = t.engagement_id
+           ORDER BY e.created_at, e.id, t.seq`,
+        );
+        res.json(rows);
+      } catch (err) {
+        console.error('list tickets failed:', err);
+        res.status(500).json({ error: 'Failed to load tickets' });
+      }
+    });
+
+    app.get('/api/tickets/:key', async (req, res) => {
+      try {
+        const { rows } = await q(
+          `SELECT t.*, e.client, e.name AS engagement_name FROM app.tickets t
+           JOIN app.engagements e ON e.id = t.engagement_id
+           WHERE t.key = $1`,
+          [req.params.key],
+        );
+        if (rows.length === 0) {
+          res.status(404).json({ error: 'Ticket not found' });
+          return;
+        }
+        res.json(rows[0]);
+      } catch (err) {
+        console.error('ticket lookup failed:', err);
+        res.status(500).json({ error: 'Failed to load ticket' });
+      }
+    });
+
     // ---- ticket mutations ----
     app.patch('/api/tickets/:key', async (req, res) => {
       const parsed = PatchTicketBody.safeParse(req.body);
@@ -613,6 +687,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         const { status, assignee } = parsed.data;
         let review: { engagementId: string; from: string } | null = null;
+        let before: { engagementId: string; status: string } | null = null;
         if (status !== undefined) {
           // Moving tickets in or out of the agent-review states is a lead decision;
           // everything else (board moves, assignment) is open to developers.
@@ -621,6 +696,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             res.status(404).json({ error: 'Ticket not found' });
             return;
           }
+          before = { engagementId: String(current.engagement_id), status: String(current.status) };
           const reviewStates = ['proposed', 'dismissed'];
           if (reviewStates.includes(String(current.status)) || reviewStates.includes(status)) {
             if (!(await requireLead(req, res, String(current.engagement_id)))) return;
@@ -650,6 +726,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         console.log(
           `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}`,
         );
+        if (status !== undefined && before) {
+          await recordTicketEvent(q, updated.key, before.engagementId, before.status, status);
+        }
         if (review && updated.status !== review.from) {
           const verb =
             updated.status === 'dismissed' ? 'Dismissed' : review.from === 'proposed' ? 'Accepted' : 'Reinstated';
@@ -784,6 +863,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           ],
         );
         console.log(`[api] created ticket ${key} in ${engId} (${ac.length} AC)`);
+        await recordTicketEvent(q, key, engId, null, 'backlog');
         const who = assignee?.trim();
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
@@ -844,6 +924,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             if (!(await requireLead(req, res, engagementId))) return;
           }
           await q('UPDATE app.tickets SET status = $1 WHERE key = ANY($2)', [patch.status, keys]);
+          for (const t of targets) {
+            await recordTicketEvent(q, String(t.key), String(t.engagement_id), String(t.status), patch.status);
+          }
         }
         if (patch.assignee !== undefined) {
           await q('UPDATE app.tickets SET assignee = $1 WHERE key = ANY($2)', [patch.assignee, keys]);
@@ -1165,11 +1248,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         );
         let i = 101;
         for (const p of proposals) {
+          const ticketKey = `${prefix}-${i++}`;
           await q(
             `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked)
              VALUES ($1,$2,$3,'backlog','—',$4,$5,true,$6,$7,$8,false)`,
             [
-              `${prefix}-${i++}`,
+              ticketKey,
               id,
               p.title,
               p.est,
@@ -1181,6 +1265,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
               JSON.stringify(['Scope confirmed at kickoff', `Deliverable acceptance per ${p.source}`]),
             ],
           );
+          await recordTicketEvent(q, ticketKey, id, null, 'backlog');
         }
         if (sowFile) {
           await q(
@@ -1397,8 +1482,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   });
 
   console.log('[api] API routes registered');
-  // 90s keeps merge → Done feeling live while webhooks can't reach the app
+  // Idle repos sync every 90s; connections with an open linked PR or an
+  // in-flight deploy drop to a 30s cadence so an external merge reflects on
+  // the ticket in under a minute while webhooks can't reach the app
   // (GitHub App tokens make the extra polling free, rate-limit-wise).
-  startRepoPolling(q, 90_000);
+  startRepoPolling(q, 90_000, 30_000);
   if (process.env.DEMO_MOCK_RUNNER === '1') startMockRunner(q);
 }
