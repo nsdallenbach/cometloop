@@ -119,7 +119,7 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
           <AreaChart data={delivered} xDataKey="date" aspectRatio="3.4 / 1" margin={{ top: 16, right: 16, bottom: 28, left: 30 }}>
             <Grid horizontal numTicksRows={4} />
             <Area dataKey="hours" fill={HOURS_COLOR} fillOpacity={0.25} />
-            <Area dataKey="tickets" fill={TICKETS_COLOR} fillOpacity={0.25} yAxisId="right" />
+            <Area dataKey="tickets" fill={TICKETS_COLOR} fillOpacity={0.25} />
             <XAxis numTicks={5} />
             <ChartTooltip />
           </AreaChart>
