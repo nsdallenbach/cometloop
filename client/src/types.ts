@@ -201,6 +201,25 @@ export interface ProjectStandards {
 
 /** One end-of-day snapshot of the ticket burndown series.
  *  (Type alias, not interface, so it stays assignable to the charts' Record data prop.) */
+/** Org-velocity KPI report from GET /api/engagements/:id/velocity (DAT-193). */
+export interface VelocityReport {
+  windowDays: number;
+  leadTimeHrs: { current: number | null; previous: number | null; samples: number };
+  cycleTimeHrs: { current: number | null; previous: number | null; samples: number };
+  decisionTimeHrs: { current: number | null; previous: number | null; samples: number };
+  reviewPassRate: number | null;
+  stages: { key: 'queue' | 'build' | 'review'; label: string; medianHrs: number | null; samples: number }[];
+  backlog: { date: string; open: number }[];
+  backlogDelta: number | null;
+  weekly: { week: string; doneCount: number; leadTimeHrs: number | null; cycleTimeHrs: number | null; humanHoursSaved: number }[];
+  humanHoursSaved: { window: number; total: number; agentHoursSpent: number };
+  thenVsNow: {
+    spanDays: number;
+    then: { donePerWeek: number; leadTimeHrs: number | null; humanHoursSavedPerWeek: number };
+    now: { donePerWeek: number; leadTimeHrs: number | null; humanHoursSavedPerWeek: number };
+  } | null;
+}
+
 export type BurndownDay = {
   date: string;
   open: number;
