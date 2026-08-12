@@ -406,6 +406,27 @@ tr.hv-row:hover td {
   background: none;
   padding: 0;
 }
+/* Rendered mermaid diagrams inside markdown (DAT-192) */
+.md-diagram {
+  margin: 0 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg2);
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.md-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+.md-diagram-note {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--tx3);
+}
 .md blockquote {
   margin: 0 0 10px;
   padding: 2px 12px;
