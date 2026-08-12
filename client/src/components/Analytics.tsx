@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { CommitDay, Engagement, EngagementDetail, VelocityReport } from '../types';
 import { api } from '../api';
 import { deliveredByDay } from '../lib/delivered-by-day';
-import { mono } from '../util';
+import { fmtDuration, mono } from '../util';
 import { AreaChart } from './charts/area-chart';
 import { Area } from './charts/area';
 import { Grid } from './charts/grid';
@@ -107,7 +107,7 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
           caption={
             deliveredTotals.tickets === 0
               ? 'No tickets done in this window yet.'
-              : `${deliveredTotals.hours}h agent hours across ${deliveredTotals.tickets} done ticket${deliveredTotals.tickets === 1 ? '' : 's'}`
+              : `${fmtDuration(deliveredTotals.hours)} of agent time across ${deliveredTotals.tickets} done ticket${deliveredTotals.tickets === 1 ? '' : 's'}`
           }
         >
           <LegendRow
@@ -211,13 +211,8 @@ function CommitActivityCard({ engId }: { engId: string }) {
 
 // ---------- org velocity (DAT-193) ----------
 
-/** Hours for display: sub-2-day values in hours, longer in days. */
-function fmtHrs(h: number | null): string {
-  if (h == null) return '—';
-  if (h < 1) return `${Math.max(1, Math.round(h * 60))}m`;
-  if (h < 48) return `${Math.round(h * 10) / 10}h`;
-  return `${Math.round((h / 24) * 10) / 10}d`;
-}
+/** Durations render as h/m (2d 4h beyond two days) via the shared formatter. */
+const fmtHrs = (h: number | null): string => fmtDuration(h);
 
 /** Lower-is-better delta caption vs the prior window. */
 function trendSub(m: { current: number | null; previous: number | null }, windowDays: number): { sub: string; color?: string } {
@@ -296,9 +291,9 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
         <VKpi label="CYCLE TIME (WORK START → DONE)" display={fmtHrs(report.cycleTimeHrs.current)} sub={cycle.sub} color={cycle.color} />
         <VKpi label="DECISION TIME (IN REVIEW)" display={fmtHrs(report.decisionTimeHrs.current)} sub={decision.sub} color={decision.color} />
         <VKpi
-          label="HUMAN DEV HOURS SAVED"
-          display={`${report.humanHoursSaved.window}h`}
-          sub={`${report.humanHoursSaved.total}H ALL-TIME · ${report.humanHoursSaved.agentHoursSpent}H AGENT TIME SPENT`}
+          label="HUMAN DEV TIME SAVED"
+          display={fmtDuration(report.humanHoursSaved.window)}
+          sub={`${fmtDuration(report.humanHoursSaved.total).toUpperCase()} ALL-TIME · ${fmtDuration(report.humanHoursSaved.agentHoursSpent).toUpperCase()} AGENT TIME SPENT`}
           color="var(--ok)"
         />
       </div>
@@ -393,7 +388,7 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
                       </td>
                       <td style={cell}>{w.doneCount}</td>
                       <td style={cell}>{fmtHrs(w.leadTimeHrs)}</td>
-                      <td style={cell}>{w.humanHoursSaved}h</td>
+                      <td style={cell}>{fmtDuration(w.humanHoursSaved)}</td>
                     </tr>
                   );
                 })}

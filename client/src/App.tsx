@@ -12,6 +12,7 @@ import { Setup } from './components/Setup';
 import { Tickets } from './components/Tickets';
 import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
+import { prefetchMermaid } from './components/Markdown';
 import { Palette, type PaletteItem } from './components/Palette';
 
 export type { Tab } from './routes';
@@ -85,6 +86,13 @@ export default function App() {
     void refreshEngagements();
     loadMe();
   }, [refreshEngagements, loadMe]);
+
+  // Warm the mermaid chunks once the app has settled, so the first ticket
+  // with a diagram renders instantly instead of paying the lazy download.
+  useEffect(() => {
+    const t = setTimeout(prefetchMermaid, 3500);
+    return () => clearTimeout(t);
+  }, []);
 
   const refreshDetail = useCallback(() => {
     if (!engId) return;

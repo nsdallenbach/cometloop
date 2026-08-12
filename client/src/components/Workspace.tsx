@@ -3,7 +3,7 @@ import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/rea
 import { Plus, Rocket } from 'lucide-react';
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
-import { HEALTH_COLOR, HEALTH_LABEL, initials, mono } from '../util';
+import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { dropBoardTicket, laneOf } from '../lib/board-order';
 import { Analytics } from './Analytics';
@@ -380,7 +380,7 @@ export function Workspace({
         >
           {runner !== null ? runnerBrand(runner).mark(12) : initials(t.assignee)}
         </span>
-        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{t.est}</span>
+        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{t.estHours != null ? fmtDuration(t.estHours) : t.est}</span>
         <span style={{ ...mono(400, 10), color: 'var(--tx3)', marginLeft: 'auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>
           {t.sources[0]?.type ?? ''}
         </span>
@@ -1205,7 +1205,7 @@ export function Workspace({
                             </span>
                           </button>
                         </td>
-                        <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>{t.est}</td>
+                        <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>{t.estHours != null ? fmtDuration(t.estHours) : t.est}</td>
                         <td style={{ ...tdBase, fontSize: 12, color: 'var(--tx2)', whiteSpace: 'nowrap' }}>{t.workstream}</td>
                         <td style={tdBase}>
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 200 }}>

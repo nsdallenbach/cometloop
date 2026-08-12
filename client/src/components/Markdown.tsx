@@ -20,12 +20,14 @@ let mermaidReady: Promise<typeof import('mermaid').default> | null = null;
 function loadMermaid(): Promise<typeof import('mermaid').default> {
   if (mermaidReady === null) {
     mermaidReady = import('mermaid').then((mod) => {
-      const css = getComputedStyle(document.documentElement);
-      const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
+      // No themeVariables: the app's tokens live on [data-theme] containers,
+      // not :root, so they can't be read once at init (and baking literals
+      // breaks light mode). All paint comes from the `.md-diagram` CSS-token
+      // overrides in index.css, which follow the active theme live.
       mod.default.initialize({
         startOnLoad: false,
         securityLevel: 'strict',
-        theme: 'base',
+        theme: 'neutral',
         fontFamily: "'DM Sans', sans-serif",
         // Labels must be native SVG <text>: mermaid's default HTML labels sit
         // in <foreignObject>, which the SVG sanitizer strips — leaving shapes
@@ -33,31 +35,22 @@ function loadMermaid(): Promise<typeof import('mermaid').default> {
         htmlLabels: false,
         flowchart: { htmlLabels: false, useMaxWidth: true },
         sequence: { useMaxWidth: true },
-        themeVariables: {
-          primaryColor: v('--bg3', '#20262e'),
-          primaryTextColor: v('--tx', '#e8ecf2'),
-          primaryBorderColor: v('--line2', '#39404a'),
-          lineColor: v('--tx3', '#6b7480'),
-          secondaryColor: v('--bg2', '#161b22'),
-          tertiaryColor: v('--bg', '#101318'),
-          background: v('--bg2', '#161b22'),
-          mainBkg: v('--bg3', '#20262e'),
-          textColor: v('--tx2', '#9aa5b5'),
-          clusterBkg: v('--bg2', '#161b22'),
-          clusterBorder: v('--line', '#262d38'),
-          edgeLabelBackground: v('--bg2', '#161b22'),
-          nodeBorder: v('--acc', '#4f8ff7'),
-          nodeTextColor: v('--tx', '#e8ecf2'),
-          labelTextColor: v('--tx2', '#9aa5b5'),
-          actorTextColor: v('--tx', '#e8ecf2'),
-          signalTextColor: v('--tx2', '#9aa5b5'),
-          fontSize: '13px',
-        },
+        themeVariables: { fontSize: '13px' },
       });
       return mod.default;
     });
   }
   return mermaidReady;
+}
+
+/**
+ * Warm the mermaid chunks before any diagram is on screen: the first render
+ * otherwise pays several sequential lazy-chunk downloads through the
+ * workspace proxy, which reads as "diagrams take forever". Called from App
+ * shortly after mount.
+ */
+export function prefetchMermaid(): void {
+  void loadMermaid().catch(() => {});
 }
 
 let renderSeq = 0;
