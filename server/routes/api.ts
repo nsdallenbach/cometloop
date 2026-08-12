@@ -19,6 +19,7 @@ import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes
 import { setupMcpRoutes } from './mcp';
 import { extractText, refinePlan, refineTicketWithBoard, type RefinedPlan, type ScopingAction } from './scoping-agent';
 import { setupTicketOrderRoutes } from './ticket-order';
+import { clipText, installUtf8BodyRecovery } from './utf8-body';
 import { setupVelocityRoutes } from './velocity';
 import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
 import {
@@ -372,12 +373,12 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
   const jsonMatch = /\{[\s\S]*\}/.exec(text);
   if (!jsonMatch) return;
   const plan = JSON.parse(jsonMatch[0]) as { title?: unknown; description?: unknown; acceptance_criteria?: unknown; reply?: unknown };
-  const title = typeof plan.title === 'string' && plan.title.trim() ? plan.title.trim().slice(0, 200) : asText(t.title);
+  const title = typeof plan.title === 'string' && plan.title.trim() ? clipText(plan.title.trim(), 200) : asText(t.title);
   const description = typeof plan.description === 'string' && plan.description.trim() ? plan.description.trim() : asText(t.description);
   const ac = Array.isArray(plan.acceptance_criteria)
     ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)
     : existingAc;
-  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? plan.reply.trim().slice(0, 600) : 'Updated the ticket based on your comment.';
+  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? clipText(plan.reply.trim(), 600) : 'Updated the ticket based on your comment.';
 
   console.log(`[api] comment feedback applied to ${key} — plan updated (${ac.length} AC)`);
   await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4, updated_at = NOW() WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
@@ -525,8 +526,8 @@ function fallbackTitle(description: string): string {
   const line = description.split('\n').find((l) => l.trim()) ?? 'New ticket';
   const clean = line.replace(/^[#*\->\s]+/, '').trim();
   if (clean.length <= 80) return clean || 'New ticket';
-  const cut = clean.slice(0, 80);
-  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), 40))}…`;
+  const cut = clipText(clean, 80); // surrogate-safe: never cuts an emoji in half
+  return `${clipText(cut, Math.max(cut.lastIndexOf(' '), 40))}…`;
 }
 
 function requestAuthor(req: express.Request): string {
@@ -584,6 +585,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   };
 
   appkit.server.extend((app) => {
+    // DAT-198: strict UTF-8 body decode with Windows-1252 recovery, ahead of
+    // the stock JSON parser — legacy-codepage clients must not write mojibake.
+    installUtf8BodyRecovery(app);
+
     app.get('/api/me', async (req, res) => {
       try {
         const id = await resolveIdentity(req);
