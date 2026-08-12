@@ -2,8 +2,9 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/react';
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
-import { HEALTH_COLOR, HEALTH_LABEL, fmtD, initials, mono, pct, todayIso } from '../util';
+import { HEALTH_COLOR, HEALTH_LABEL, initials, mono } from '../util';
 import { Analytics } from './Analytics';
+import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
 import type { Tab } from '../App';
 
@@ -98,9 +99,11 @@ export function Workspace({
   // window covers async drops (agent deploy/complete land after an API round
   // trip, not in the drop's render).
   const justDropped = useRef<{ key: string; until: number } | null>(null);
+  // eslint-disable-next-line react-hooks/purity -- called from pointer-event handlers, not render
   const markDropped = (key: string) => (justDropped.current = { key, until: Date.now() + 700 });
   const isJustDropped = (key: string) => {
     const j = justDropped.current;
+    // eslint-disable-next-line react-hooks/purity -- drop-window check against wall clock is intentional
     return j !== null && j.key === key && Date.now() < j.until;
   };
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -151,28 +154,6 @@ export function Workspace({
     { key: 'team', label: 'Team' },
     { key: 'feed', label: 'Status Feed' },
   ];
-
-  // roadmap geometry — derive the window from the phase schedule when the
-  // engagement row has no explicit range, never from invented dates
-  const rmS = eng.rmStart ?? eng.phases?.[0]?.s ?? todayIso();
-  const rmE = eng.rmEnd ?? eng.phases?.[eng.phases.length - 1]?.e ?? todayIso();
-  const months = useMemo(() => {
-    // Iterate in UTC: date-only strings parse as UTC, so local-time month math
-    // would duplicate the first tick in negative-offset timezones.
-    const out: { label: string; l: number }[] = [];
-    const end = new Date(`${rmE}T00:00:00Z`);
-    let d = new Date(`${rmS}T00:00:00Z`);
-    while (d < end) {
-      out.push({
-        label:
-          d.toLocaleString('en', { month: 'short', timeZone: 'UTC' }).toUpperCase() +
-          (d.getUTCMonth() === 0 ? ` ${String(d.getUTCFullYear()).slice(2)}` : ''),
-        l: pct(rmS, rmE, d.toISOString().slice(0, 10)),
-      });
-      d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
-    }
-    return out;
-  }, [rmS, rmE]);
 
   const acceptTicket = (t: Ticket) => {
     setTicket(t.key, { status: 'backlog' });
@@ -390,6 +371,7 @@ export function Workspace({
 
   const ago = (iso: string | null) => {
     if (!iso) return '';
+    // eslint-disable-next-line react-hooks/purity -- relative times refresh with the board poll by design
     const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
     return s < 60 ? `${Math.floor(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`;
   };
@@ -559,6 +541,7 @@ export function Workspace({
     const running = at.state !== 'queued';
     // Warning states: an explicit runner-raised flag, or a silent heartbeat.
     const flagged = running && at.flag != null && at.flag !== '';
+    // eslint-disable-next-line react-hooks/purity -- staleness re-evaluates with the board poll by design
     const stale = running && !flagged && at.lastHeartbeat != null && Date.now() - new Date(at.lastHeartbeat).getTime() > 3 * 60_000;
     // Status dot: grey ring queued → green spinner running → yellow ⚠ warning.
     const statusDot = flagged || stale ? (
@@ -1081,182 +1064,7 @@ export function Workspace({
 
       {/* ===== ROADMAP ===== */}
       {detail && tab === 'roadmap' && (
-        <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: 22 }}>
-          <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', padding: '20px 24px 26px' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 20 }}>
-              <span style={{ fontSize: 14, fontWeight: 600 }}>Roadmap</span>
-              <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.06em' }}>
-                {eng.sowStatus === 'BRIEF' ? 'DERIVED FROM PROJECT BRIEF' : 'DERIVED FROM SOW'} · AGENT-MAINTAINED
-              </span>
-            </div>
-            {!eng.phases && <div style={{ color: 'var(--tx3)', fontSize: 12.5 }}>No phase schedule captured for this engagement yet.</div>}
-            {eng.phases && (
-              <div style={{ position: 'relative' }}>
-                <div style={{ display: 'flex', marginLeft: 190, borderBottom: '1px solid var(--line)', paddingBottom: 6 }}>
-                  {months.map((m) => (
-                    <div key={m.label + m.l} style={{ flex: 1, ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
-                      {m.label}
-                    </div>
-                  ))}
-                </div>
-                <div style={{ position: 'absolute', top: 24, bottom: 0, left: 190, right: 0, pointerEvents: 'none' }}>
-                  {months.map((m) => (
-                    <div key={`l${m.l}`} style={{ position: 'absolute', top: 0, bottom: 0, left: `${m.l}%`, width: 1, background: 'var(--line)' }} />
-                  ))}
-                  <div style={{ position: 'absolute', top: -24, bottom: 0, left: `${Math.max(3, pct(rmS, rmE, todayIso()))}%`, width: 1, background: 'var(--acc)' }} />
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: -24,
-                      left: `${Math.max(3, pct(rmS, rmE, todayIso()))}%`,
-                      transform: 'translateX(-50%)',
-                      background: 'var(--acc)',
-                      color: '#fff',
-                      ...mono(500, 9),
-                      padding: '1px 6px',
-                      borderRadius: 2,
-                      letterSpacing: '.06em',
-                    }}
-                  >
-                    TODAY
-                  </div>
-                </div>
-                <div style={{ paddingTop: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  {eng.phases.map((p) => {
-                    const l = pct(rmS, rmE, p.s);
-                    const w = pct(rmS, rmE, p.e) - l;
-                    const done = p.pct === 100;
-                    const active = (p.pct ?? 0) > 0 && (p.pct ?? 0) < 100;
-                    return (
-                      <div key={p.name} style={{ display: 'flex', alignItems: 'center' }}>
-                        <div style={{ width: 190, flex: 'none', paddingRight: 16 }}>
-                          <div style={{ fontSize: 12.5, fontWeight: 600 }}>{p.name}</div>
-                          <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginTop: 2 }}>
-                            {fmtD(p.s)} – {fmtD(p.e)} · {p.pct ?? 0}% COMPLETE
-                          </div>
-                        </div>
-                        <div style={{ flex: 1, height: 26, position: 'relative' }}>
-                          <div
-                            style={{
-                              position: 'absolute',
-                              top: 3,
-                              bottom: 3,
-                              left: `${l}%`,
-                              width: `${w}%`,
-                              background: 'var(--bg3)',
-                              border: `1px solid ${done ? 'var(--line2)' : active ? 'var(--acc)' : 'var(--line2)'}`,
-                              borderRadius: 3,
-                              overflow: 'hidden',
-                            }}
-                          >
-                            <div
-                              style={{
-                                position: 'absolute',
-                                top: 0,
-                                bottom: 0,
-                                left: 0,
-                                width: `${p.pct ?? 0}%`,
-                                background: done ? 'var(--line2)' : active ? 'var(--accsoft)' : 'transparent',
-                              }}
-                            />
-                            <span
-                              style={{
-                                position: 'absolute',
-                                left: 8,
-                                top: '50%',
-                                transform: 'translateY(-50%)',
-                                ...mono(500, 9),
-                                color: done ? 'var(--tx2)' : active ? 'var(--acc)' : 'var(--tx3)',
-                                letterSpacing: '.06em',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {done ? 'DONE' : active ? `${p.pct}%` : 'PLANNED'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                {eng.milestones &&
-                  (() => {
-                    // Collision-aware lanes: milestones sorted by position stack
-                    // into the first lane with enough horizontal clearance, so
-                    // clustered dates stagger vertically instead of overlapping.
-                    const MIN_GAP = 15; // % of timeline width a label roughly needs
-                    const LANE_H = 46;
-                    const laneEnd: number[] = [];
-                    const placed = eng.milestones
-                      .map((ms) => ({ ms, p: Math.max(1, Math.min(99, pct(rmS, rmE, ms.d))) }))
-                      .sort((a, b) => a.p - b.p)
-                      .map((x) => {
-                        let lane = laneEnd.findIndex((end) => x.p - end >= MIN_GAP);
-                        if (lane === -1) lane = laneEnd.length;
-                        laneEnd[lane] = x.p;
-                        return { ...x, lane };
-                      });
-                    return (
-                      <div style={{ marginTop: 20, borderTop: '1px solid var(--line)', paddingTop: 14, display: 'flex' }}>
-                        <div style={{ width: 190, flex: 'none', ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>MILESTONES</div>
-                        <div style={{ flex: 1, height: Math.max(2, laneEnd.length) * LANE_H + 4, position: 'relative' }}>
-                          {placed.map(({ ms, p, lane }) => {
-                            // Near either edge, grow the label inward instead of
-                            // centering (centered labels clip at the container edge).
-                            const nearRight = p > 85;
-                            const nearLeft = p < 8;
-                            const align = nearRight ? 'flex-end' : nearLeft ? 'flex-start' : 'center';
-                            const tx = nearRight ? 'translateX(-100%)' : nearLeft ? 'none' : 'translateX(-50%)';
-                            return (
-                              <div
-                                key={ms.label + ms.d}
-                                title={`${ms.label} · ${fmtD(ms.d)}`}
-                                style={{
-                                  position: 'absolute',
-                                  left: `${p}%`,
-                                  top: lane * LANE_H,
-                                  transform: tx,
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  alignItems: align,
-                                  gap: 4,
-                                  maxWidth: 240,
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    width: 9,
-                                    height: 9,
-                                    flex: 'none',
-                                    transform: 'rotate(45deg)',
-                                    background: ms.done ? 'var(--ok)' : 'var(--bg2)',
-                                    border: `1.5px solid ${ms.done ? 'var(--ok)' : 'var(--tx3)'}`,
-                                  }}
-                                />
-                                <div
-                                  style={{
-                                    ...mono(400, 9),
-                                    color: ms.done ? 'var(--tx2)' : 'var(--tx)',
-                                    whiteSpace: 'nowrap',
-                                    maxWidth: 240,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                  }}
-                                >
-                                  {ms.label.toUpperCase()}
-                                </div>
-                                <div style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtD(ms.d)}</div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })()}
-              </div>
-            )}
-          </div>
-        </div>
+        <Roadmap eng={eng} detail={detail} lead={lead} openTicket={openTicket} toast={toast} onEngagementChanged={onEngagementChanged} />
       )}
 
       {/* ===== SOURCES ===== */}
