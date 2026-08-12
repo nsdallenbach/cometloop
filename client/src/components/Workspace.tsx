@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/react';
+import { Plus, Rocket } from 'lucide-react';
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, initials, mono } from '../util';
@@ -1804,11 +1805,42 @@ function NewTicketModal({
   onCreate: (description: string, deploy: boolean) => void;
 }) {
   const [description, setDescription] = useState('');
+  // Live Shift tracking so the shortcut hints show which action Ctrl+Enter
+  // will actually fire (leads only — Shift is a no-op for everyone else).
+  const [shiftHeld, setShiftHeld] = useState(false);
+
+  useEffect(() => {
+    if (!lead) return;
+    const down = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(true); };
+    const up = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(false); };
+    const reset = () => setShiftHeld(false);
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', reset);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', reset);
+    };
+  }, [lead]);
 
   const create = (deploy: boolean) => {
     if (!description.trim()) return;
     onCreate(description.trim(), deploy);
   };
+
+  // Kbd chip inside the action buttons — same shape as the header's Ctrl+K
+  // chip, on white since both buttons have solid colored backgrounds.
+  const kbd = (active: boolean): React.CSSProperties => ({
+    ...mono(500, 9.5),
+    border: `1px solid rgba(255,255,255,${active ? 0.75 : 0.4})`,
+    borderRadius: 3,
+    padding: '1px 4px',
+    lineHeight: 1.5,
+    opacity: active ? 1 : 0.8,
+    transition: 'border-color .12s ease, opacity .12s ease',
+    whiteSpace: 'nowrap',
+  });
 
   return (
     <>
@@ -1835,7 +1867,7 @@ function NewTicketModal({
           position: 'fixed',
           top: '50%',
           left: '50%',
-          width: 460,
+          width: 540,
           maxWidth: 'calc(100vw - 40px)',
           background: 'var(--bg2)',
           border: '1px solid var(--line)',
@@ -1876,59 +1908,88 @@ function NewTicketModal({
             }}
           />
         </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '13px 18px', borderTop: '1px solid var(--line)' }}>
-          <span style={{ ...mono(400, 10), color: 'var(--tx3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {lead ? 'CTRL+ENTER → BACKLOG · CTRL+SHIFT+ENTER → DEPLOY' : 'LANDS IN BACKLOG · CTRL+ENTER TO CREATE'}
-          </span>
-          <div style={{ flex: 1 }} />
-          <button
-            onClick={onClose}
-            style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '7px 14px', fontSize: 12, cursor: 'pointer' }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => create(false)}
-            disabled={!description.trim()}
-            title="Create in Backlog (Ctrl+Enter)"
+        <div style={{ padding: '11px 18px 13px', borderTop: '1px solid var(--line)' }}>
+          <div
             style={{
-              background: 'var(--acc)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 3,
-              padding: '7px 16px',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
+              ...mono(400, 10),
+              color: lead && shiftHeld ? 'var(--agent)' : 'var(--tx3)',
               whiteSpace: 'nowrap',
-              flexShrink: 0,
-              opacity: !description.trim() ? 0.45 : 1,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              marginBottom: 10,
+              transition: 'color .12s ease',
             }}
           >
-            Create ticket
-          </button>
-          {lead && (
+            {lead
+              ? shiftHeld
+                ? 'SHIFT HELD — CTRL+ENTER CREATES & DEPLOYS TO THE AGENT QUEUE'
+                : 'HOLD SHIFT TO SWITCH CTRL+ENTER TO CREATE & DEPLOY'
+              : 'LANDS IN BACKLOG · CTRL+ENTER TO CREATE'}
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div style={{ flex: 1 }} />
             <button
-              onClick={() => create(true)}
+              onClick={onClose}
+              style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '7px 14px', fontSize: 12, cursor: 'pointer' }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => create(false)}
               disabled={!description.trim()}
-              title="Create and deploy straight to the agent queue (Ctrl+Shift+Enter)"
+              title="Create in Backlog (Ctrl+Enter)"
               style={{
-                background: 'var(--agent)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 7,
+                background: 'var(--acc)',
                 color: '#fff',
                 border: 'none',
                 borderRadius: 3,
-                padding: '7px 16px',
+                padding: '7px 12px',
                 fontSize: 12,
                 fontWeight: 600,
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
                 flexShrink: 0,
-                opacity: !description.trim() ? 0.45 : 1,
+                opacity: !description.trim() ? 0.45 : lead && shiftHeld ? 0.55 : 1,
+                transition: 'opacity .12s ease',
               }}
             >
-              ◆ Create &amp; deploy
+              <Plus size={13} strokeWidth={2.5} />
+              Create ticket
+              <span style={kbd(!shiftHeld)}>Ctrl+↵</span>
             </button>
-          )}
+            {lead && (
+              <button
+                onClick={() => create(true)}
+                disabled={!description.trim()}
+                title="Create and deploy straight to the agent queue (Ctrl+Shift+Enter)"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 7,
+                  background: 'var(--agent)',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 3,
+                  padding: '7px 12px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                  opacity: !description.trim() ? 0.45 : 1,
+                  boxShadow: shiftHeld ? '0 0 0 1px var(--bg2), 0 0 0 3px var(--agent)' : 'none',
+                  transition: 'box-shadow .12s ease',
+                }}
+              >
+                <Rocket size={13} strokeWidth={2.25} />
+                Create &amp; deploy
+                <span style={kbd(shiftHeld)}>Ctrl+⇧+↵</span>
+              </button>
+            )}
+          </div>
         </div>
       </motion.div>
     </>
