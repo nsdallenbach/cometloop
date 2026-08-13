@@ -15,15 +15,14 @@ import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
 import { prefetchMermaid } from './components/Markdown';
 import { Palette, type PaletteItem } from './components/Palette';
+import { NotificationCenter } from './components/NotificationCenter';
 
 export type { Tab } from './routes';
 
 export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [theme, setTheme] = useState<'dark' | 'light'>(
-    () => (localStorage.getItem('eec-theme') as 'dark' | 'light') ?? 'dark',
-  );
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('eec-theme') as 'dark' | 'light') ?? 'dark');
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [detail, setDetail] = useState<EngagementDetail | null>(null);
   // Which engagement `detail` belongs to — reads below gate on it matching the
@@ -46,8 +45,7 @@ export default function App() {
   // The URL is the source of truth for which screen is showing.
   const screen = useMemo(() => parsePath(location.pathname), [location.pathname]);
   const detailKey = screen.name === 'ticket' ? screen.ticketKey : null;
-  const engId =
-    screen.name === 'workspace' ? screen.engId : screen.name === 'ticket' ? (ticketEngs[screen.ticketKey] ?? null) : null;
+  const engId = screen.name === 'workspace' ? screen.engId : screen.name === 'ticket' ? (ticketEngs[screen.ticketKey] ?? null) : null;
   const tab: Tab = screen.name === 'workspace' ? screen.tab : 'board';
   const inWorkspace = screen.name === 'workspace' || screen.name === 'ticket';
 
@@ -200,9 +198,15 @@ export default function App() {
         setPalette((p) => !p);
       } else if (
         e.key.toLowerCase() === 'n' &&
-        !e.metaKey && !e.ctrlKey && !e.altKey &&
-        !typing && !palette && !newTicket && !detailKey &&
-        screen.name === 'workspace' && engId
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !typing &&
+        !palette &&
+        !newTicket &&
+        !detailKey &&
+        screen.name === 'workspace' &&
+        engId
       ) {
         e.preventDefault();
         if (tab !== 'board') void navigate(paths.project(engId));
@@ -225,37 +229,36 @@ export default function App() {
 
   const isAdmin = me?.role === 'admin';
   const canCreate = isAdmin || me?.role === 'lead';
-  const canLead = useCallback(
-    (id: string) => isAdmin || (me?.role === 'lead' && me.leadOf.includes(id)),
-    [isAdmin, me],
-  );
+  const canLead = useCallback((id: string) => isAdmin || (me?.role === 'lead' && me.leadOf.includes(id)), [isAdmin, me]);
 
   // ---- ticket mutations shared by board + drawer ----
   // Optimistic with rollback: the previous field values are restored on failure.
-  const setTicket = useCallback((key: string, patch: { status?: TicketStatus; assignee?: string; tags?: string[] }) => {
-    let prev: { status: TicketStatus; assignee: string; tags: string[]; doneAt: string | null } | null = null;
-    setDetail((d) => {
-      const t = d?.tickets.find((x) => x.key === key);
-      if (t) prev = { status: t.status, assignee: t.assignee, tags: t.tags, doneAt: t.doneAt };
-      return d
-        ? {
-            ...d,
-            tickets: d.tickets.map((x) => {
-              if (x.key !== key) return x;
-              // Mirror the server's done_at stamping so a card dropped in Done
-              // passes the lane's 24h filter before the next refresh.
-              const doneAt =
-                patch.status === undefined ? x.doneAt : patch.status === 'done' ? (x.doneAt ?? new Date().toISOString()) : null;
-              return { ...x, ...patch, doneAt };
-            }),
-          }
-        : d;
-    });
-    api.patchTicket(key, patch).catch((e: Error) => {
-      setDetail((d) => (d && prev ? { ...d, tickets: d.tickets.map((x) => (x.key === key ? { ...x, ...prev } : x)) } : d));
-      showToast(`Save failed — ${e.message}`);
-    });
-  }, [showToast]);
+  const setTicket = useCallback(
+    (key: string, patch: { status?: TicketStatus; assignee?: string; tags?: string[] }) => {
+      let prev: { status: TicketStatus; assignee: string; tags: string[]; doneAt: string | null } | null = null;
+      setDetail((d) => {
+        const t = d?.tickets.find((x) => x.key === key);
+        if (t) prev = { status: t.status, assignee: t.assignee, tags: t.tags, doneAt: t.doneAt };
+        return d
+          ? {
+              ...d,
+              tickets: d.tickets.map((x) => {
+                if (x.key !== key) return x;
+                // Mirror the server's done_at stamping so a card dropped in Done
+                // passes the lane's 24h filter before the next refresh.
+                const doneAt = patch.status === undefined ? x.doneAt : patch.status === 'done' ? (x.doneAt ?? new Date().toISOString()) : null;
+                return { ...x, ...patch, doneAt };
+              }),
+            }
+          : d;
+      });
+      api.patchTicket(key, patch).catch((e: Error) => {
+        setDetail((d) => (d && prev ? { ...d, tickets: d.tickets.map((x) => (x.key === key ? { ...x, ...prev } : x)) } : d));
+        showToast(`Save failed — ${e.message}`);
+      });
+    },
+    [showToast],
+  );
 
   const detailTicket = curDetail?.tickets.find((t) => t.key === detailKey) ?? null;
   // Latest agent task for the open ticket (agentTasks arrive newest-first).
@@ -394,373 +397,436 @@ export default function App() {
 
   return (
     <MotionConfig reducedMotion="user">
-    <div
-      className="eec"
-      data-theme={theme}
-      style={{
-        height: '100vh',
-        display: 'flex',
-        flexDirection: 'column',
-        background: 'var(--bg)',
-        color: 'var(--tx)',
-        fontFamily: "'DM Sans', sans-serif",
-        fontSize: 13,
-        overflow: 'hidden',
-      }}
-    >
-      {/* TOP BAR */}
       <div
+        className="eec"
+        data-theme={theme}
         style={{
-          height: 46,
-          flex: 'none',
+          height: '100vh',
           display: 'flex',
-          alignItems: 'center',
-          gap: 16,
-          padding: '0 14px',
-          borderBottom: '1px solid var(--line)',
-          background: 'var(--bg2)',
+          flexDirection: 'column',
+          background: 'var(--bg)',
+          color: 'var(--tx)',
+          fontFamily: "'DM Sans', sans-serif",
+          fontSize: 13,
+          overflow: 'hidden',
         }}
       >
-        <div onClick={goPortfolio} style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}>
-          <div style={{ width: 20, height: 20, background: 'var(--acc)', display: 'grid', placeItems: 'center', borderRadius: 2 }}>
-            <span style={{ ...mono(700, 11), color: '#fff' }}>D</span>
-          </div>
-          <span style={{ ...mono(500, 12), letterSpacing: '.12em' }}>DATAVAIL</span>
-          <span style={{ ...mono(400, 11), color: 'var(--tx3)', letterSpacing: '.1em' }}>[ DELIVERY CONSOLE ]</span>
-        </div>
-        <div style={{ flex: 1 }} />
+        {/* TOP BAR */}
         <div
-          className="hv-border"
-          onClick={() => setPalette(true)}
           style={{
+            height: 46,
+            flex: 'none',
             display: 'flex',
             alignItems: 'center',
-            gap: 8,
-            border: '1px solid var(--line2)',
-            borderRadius: 3,
-            padding: '5px 10px',
-            cursor: 'pointer',
-            color: 'var(--tx3)',
-            minWidth: 220,
+            gap: 16,
+            padding: '0 14px',
+            borderBottom: '1px solid var(--line)',
+            background: 'var(--bg2)',
           }}
         >
-          <span style={{ fontSize: 12 }}>Search or run a command</span>
-          <span style={{ marginLeft: 'auto', ...mono(400, 10), border: '1px solid var(--line2)', borderRadius: 3, padding: '1px 5px' }}>
-            Ctrl+K
-          </span>
-        </div>
-        {lastSync && !loadError && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <div onClick={goPortfolio} style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}>
+            <div
+              style={{
+                width: 20,
+                height: 20,
+                background: 'var(--acc)',
+                display: 'grid',
+                placeItems: 'center',
+                borderRadius: 2,
+              }}
+            >
+              <span style={{ ...mono(700, 11), color: '#fff' }}>D</span>
+            </div>
+            <span style={{ ...mono(500, 12), letterSpacing: '.12em' }}>DATAVAIL</span>
+            <span style={{ ...mono(400, 11), color: 'var(--tx3)', letterSpacing: '.1em' }}>[ DELIVERY CONSOLE ]</span>
+          </div>
+          <div style={{ flex: 1 }} />
+          <div
+            className="hv-border"
+            onClick={() => setPalette(true)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              border: '1px solid var(--line2)',
+              borderRadius: 3,
+              padding: '5px 10px',
+              cursor: 'pointer',
+              color: 'var(--tx3)',
+              minWidth: 220,
+            }}
+          >
+            <span style={{ fontSize: 12 }}>Search or run a command</span>
             <span
               style={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                background: 'var(--ok)',
-                animation: 'eec-pulse 2.4s infinite',
+                marginLeft: 'auto',
+                ...mono(400, 10),
+                border: '1px solid var(--line2)',
+                borderRadius: 3,
+                padding: '1px 5px',
               }}
-            />
-            <span style={{ ...mono(400, 10), color: 'var(--tx2)', letterSpacing: '.06em' }}>
-              SYNCED {lastSync.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false })}
+            >
+              Ctrl+K
             </span>
           </div>
-        )}
-        {meError && (
+          {lastSync && !loadError && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: 'var(--ok)',
+                  animation: 'eec-pulse 2.4s infinite',
+                }}
+              />
+              <span style={{ ...mono(400, 10), color: 'var(--tx2)', letterSpacing: '.06em' }}>
+                SYNCED {lastSync.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false })}
+              </span>
+            </div>
+          )}
+          {meError && (
+            <button
+              onClick={loadMe}
+              title="Your role couldn't be verified, so admin/lead actions are hidden. Click to retry."
+              style={{
+                ...mono(400, 10),
+                background: 'none',
+                border: '1px solid var(--warn)',
+                color: 'var(--warn)',
+                borderRadius: 3,
+                padding: '3px 7px',
+                cursor: 'pointer',
+                letterSpacing: '.06em',
+              }}
+            >
+              ROLE UNVERIFIED — RETRY
+            </button>
+          )}
           <button
-            onClick={loadMe}
-            title="Your role couldn't be verified, so admin/lead actions are hidden. Click to retry."
+            className="hv-lift"
+            onClick={() => void navigate(paths.learn)}
+            title="What the Delivery Console does"
+            style={{
+              ...mono(500, 10),
+              background: screen.name === 'learn' ? 'var(--accsoft)' : 'none',
+              border: `1px solid ${screen.name === 'learn' ? 'var(--acc)' : 'var(--acc)'}`,
+              color: 'var(--acc)',
+              borderRadius: 3,
+              padding: '3px 9px',
+              cursor: 'pointer',
+              letterSpacing: '.06em',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+            }}
+          >
+            <span>◆</span> LEARN MORE
+          </button>
+          <button
+            className="hv-tx2"
+            onClick={() => void navigate(paths.agents)}
+            title="Agent architecture map — projects and the agents attached to them"
             style={{
               ...mono(400, 10),
               background: 'none',
-              border: '1px solid var(--warn)',
-              color: 'var(--warn)',
+              border: `1px solid ${screen.name === 'agents' ? 'var(--tx3)' : 'var(--line2)'}`,
+              color: screen.name === 'agents' ? 'var(--tx2)' : 'var(--tx3)',
               borderRadius: 3,
               padding: '3px 7px',
               cursor: 'pointer',
               letterSpacing: '.06em',
             }}
           >
-            ROLE UNVERIFIED — RETRY
+            AGENTS
           </button>
-        )}
-        <button
-          className="hv-lift"
-          onClick={() => void navigate(paths.learn)}
-          title="What the Delivery Console does"
-          style={{
-            ...mono(500, 10),
-            background: screen.name === 'learn' ? 'var(--accsoft)' : 'none',
-            border: `1px solid ${screen.name === 'learn' ? 'var(--acc)' : 'var(--acc)'}`,
-            color: 'var(--acc)',
-            borderRadius: 3,
-            padding: '3px 9px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 5,
-          }}
-        >
-          <span>◆</span> LEARN MORE
-        </button>
-        <button
-          className="hv-tx2"
-          onClick={() => void navigate(paths.agents)}
-          title="Agent architecture map — projects and the agents attached to them"
-          style={{
-            ...mono(400, 10),
-            background: 'none',
-            border: `1px solid ${screen.name === 'agents' ? 'var(--tx3)' : 'var(--line2)'}`,
-            color: screen.name === 'agents' ? 'var(--tx2)' : 'var(--tx3)',
-            borderRadius: 3,
-            padding: '3px 7px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-          }}
-        >
-          AGENTS
-        </button>
-        <button
-          className="hv-tx2"
-          onClick={() => void navigate(paths.tickets)}
-          title="All tickets across projects"
-          style={{
-            ...mono(400, 10),
-            background: 'none',
-            border: `1px solid ${screen.name === 'tickets' ? 'var(--tx3)' : 'var(--line2)'}`,
-            color: screen.name === 'tickets' ? 'var(--tx2)' : 'var(--tx3)',
-            borderRadius: 3,
-            padding: '3px 7px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-          }}
-        >
-          TICKETS
-        </button>
-        {isAdmin && (
-        <button
-          className="hv-tx2"
-          onClick={() => void navigate(paths.admin)}
-          title="Staffing & project lifecycle"
-          style={{
-            ...mono(400, 10),
-            background: 'none',
-            border: `1px solid ${screen.name === 'admin' ? 'var(--tx3)' : 'var(--line2)'}`,
-            color: screen.name === 'admin' ? 'var(--tx2)' : 'var(--tx3)',
-            borderRadius: 3,
-            padding: '3px 7px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-          }}
-        >
-          ADMIN
-        </button>
-        )}
-        <button
-          onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-          title="Toggle theme"
-          style={{
-            ...mono(400, 10),
-            background: 'none',
-            border: '1px solid var(--line2)',
-            color: 'var(--tx3)',
-            borderRadius: 3,
-            padding: '3px 7px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-          }}
-          className="hv-tx2"
-        >
-          {theme === 'dark' ? 'LIGHT' : 'DARK'}
-        </button>
-        <div
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: '50%',
-            background: 'var(--bg3)',
-            border: '1px solid var(--line2)',
-            display: 'grid',
-            placeItems: 'center',
-            ...mono(500, 10),
-            color: 'var(--tx2)',
-          }}
-          title={me ? `${me.email} · ${me.role.toUpperCase()}` : ''}
-        >
-          {me && me.email.includes('@')
-            ? me.email
-                .split('@')[0]
-                .split(/[._-]/)
-                .filter(Boolean)
-                .map((w) => w[0])
-                .join('')
-                .slice(0, 2)
-                .toUpperCase()
-            : '·'}
-        </div>
-      </div>
-
-      {loadError && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 14px', background: 'var(--accsoft)', color: 'var(--bad)', ...mono(400, 11) }}>
-          <span>COULDN’T LOAD ENGAGEMENTS: {loadError}</span>
           <button
-            onClick={() => void refreshEngagements()}
-            style={{ border: '1px solid var(--bad)', background: 'none', color: 'var(--bad)', borderRadius: 3, padding: '2px 9px', ...mono(500, 10), cursor: 'pointer', letterSpacing: '.06em' }}
+            className="hv-tx2"
+            onClick={() => void navigate(paths.tickets)}
+            title="All tickets across projects"
+            style={{
+              ...mono(400, 10),
+              background: 'none',
+              border: `1px solid ${screen.name === 'tickets' ? 'var(--tx3)' : 'var(--line2)'}`,
+              color: screen.name === 'tickets' ? 'var(--tx2)' : 'var(--tx3)',
+              borderRadius: 3,
+              padding: '3px 7px',
+              cursor: 'pointer',
+              letterSpacing: '.06em',
+            }}
           >
-            RETRY
+            TICKETS
           </button>
-        </div>
-      )}
-
-      {screen.name === 'portfolio' && (
-        <Portfolio
-          engagements={engagements}
-          loading={loading}
-          onOpen={openEngagement}
-          onNew={() => void navigate(paths.setup)}
-          onDeleted={() => void refreshEngagements()}
-          toast={showToast}
-          canCreate={canCreate}
-          canManage={canLead}
-        />
-      )}
-
-      {screen.name === 'learn' && <Landing theme={theme} onEnter={goPortfolio} />}
-
-      {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
-
-      {screen.name === 'agents' && <AgentMap canLead={canLead} toast={showToast} />}
-
-      {screen.name === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
-      {screen.name === 'admin' && !isAdmin && (
-        <div style={{ padding: 40, textAlign: 'center', color: 'var(--tx3)', ...mono(400, 11) }}>
-          ADMIN ACCESS REQUIRED —{' '}
-          <button onClick={goPortfolio} style={{ border: 'none', background: 'none', color: 'var(--acc)', ...mono(500, 11), cursor: 'pointer', padding: 0 }}>
-            BACK TO PORTFOLIO
+          {isAdmin && (
+            <button
+              className="hv-tx2"
+              onClick={() => void navigate(paths.admin)}
+              title="Staffing & project lifecycle"
+              style={{
+                ...mono(400, 10),
+                background: 'none',
+                border: `1px solid ${screen.name === 'admin' ? 'var(--tx3)' : 'var(--line2)'}`,
+                color: screen.name === 'admin' ? 'var(--tx2)' : 'var(--tx3)',
+                borderRadius: 3,
+                padding: '3px 7px',
+                cursor: 'pointer',
+                letterSpacing: '.06em',
+              }}
+            >
+              ADMIN
+            </button>
+          )}
+          <NotificationCenter onOpenTicket={openTicket} />
+          <button
+            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            title="Toggle theme"
+            style={{
+              ...mono(400, 10),
+              background: 'none',
+              border: '1px solid var(--line2)',
+              color: 'var(--tx3)',
+              borderRadius: 3,
+              padding: '3px 7px',
+              cursor: 'pointer',
+              letterSpacing: '.06em',
+            }}
+            className="hv-tx2"
+          >
+            {theme === 'dark' ? 'LIGHT' : 'DARK'}
           </button>
-        </div>
-      )}
-
-      {screen.name === 'setup' && (
-        <Setup
-          goPortfolio={goPortfolio}
-          toast={showToast}
-          onCreated={(id) => {
-            void refreshEngagements().then(() => openEngagement(id, 'roadmap'));
-          }}
-        />
-      )}
-
-      {inWorkspace && !eng && (
-        loading || (screen.name === 'ticket' && !engId) ? (
-          <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: 'var(--tx3)', ...mono(400, 11), letterSpacing: '.08em' }}>
-            LOADING…
+          <div
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: '50%',
+              background: 'var(--bg3)',
+              border: '1px solid var(--line2)',
+              display: 'grid',
+              placeItems: 'center',
+              ...mono(500, 10),
+              color: 'var(--tx2)',
+            }}
+            title={me ? `${me.email} · ${me.role.toUpperCase()}` : ''}
+          >
+            {me && me.email.includes('@')
+              ? me.email
+                  .split('@')[0]
+                  .split(/[._-]/)
+                  .filter(Boolean)
+                  .map((w) => w[0])
+                  .join('')
+                  .slice(0, 2)
+                  .toUpperCase()
+              : '·'}
           </div>
-        ) : (
+        </div>
+
+        {loadError && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '8px 14px',
+              background: 'var(--accsoft)',
+              color: 'var(--bad)',
+              ...mono(400, 11),
+            }}
+          >
+            <span>COULDN’T LOAD ENGAGEMENTS: {loadError}</span>
+            <button
+              onClick={() => void refreshEngagements()}
+              style={{
+                border: '1px solid var(--bad)',
+                background: 'none',
+                color: 'var(--bad)',
+                borderRadius: 3,
+                padding: '2px 9px',
+                ...mono(500, 10),
+                cursor: 'pointer',
+                letterSpacing: '.06em',
+              }}
+            >
+              RETRY
+            </button>
+          </div>
+        )}
+
+        {screen.name === 'portfolio' && (
+          <Portfolio
+            engagements={engagements}
+            loading={loading}
+            onOpen={openEngagement}
+            onNew={() => void navigate(paths.setup)}
+            onDeleted={() => void refreshEngagements()}
+            toast={showToast}
+            canCreate={canCreate}
+            canManage={canLead}
+          />
+        )}
+
+        {screen.name === 'learn' && <Landing theme={theme} onEnter={goPortfolio} />}
+
+        {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
+
+        {screen.name === 'agents' && <AgentMap canLead={canLead} toast={showToast} />}
+
+        {screen.name === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
+        {screen.name === 'admin' && !isAdmin && (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--tx3)', ...mono(400, 11) }}>
-            PROJECT NOT FOUND —{' '}
+            ADMIN ACCESS REQUIRED —{' '}
             <button
               onClick={goPortfolio}
-              style={{ border: 'none', background: 'none', color: 'var(--acc)', ...mono(500, 11), cursor: 'pointer', padding: 0 }}
+              style={{
+                border: 'none',
+                background: 'none',
+                color: 'var(--acc)',
+                ...mono(500, 11),
+                cursor: 'pointer',
+                padding: 0,
+              }}
             >
               BACK TO PORTFOLIO
             </button>
           </div>
-        )
-      )}
-
-      {inWorkspace && eng && (
-        <Workspace
-          key={eng.id}
-          eng={eng}
-          detail={curDetail}
-          detailError={curDetailError}
-          tab={tab}
-          setTab={(t) => void navigate(paths.project(eng.id, t))}
-          goPortfolio={goPortfolio}
-          openTicket={(key) => openTicket(key, eng.id)}
-          setTicket={setTicket}
-          setDetail={setDetail}
-          toast={showToast}
-          onEngagementChanged={() => void refreshEngagements()}
-          refreshDetail={refreshDetail}
-          lead={canLead(eng.id)}
-          newTicket={newTicket}
-          setNewTicket={setNewTicket}
-        />
-      )}
-
-      {detailTicket && (
-        <TicketDrawer
-          theme={theme}
-          ticket={detailTicket}
-          team={curDetail?.team.map((t) => t.name) ?? []}
-          lead={eng ? canLead(eng.id) : false}
-          agentTask={detailAgentTask}
-          allTickets={detail?.tickets ?? []}
-          onOpenTicket={openTicket}
-          onQueueAgent={(instructions) => queueForAgent(detailTicket.key, instructions)}
-          onCancelAgent={() => cancelAgent(detailTicket.key)}
-          onAssign={(assignee) => setTicket(detailTicket.key, { assignee })}
-          onTags={(tags) => setTicket(detailTicket.key, { tags })}
-          toast={showToast}
-          refreshDetail={refreshDetail}
-          onClose={closeTicket}
-          onAccept={() => {
-            setTicket(detailTicket.key, { status: 'backlog' });
-            closeTicket();
-            showToast(`${detailTicket.key} accepted onto board`);
-          }}
-          onDismiss={() => {
-            setTicket(detailTicket.key, { status: 'dismissed' });
-            closeTicket();
-            showToast(`${detailTicket.key} dismissed`);
-          }}
-          onDelete={() => {
-            const key = detailTicket.key;
-            api
-              .deleteTicket(key)
-              .then(() => {
-                setDetail((d) => (d ? { ...d, tickets: d.tickets.filter((t) => t.key !== key) } : d));
-                closeTicket();
-                showToast(`${key} deleted`);
-              })
-              .catch((e: Error) => showToast(`Delete failed — ${e.message}`));
-          }}
-          goSources={() => void navigate(paths.project(detailTicket.engagementId, 'sources'))}
-        />
-      )}
-
-      {palette && <Palette theme={theme} items={paletteItems} onClose={() => setPalette(false)} />}
-
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            key={toast}
-            data-theme={theme}
-            initial={{ opacity: 0, transform: 'translateX(-50%) translateY(10px)' }}
-            animate={{ opacity: 1, transform: 'translateX(-50%) translateY(0px)' }}
-            exit={{ opacity: 0, transform: 'translateX(-50%) translateY(6px)' }}
-            transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.2 }}
-            style={{
-              position: 'fixed',
-              bottom: 22,
-              left: '50%',
-              background: 'var(--bg3)',
-              border: '1px solid var(--line2)',
-              color: 'var(--tx)',
-              borderRadius: 4,
-              padding: '10px 18px',
-              fontSize: 12.5,
-              zIndex: 60,
-              boxShadow: '0 8px 30px rgba(0,0,0,.4)',
-            }}
-          >
-            {toast}
-          </motion.div>
         )}
-      </AnimatePresence>
-    </div>
+
+        {screen.name === 'setup' && (
+          <Setup
+            goPortfolio={goPortfolio}
+            toast={showToast}
+            onCreated={(id) => {
+              void refreshEngagements().then(() => openEngagement(id, 'roadmap'));
+            }}
+          />
+        )}
+
+        {inWorkspace &&
+          !eng &&
+          (loading || (screen.name === 'ticket' && !engId) ? (
+            <div
+              style={{
+                flex: 1,
+                display: 'grid',
+                placeItems: 'center',
+                color: 'var(--tx3)',
+                ...mono(400, 11),
+                letterSpacing: '.08em',
+              }}
+            >
+              LOADING…
+            </div>
+          ) : (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--tx3)', ...mono(400, 11) }}>
+              PROJECT NOT FOUND —{' '}
+              <button
+                onClick={goPortfolio}
+                style={{
+                  border: 'none',
+                  background: 'none',
+                  color: 'var(--acc)',
+                  ...mono(500, 11),
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
+                BACK TO PORTFOLIO
+              </button>
+            </div>
+          ))}
+
+        {inWorkspace && eng && (
+          <Workspace
+            key={eng.id}
+            eng={eng}
+            detail={curDetail}
+            detailError={curDetailError}
+            tab={tab}
+            setTab={(t) => void navigate(paths.project(eng.id, t))}
+            goPortfolio={goPortfolio}
+            openTicket={(key) => openTicket(key, eng.id)}
+            setTicket={setTicket}
+            setDetail={setDetail}
+            toast={showToast}
+            onEngagementChanged={() => void refreshEngagements()}
+            refreshDetail={refreshDetail}
+            lead={canLead(eng.id)}
+            newTicket={newTicket}
+            setNewTicket={setNewTicket}
+          />
+        )}
+
+        {detailTicket && (
+          <TicketDrawer
+            theme={theme}
+            ticket={detailTicket}
+            team={curDetail?.team.map((t) => t.name) ?? []}
+            lead={eng ? canLead(eng.id) : false}
+            agentTask={detailAgentTask}
+            allTickets={detail?.tickets ?? []}
+            onOpenTicket={openTicket}
+            onQueueAgent={(instructions) => queueForAgent(detailTicket.key, instructions)}
+            onCancelAgent={() => cancelAgent(detailTicket.key)}
+            onAssign={(assignee) => setTicket(detailTicket.key, { assignee })}
+            onTags={(tags) => setTicket(detailTicket.key, { tags })}
+            toast={showToast}
+            refreshDetail={refreshDetail}
+            onClose={closeTicket}
+            onAccept={() => {
+              setTicket(detailTicket.key, { status: 'backlog' });
+              closeTicket();
+              showToast(`${detailTicket.key} accepted onto board`);
+            }}
+            onDismiss={() => {
+              setTicket(detailTicket.key, { status: 'dismissed' });
+              closeTicket();
+              showToast(`${detailTicket.key} dismissed`);
+            }}
+            onDelete={() => {
+              const key = detailTicket.key;
+              api
+                .deleteTicket(key)
+                .then(() => {
+                  setDetail((d) => (d ? { ...d, tickets: d.tickets.filter((t) => t.key !== key) } : d));
+                  closeTicket();
+                  showToast(`${key} deleted`);
+                })
+                .catch((e: Error) => showToast(`Delete failed — ${e.message}`));
+            }}
+            goSources={() => void navigate(paths.project(detailTicket.engagementId, 'sources'))}
+          />
+        )}
+
+        {palette && <Palette theme={theme} items={paletteItems} onClose={() => setPalette(false)} />}
+
+        <AnimatePresence>
+          {toast && (
+            <motion.div
+              key={toast}
+              data-theme={theme}
+              initial={{ opacity: 0, transform: 'translateX(-50%) translateY(10px)' }}
+              animate={{ opacity: 1, transform: 'translateX(-50%) translateY(0px)' }}
+              exit={{ opacity: 0, transform: 'translateX(-50%) translateY(6px)' }}
+              transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.2 }}
+              style={{
+                position: 'fixed',
+                bottom: 22,
+                left: '50%',
+                background: 'var(--bg3)',
+                border: '1px solid var(--line2)',
+                color: 'var(--tx)',
+                borderRadius: 4,
+                padding: '10px 18px',
+                fontSize: 12.5,
+                zIndex: 60,
+                boxShadow: '0 8px 30px rgba(0,0,0,.4)',
+              }}
+            >
+              {toast}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
     </MotionConfig>
   );
 }

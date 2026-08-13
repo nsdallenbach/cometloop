@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type express from 'express';
 import { resolveIdentity, type Identity } from './roles';
+import { createNotification } from './notifications';
 import { listContextFiles, type FilesVolume } from './context-files';
 import { listTicketAttachments } from './ticket-attachments';
 import { loadConnection } from './repos';
@@ -239,18 +240,12 @@ export function setupAgentRoutes(
     const ticketKey = String(task.ticket_key);
     const engagementId = String(task.engagement_id);
     const ticket = (await q('SELECT * FROM app.tickets WHERE key = $1', [ticketKey])).rows[0] ?? null;
-    const engagement =
-      (await q('SELECT id, client, name, phase, dates, health FROM app.engagements WHERE id = $1', [engagementId])).rows[0] ?? null;
-    const comments = (
-      await q('SELECT author, body, created_at FROM app.ticket_comments WHERE ticket_key = $1 ORDER BY id', [ticketKey])
-    ).rows;
+    const engagement = (await q('SELECT id, client, name, phase, dates, health FROM app.engagements WHERE id = $1', [engagementId])).rows[0] ?? null;
+    const comments = (await q('SELECT author, body, created_at FROM app.ticket_comments WHERE ticket_key = $1 ORDER BY id', [ticketKey])).rows;
     // Repo coordinates without the stored token — the runner brings its own git credentials.
     const repo =
-      (
-        await q('SELECT provider, repo_url, repo_name, default_branch, status FROM app.repo_connections WHERE engagement_id = $1', [
-          engagementId,
-        ])
-      ).rows[0] ?? null;
+      (await q('SELECT provider, repo_url, repo_name, default_branch, status FROM app.repo_connections WHERE engagement_id = $1', [engagementId])).rows[0] ??
+      null;
     const contextFiles = await listContextFiles(files, engagementId);
     const attachments = await listTicketAttachments(q, ticketKey).catch(() => []);
     return {
@@ -287,12 +282,12 @@ export function setupAgentRoutes(
       // can be sent back to a runner as rework — the comments ride along in
       // the work package and the rendered prompt.
       if (!['backlog', 'progress', 'review'].includes(String(ticket.status))) {
-        res.status(409).json({ error: `Only backlog, in-progress or review tickets can be queued (this one is ${String(ticket.status)})` });
+        res.status(409).json({
+          error: `Only backlog, in-progress or review tickets can be queued (this one is ${String(ticket.status)})`,
+        });
         return;
       }
-      const active = (
-        await q(`SELECT id FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])
-      ).rows[0];
+      const active = (await q(`SELECT id FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])).rows[0];
       if (active) {
         res.status(409).json({ error: 'This ticket is already queued for agent work' });
         return;
@@ -302,9 +297,7 @@ export function setupAgentRoutes(
          VALUES ($1,$2,$3,$4,$5) RETURNING *`,
         [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', lead.email],
       );
-      console.log(
-        `[agent] queued ${key} as task ${String(inserted.rows[0].id)} (engagement ${engagementId}, priority ${parsed.data.priority ?? 0})`,
-      );
+      console.log(`[agent] queued ${key} as task ${String(inserted.rows[0].id)} (engagement ${engagementId}, priority ${parsed.data.priority ?? 0})`);
       await feed(engagementId, 'YOU', `Queued ${key} — ${String(ticket.title)} for agent work.`);
       res.status(201).json(inserted.rows[0]);
     } catch (err) {
@@ -317,9 +310,7 @@ export function setupAgentRoutes(
   app.post('/api/tickets/:key/queue/complete', async (req, res) => {
     try {
       const key = req.params.key;
-      const task = (
-        await q(`SELECT * FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])
-      ).rows[0];
+      const task = (await q(`SELECT * FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])).rows[0];
       if (!task) {
         res.status(404).json({ error: 'No active agent task for this ticket' });
         return;
@@ -331,6 +322,16 @@ export function setupAgentRoutes(
         'Marked done from the board.',
       ]);
       await setTicketStatus(q, key, 'review');
+      if (typeof task.queued_by === 'string') {
+        await createNotification(q, {
+          recipient: task.queued_by,
+          type: 'agent_review',
+          title: `${key} is ready for sign-off`,
+          message: 'Agent work reached Review.',
+          ticketKey: key,
+          engagementId,
+        });
+      }
       // Ready for review: log the actual LLM working time against the estimate.
       void recordActualHours(q, key, 'board-complete');
       console.log(`[agent] task ${String(task.id)} (${key}) marked done from the board — ticket moved to review`);
@@ -346,9 +347,7 @@ export function setupAgentRoutes(
   app.delete('/api/tickets/:key/queue', async (req, res) => {
     try {
       const key = req.params.key;
-      const task = (
-        await q(`SELECT * FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])
-      ).rows[0];
+      const task = (await q(`SELECT * FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])).rows[0];
       if (!task) {
         res.status(404).json({ error: 'No active agent task for this ticket' });
         return;
@@ -358,7 +357,10 @@ export function setupAgentRoutes(
       await q(`UPDATE app.agent_tasks SET state = 'cancelled', updated_at = NOW() WHERE id = $1`, [task.id]);
       // A claimed ticket goes back to the backlog; drop the agent as assignee.
       if (task.state !== 'queued') {
-        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: typeof task.agent === 'string' ? task.agent : '' });
+        await setTicketStatus(q, key, 'backlog', {
+          assignee: '—',
+          onlyIfAssignee: typeof task.agent === 'string' ? task.agent : '',
+        });
         await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       console.log(`[agent] task ${String(task.id)} (${key}) cancelled from state '${String(task.state)}'`);
@@ -445,12 +447,8 @@ export function setupAgentRoutes(
         params.push(engagement);
         where += ` AND engagement_id = $${params.length}`;
       }
-      const queued = (
-        await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)
-      ).rows;
-      const active = agent
-        ? (await q(`SELECT * FROM app.agent_tasks WHERE agent = $1 AND state IN ('claimed','working') ORDER BY id`, [agent])).rows
-        : [];
+      const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
+      const active = agent ? (await q(`SELECT * FROM app.agent_tasks WHERE agent = $1 AND state IN ('claimed','working') ORDER BY id`, [agent])).rows : [];
       res.json({ queued, active });
     } catch (err) {
       console.error('agent poll failed:', err);
@@ -533,9 +531,7 @@ export function setupAgentRoutes(
       return;
     }
     try {
-      const task = (
-        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
-      ).rows[0];
+      const task = (await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])).rows[0];
       if (!task) {
         res.status(404).json({ error: 'No active task with this id' });
         return;
@@ -577,9 +573,7 @@ export function setupAgentRoutes(
       return;
     }
     try {
-      const task = (
-        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
-      ).rows[0];
+      const task = (await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])).rows[0];
       if (!task) {
         res.status(404).json({ error: 'No active task with this id' });
         return;
@@ -649,9 +643,7 @@ export function setupAgentRoutes(
       return;
     }
     try {
-      const task = (
-        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
-      ).rows[0];
+      const task = (await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])).rows[0];
       if (!task) {
         res.status(404).json({ error: 'No active task with this id' });
         return;
@@ -663,10 +655,7 @@ export function setupAgentRoutes(
       }
       const key = String(task.ticket_key);
       console.log(`[agent] task ${String(task.id)} (${key}) flagged by ${agent}: ${reason.trim().slice(0, 140)}`);
-      await q(`UPDATE app.agent_tasks SET flag = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
-        task.id,
-        reason.trim(),
-      ]);
+      await q(`UPDATE app.agent_tasks SET flag = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [task.id, reason.trim()]);
       await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [key, agent, `⚠ Flagged: ${reason.trim()}`]);
       await feed(String(task.engagement_id), 'AGENT', `⚠ ${agent} flagged ${key} — ${reason.trim().slice(0, 140)}`);
       res.json({ ok: true });
@@ -684,9 +673,7 @@ export function setupAgentRoutes(
       return;
     }
     try {
-      const task = (
-        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
-      ).rows[0];
+      const task = (await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])).rows[0];
       if (!task) {
         res.status(404).json({ error: 'No active task with this id' });
         return;
@@ -697,11 +684,7 @@ export function setupAgentRoutes(
       }
       console.log(`[agent] flag cleared on task ${String(task.id)} (${String(task.ticket_key)}) by ${parsed.data.agent}`);
       await q(`UPDATE app.agent_tasks SET flag = NULL, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [task.id]);
-      await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
-        String(task.ticket_key),
-        parsed.data.agent,
-        'Flag cleared.',
-      ]);
+      await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [String(task.ticket_key), parsed.data.agent, 'Flag cleared.']);
       res.json({ ok: true });
     } catch (err) {
       console.error('flag clear failed:', err);
@@ -716,9 +699,7 @@ export function setupAgentRoutes(
       return;
     }
     try {
-      const task = (
-        await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])
-      ).rows[0];
+      const task = (await q(`SELECT * FROM app.agent_tasks WHERE id = $1 AND state IN ('claimed','working')`, [Number(req.params.id)])).rows[0];
       if (!task) {
         res.status(404).json({ error: 'No active task with this id' });
         return;
@@ -730,9 +711,7 @@ export function setupAgentRoutes(
       }
       const key = String(task.ticket_key);
       const engagementId = String(task.engagement_id);
-      console.log(
-        `[agent] task ${String(task.id)} (${key}) completed by ${agent}: ${outcome} — ticket → ${outcome === 'done' ? 'review' : 'backlog'}`,
-      );
+      console.log(`[agent] task ${String(task.id)} (${key}) completed by ${agent}: ${outcome} — ticket → ${outcome === 'done' ? 'review' : 'backlog'}`);
       await q(
         `UPDATE app.agent_tasks SET state = $2, result = $3, result_url = $4, flag = NULL, last_heartbeat = NOW(), updated_at = NOW()
          WHERE id = $1`,
@@ -761,6 +740,16 @@ export function setupAgentRoutes(
       archive(Number(task.id));
       if (outcome === 'done') {
         await setTicketStatus(q, key, 'review');
+        if (typeof task.queued_by === 'string') {
+          await createNotification(q, {
+            recipient: task.queued_by,
+            type: 'agent_review',
+            title: `${key} is ready for sign-off`,
+            message: summary,
+            ticketKey: key,
+            engagementId: String(task.engagement_id),
+          });
+        }
         // Ready for review: log the actual LLM working time against the estimate.
         void recordActualHours(q, key, 'agent-complete');
       } else {
@@ -775,9 +764,7 @@ export function setupAgentRoutes(
       await feed(
         engagementId,
         'AGENT',
-        outcome === 'done'
-          ? `${agent} finished ${key} — moved to Review.${url ? ` ${url}` : ''}`
-          : `${agent} could not complete ${key} — returned to Backlog.`,
+        outcome === 'done' ? `${agent} finished ${key} — moved to Review.${url ? ` ${url}` : ''}` : `${agent} could not complete ${key} — returned to Backlog.`,
       );
       res.json({ ok: true, ticketStatus: outcome === 'done' ? 'review' : 'backlog' });
     } catch (err) {

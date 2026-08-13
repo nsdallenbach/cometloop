@@ -302,7 +302,13 @@ export interface VelocityReport {
   stages: { key: 'queue' | 'build' | 'review'; label: string; medianHrs: number | null; samples: number }[];
   backlog: { date: string; open: number }[];
   backlogDelta: number | null;
-  weekly: { week: string; doneCount: number; leadTimeHrs: number | null; cycleTimeHrs: number | null; humanHoursSaved: number }[];
+  weekly: {
+    week: string;
+    doneCount: number;
+    leadTimeHrs: number | null;
+    cycleTimeHrs: number | null;
+    humanHoursSaved: number;
+  }[];
   humanHoursSaved: { window: number; total: number; agentHoursSpent: number };
   thenVsNow: {
     spanDays: number;
@@ -357,6 +363,17 @@ export interface AdminData {
 }
 
 export type Role = 'admin' | 'lead' | 'developer';
+
+export interface Notification {
+  id: number;
+  type: string;
+  title: string;
+  message: string;
+  ticketKey: string | null;
+  engagementId: string | null;
+  read: boolean;
+  createdAt: string;
+}
 
 export interface Me {
   email: string;
