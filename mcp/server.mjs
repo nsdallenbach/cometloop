@@ -75,6 +75,13 @@ const tool = (name, description, shape, fn) =>
     }
   });
 
+// DAT-204: every tool below that writes a ticket comment carries this, because
+// the drawer renders comment bodies as markdown and agents otherwise post one
+// dense paragraph. The full rules live in the runner prompt — see
+// server/routes/comment-style.ts.
+const MD_HINT =
+  ' Body renders as markdown — use short paragraphs, a `-` list once there are 3+ items, and **bold** / `code` for key terms rather than one dense block.';
+
 const trimTicket = (t) => ({
   key: t.key,
   title: t.title,
@@ -230,7 +237,7 @@ tool(
 
 tool(
   'comment_on_ticket',
-  'Add a comment to a ticket.',
+  `Add a comment to a ticket.${MD_HINT}`,
   { key: z.string(), body: z.string().min(1) },
   async ({ key, body }) => call('POST', `/api/tickets/${encodeURIComponent(key)}/comments`, { body }),
 );
@@ -278,14 +285,14 @@ tool(
 
 tool(
   'report_agent_progress',
-  'Post a progress note for a claimed task — shows live on the board card and as a ticket comment.',
+  `Post a progress note for a claimed task — shows live on the board card and as a ticket comment.${MD_HINT}`,
   { task_id: z.number().int(), agent: z.string(), note: z.string().min(1) },
   async ({ task_id, agent, note }) => call('POST', `/api/agent/work/${task_id}/progress`, { agent, note }),
 );
 
 tool(
   'finish_agent_work',
-  'Complete a claimed task: done parks the ticket in Review, failed returns it to Backlog.',
+  `Complete a claimed task: done parks the ticket in Review, failed returns it to Backlog. The summary is posted as a ticket comment.${MD_HINT}`,
   { task_id: z.number().int(), agent: z.string(), outcome: z.enum(['done', 'failed']), summary: z.string().min(1), url: z.string().url().optional() },
   async ({ task_id, ...body }) => call('POST', `/api/agent/work/${task_id}/complete`, body),
 );

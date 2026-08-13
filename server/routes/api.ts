@@ -27,6 +27,7 @@ import { invokeModel, setupLlmHealthRoutes } from './llm-health';
 import { normalizeTags } from './ticket-tags';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
 import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes } from './ticket-consolidate';
+import { commentStyleBrief } from './comment-style';
 import { setupMcpRoutes } from './mcp';
 import { extractText, refinePlan, refineTicketWithBoard, type RefinedPlan, type ScopingAction } from './scoping-agent';
 import { setupTicketOrderRoutes } from './ticket-order';
@@ -339,9 +340,10 @@ function activeRoadmapItem(phasesRaw: unknown): string | null {
  * Comment-driven refinement: while no runner has ever picked up a ticket, a
  * new comment is treated as feedback on the plan. The ticket is re-planned
  * with the feedback applied and the planning agent replies in the thread —
- * tagging the commenter, 1-2 plain sentences on what changed. Runs in the
- * background after the comment posts; any failure leaves the comment as a
- * plain comment.
+ * tagging the commenter, then a short markdown note on what changed (DAT-204:
+ * bulleted once there are three or more changes, so the reply is skimmable in
+ * the drawer). Runs in the background after the comment posts; any failure
+ * leaves the comment as a plain comment.
  */
 async function applyCommentFeedback(appkit: AppKitServices, key: string, author: string, feedback: string): Promise<void> {
   const q = (text: string, params?: unknown[]) => appkit.lakebase.query(text, params);
@@ -371,7 +373,13 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
         content: [
           'You are the delivery-planning agent for a consulting delivery board. A team member left feedback on a planned ticket that no agent has started yet. Update the ticket to incorporate the feedback.',
           'Respond with ONLY a JSON object, no code fences:',
-          '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "reply": "1-2 short plain sentences telling the commenter what you changed — no jargon, no filler"}',
+          '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "reply": "markdown telling the commenter what you changed — no jargon, no filler"}',
+          [
+            'The reply is posted straight into the ticket thread and rendered as markdown, so a reader has to be able to skim it.',
+            commentStyleBrief(),
+            'One change → one sentence, no bullets. Three or more changes → a one-line lead-in, then one bullet each. Escape the newlines, so as a JSON string value that reads:',
+            '"reply": "Tightened the scope to the staging config.\\n\\n- **Dropped** the production rollout step\\n- Added an AC for `staging.yaml` validation\\n- Kept the rollback plan as-is"',
+          ].join('\n'),
           'Keep the description in the planned format (## Context / ## Approach / ## Dependencies). If the current description contains an "## Original request" section, keep it verbatim at the end. If it contains a ```mermaid diagram, keep it — updated to reflect the reworked plan — unless the feedback removes the need for it. Change only what the feedback calls for; keep everything else as-is.',
           'Current title:',
           asText(t.title),
@@ -395,7 +403,9 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
   const ac = Array.isArray(plan.acceptance_criteria)
     ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)
     : existingAc;
-  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? clipText(plan.reply.trim(), 600) : 'Updated the ticket based on your comment.';
+  // 1200, not 600: a bulleted reply needs the headroom, and clipping mid-list
+  // item is exactly the unreadable output DAT-204 set out to remove.
+  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? clipText(plan.reply.trim(), 1200) : 'Updated the ticket based on your comment.';
 
   console.log(`[api] comment feedback applied to ${key} — plan updated (${ac.length} AC)`);
   await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4, updated_at = NOW() WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
