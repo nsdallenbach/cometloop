@@ -75,8 +75,12 @@ export function inferHarness(agentName: string): string {
   return 'claude-code';
 }
 
-/** Default model provider behind each harness, for logo fallback and grouping. */
-const HARNESS_PROVIDER: Record<string, string> = {
+/**
+ * Default model provider behind each harness, for logo fallback and grouping.
+ * The client mirrors this as HARNESS_DEFAULT_PROVIDER (AgentLogos.tsx); the two
+ * are pinned together by tests/harness-abstraction.test.ts.
+ */
+export const HARNESS_PROVIDER: Record<string, string> = {
   'claude-code': 'anthropic',
   codex: 'openai',
   gemini: 'google',

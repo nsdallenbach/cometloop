@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { api } from '../api';
 import type { AgentsOverview, AgentsOverviewProject, ProjectAgent, ProjectAgentType } from '../types';
 import { HEALTH_COLOR, mono } from '../util';
-import { agentBrand, HARNESS_OPTIONS, PROVIDER_OPTIONS } from './AgentLogos';
+import { agentBrand, HARNESS_DEFAULT_PROVIDER, HARNESS_OPTIONS, PROVIDER_OPTIONS } from './AgentLogos';
 
 /**
  * /agents — the agent architecture map. Every project renders as a central
@@ -262,15 +262,6 @@ function ProjectCluster({
     </div>
   );
 }
-
-/** Harness → its default model provider, mirrored from the server inference. */
-const HARNESS_DEFAULT_PROVIDER: Record<string, string> = {
-  'claude-code': 'anthropic',
-  codex: 'openai',
-  gemini: 'google',
-  copilot: 'microsoft',
-  cursor: '',
-};
 
 const FIELD: React.CSSProperties = {
   width: '100%',

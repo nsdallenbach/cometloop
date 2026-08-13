@@ -135,12 +135,28 @@ const HARNESSES: Record<string, AgentBrand> = {
   cursor: { label: 'Cursor', mark: CURSOR_MARK },
 };
 
+/** Anysphere (Cursor's maker) reuses the Cursor cube; it ships no separate mark. */
 const PROVIDERS: Record<string, AgentBrand> = {
   anthropic: { label: 'Anthropic', mark: ANTHROPIC_MARK },
   openai: { label: 'OpenAI', mark: OPENAI_MARK },
   google: { label: 'Google', mark: GOOGLE_MARK },
   microsoft: { label: 'Microsoft', mark: MICROSOFT_MARK },
+  anysphere: { label: 'Anysphere', mark: CURSOR_MARK },
   databricks: { label: 'Databricks', mark: DATABRICKS_MARK },
+};
+
+/**
+ * Harness → its default model provider, mirrored from the server's
+ * HARNESS_PROVIDER (server/routes/agents.ts) so a node's provider fallback and
+ * the deploy form agree with what the sync pass persists. One copy, here, next
+ * to the brand tables; tests/harness-abstraction.test.ts pins it to the server.
+ */
+export const HARNESS_DEFAULT_PROVIDER: Record<string, string> = {
+  'claude-code': 'anthropic',
+  codex: 'openai',
+  gemini: 'google',
+  copilot: 'microsoft',
+  cursor: 'anysphere',
 };
 
 const norm = (v: string) => v.trim().toLowerCase().replace(/[\s_]+/g, '-');

@@ -27,7 +27,10 @@ works**: point some boxes at `HARNESS=claude` and others at `HARNESS=codex`
 against the same queue — they claim atomically and show up side by side on the
 board (`claude-1`, `codex-2`, …). This is how you spread work across model
 budgets. Adding a new harness is one entry in `harnesses.mjs`; nothing in
-`runner.mjs` changes.
+`runner.mjs` changes. Add it to `tests/harness-abstraction.test.ts` too — that
+smoke test is what keeps the adapter shape, the stream parsing and the console's
+harness ids honest in CI, since a broken adapter otherwise only shows up on a
+devbox mid-run.
 
 ```bash
 HARNESS=codex AGENT_NAME=codex-1 node devbox-runner/runner.mjs
