@@ -76,7 +76,9 @@ function codexHarness(env) {
   return {
     name: 'codex',
     bin: env.CODEX_BIN ?? 'codex',
-    args: splitArgs(env.CODEX_ARGS ?? 'exec --json --dangerously-bypass-approvals-and-sandbox'),
+    // --skip-git-repo-check because the agent's cwd is the task workdir (the
+    // repo is cloned one level down in ./repo), which is not itself a repo.
+    args: splitArgs(env.CODEX_ARGS ?? 'exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox'),
     promptVia: env.CODEX_PROMPT_VIA ?? 'stdin',
     parseLine(line, emit) {
       let evt;
@@ -86,16 +88,48 @@ function codexHarness(env) {
         emit.print(line); // human-readable line (no --json, or a stray) — show it
         return;
       }
-      // Codex JSONL: item.* events carry the agent's actions. Shapes shift
-      // between versions, so match loosely and degrade to raw on anything new.
-      const item = evt.item ?? evt.msg ?? evt;
-      const itype = item.type ?? evt.type ?? '';
-      if (itype.includes('command')) emit.tool('shell', { command: item.command ?? item.cmd ?? item.text ?? '' });
-      else if (itype.includes('file') || itype.includes('patch') || itype.includes('edit')) emit.tool('edit', { path: item.path ?? item.file ?? '' });
-      else if (itype.includes('message') || itype.includes('text') || itype.includes('reasoning')) {
-        const t = item.text ?? item.content ?? (Array.isArray(item.content) ? item.content.map((c) => c.text).join('') : '');
+      // Codex emits `{type: item.started|item.completed, item: {...}}` around
+      // each action, plus thread/turn lifecycle events. Actions therefore
+      // appear TWICE — key off the outer event type so each logs once.
+      const etype = evt.type ?? '';
+      const item = evt.item ?? evt.msg ?? {};
+      const itype = item.type ?? '';
+
+      if (etype === 'thread.started' || etype === 'turn.started') return; // no signal
+      if (etype === 'turn.completed') {
+        const u = evt.usage ?? {};
+        emit.print(`— turn complete (${u.input_tokens ?? 0} in / ${u.output_tokens ?? 0} out tokens)`);
+        return;
+      }
+      if (etype === 'turn.failed' || etype === 'error') {
+        emit.print(`— codex error: ${typeof evt.message === 'string' ? evt.message : JSON.stringify(evt)}`);
+        return;
+      }
+
+      if (itype === 'agent_message' || itype === 'reasoning') {
+        if (etype !== 'item.completed') return; // text only arrives complete
+        const t = item.text ?? (Array.isArray(item.content) ? item.content.map((c) => c?.text ?? '').join('') : '');
         if (t) emit.print(String(t));
-      } else emit.print(line);
+        return;
+      }
+      if (itype === 'command_execution') {
+        // Show the command as it starts; on completion only surface failures.
+        if (etype === 'item.started') emit.tool('shell', { command: item.command ?? '' });
+        else if (etype === 'item.completed' && item.exit_code) emit.print(`  ! command exited ${item.exit_code}`);
+        return;
+      }
+      if (itype.includes('file') || itype.includes('patch') || itype.includes('edit')) {
+        if (etype !== 'item.completed') return;
+        const paths = Array.isArray(item.changes) ? item.changes.map((c) => c?.path).filter(Boolean) : [];
+        emit.tool('edit', { path: paths.length ? paths.join(', ') : (item.path ?? item.file ?? '') });
+        return;
+      }
+      if (itype === 'mcp_tool_call') {
+        if (etype !== 'item.started') return;
+        emit.tool(`mcp:${item.server ?? '?'}.${item.tool ?? '?'}`, item.arguments ?? {});
+        return;
+      }
+      emit.print(line); // unknown event type — stay visible rather than silent
     },
     // Codex reads MCP from its global config ($CODEX_HOME/config.toml), not a
     // per-workdir file, so there is nothing to write here. The runner still

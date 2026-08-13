@@ -34,6 +34,26 @@ HARNESS=codex AGENT_NAME=codex-1 node devbox-runner/runner.mjs
 HARNESS=generic AGENT_BIN=aider AGENT_ARGS='--yes --no-git' node devbox-runner/runner.mjs
 ```
 
+Name the runner after its harness (`codex-1`, `gemini-2`, …): the console infers
+the harness from the runner id (`inferHarness` in `server/routes/agents.ts`) and
+brands the agent on the board with the right logo.
+
+### Setting up a Codex box
+
+```bash
+npm install -g @openai/codex
+codex login                                    # browser sign-in, or --with-api-key
+codex mcp add delivery-console -- node <repo>/mcp/server.mjs   # MCP is global, not per-workdir
+```
+
+Then `devbox-runner/run-codex.ps1` (Windows) or the env line above. Codex's
+default args here are `exec --json --skip-git-repo-check
+--dangerously-bypass-approvals-and-sandbox`: `--json` gives the JSONL event
+stream the live feed is built from, and `--skip-git-repo-check` is required
+because the agent's cwd is the task workdir, with the repo one level down in
+`./repo`. The bypass flag suits a single-purpose runner VM; on a shared box
+prefer `CODEX_ARGS='exec --json --skip-git-repo-check -s workspace-write'`.
+
 ## Requirements
 
 Node 18+, git, the Databricks CLI authenticated against the workspace (or a
