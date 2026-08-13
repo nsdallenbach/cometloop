@@ -7,16 +7,19 @@ import { mono } from '../util';
 
 const AUTO_DISMISS_MS = 6000;
 
+/** Row values are `unknown`; coerce through a typed helper, never bare String(). */
+const txt = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '');
+
 function fromRow(row: Record<string, unknown>): Notification {
   return {
     id: Number(row.id),
-    type: String(row.type ?? ''),
-    title: String(row.title ?? ''),
-    message: String(row.message ?? ''),
-    ticketKey: row.ticket_key == null ? null : String(row.ticket_key),
-    engagementId: row.engagement_id == null ? null : String(row.engagement_id),
+    type: txt(row.type),
+    title: txt(row.title),
+    message: txt(row.message),
+    ticketKey: row.ticket_key == null ? null : txt(row.ticket_key),
+    engagementId: row.engagement_id == null ? null : txt(row.engagement_id),
     read: row.read === true,
-    createdAt: String(row.created_at ?? new Date().toISOString()),
+    createdAt: txt(row.created_at) || new Date().toISOString(),
   };
 }
 
@@ -42,7 +45,10 @@ export function NotificationCenter({ onOpenTicket }: { onOpenTicket: (key: strin
   useEffect(() => {
     const events = new EventSource('/api/notifications/stream');
     events.onmessage = (event) => {
-      const notification = fromRow(JSON.parse(event.data) as Record<string, unknown>);
+      // event.data is `any` off the EventSource type — narrow before parsing.
+      const payload: unknown = event.data;
+      const raw: unknown = typeof payload === 'string' ? (JSON.parse(payload) as unknown) : {};
+      const notification = fromRow((raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>);
       setItems((current) => [notification, ...current.filter((item) => item.id !== notification.id)]);
       setUnread((count) => count + 1);
       setToasts((current) => [...current, notification]);

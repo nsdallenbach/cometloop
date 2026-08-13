@@ -29,6 +29,7 @@ export function Admin({
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [memberConfirm, setMemberConfirm] = useState<number | null>(null);
   const [newName, setNewName] = useState('');
+  const [newEmail, setNewEmail] = useState('');
   const [newRole, setNewRole] = useState('');
   const [saving, setSaving] = useState(false);
   const [leadDrafts, setLeadDrafts] = useState<Record<string, string>>({});
@@ -141,13 +142,14 @@ export function Admin({
   };
 
   const addMember = () => {
-    if (!newName.trim() || !newRole.trim() || saving) return;
+    if (!newName.trim() || !EMAIL_RE.test(newEmail.trim()) || !newRole.trim() || saving) return;
     setSaving(true);
     api
-      .addMember(newName.trim(), newRole.trim())
+      .addMember(newName.trim(), newEmail.trim(), newRole.trim())
       .then(() => {
         toast(`${newName.trim()} added to the bench`);
         setNewName('');
+        setNewEmail('');
         setNewRole('');
         reload();
       })
@@ -335,11 +337,12 @@ export function Admin({
               <div style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 10 }}>ADD TEAM MEMBER</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Full name" style={inputStyle} />
+                <input value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="Workspace email" type="email" style={inputStyle} />
                 <input value={newRole} onChange={(e) => setNewRole(e.target.value)} placeholder="Role — e.g. Data Engineer" style={inputStyle} />
                 <button
                   className="hv-bright"
                   onClick={addMember}
-                  disabled={!newName.trim() || !newRole.trim() || saving}
+                  disabled={!newName.trim() || !EMAIL_RE.test(newEmail.trim()) || !newRole.trim() || saving}
                   style={{
                     background: 'var(--acc)',
                     color: '#fff',
@@ -349,7 +352,7 @@ export function Admin({
                     fontSize: 12,
                     fontWeight: 600,
                     cursor: 'pointer',
-                    opacity: !newName.trim() || !newRole.trim() || saving ? 0.45 : 1,
+                    opacity: !newName.trim() || !EMAIL_RE.test(newEmail.trim()) || !newRole.trim() || saving ? 0.45 : 1,
                   }}
                 >
                   {saving ? 'Adding…' : 'Add to bench'}
@@ -367,7 +370,24 @@ export function Admin({
                   <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 'var(--rowpad)', borderBottom: '1px solid var(--line)' }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 12.5, fontWeight: 600 }}>{m.name}</div>
-                      <div style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{m.role}</div>
+                      <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginBottom: 3 }}>{m.role}</div>
+                      <input
+                        key={m.email ?? ''}
+                        defaultValue={m.email ?? ''}
+                        placeholder="Workspace email — required for runner access"
+                        type="email"
+                        onBlur={(event) => {
+                          const email = event.currentTarget.value.trim();
+                          if (email === (m.email ?? '')) return;
+                          if (!EMAIL_RE.test(email)) {
+                            toast('Enter a valid workspace email');
+                            event.currentTarget.value = m.email ?? '';
+                            return;
+                          }
+                          void api.updateMemberEmail(m.id, email).then(reload).catch((e: Error) => toast(`Email update failed — ${e.message}`));
+                        }}
+                        style={{ ...inputStyle, padding: '3px 6px', fontSize: 10.5, width: 240 }}
+                      />
                     </div>
                     <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
                       {nProjects} {nProjects === 1 ? 'PROJECT' : 'PROJECTS'}

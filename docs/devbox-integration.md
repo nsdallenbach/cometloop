@@ -95,6 +95,17 @@ Optional body fields: `engagement` (only claim from one engagement), `ticket`
 (claim a specific queued ticket). `404` means nothing is queued. Claiming is
 atomic (`FOR UPDATE SKIP LOCKED`) — concurrent runners never get the same task.
 
+`403` means the runner's per-agent security settings forbid it (DAT-212): the
+agent is disabled, or lacks the `claim_work` scope. The claim is released, so
+the ticket stays queued for another runner, and the body carries the reason and
+the `action` that was denied. Treat it as a configuration decision, not a
+transient error — back off rather than retrying, or the still-queued work will
+spin the loop (`runner.mjs` pauses `DENIED_COOLDOWN_MS`, default 2 minutes).
+`git-credential` and the coordination endpoints answer 403 the same way; a lead
+widens the scope from the agent's panel on `/agents`. Reporting progress and
+completing a task the runner already holds are never blocked, so an agent
+disabled mid-run can always close out cleanly.
+
 The response contains `task` (note `task.id` and `task.instructions`),
 `ticket` (with `description` and `ac` acceptance criteria), `engagement`,
 `comments`, `repo`, `contextFiles`, and `attachments` (context files and

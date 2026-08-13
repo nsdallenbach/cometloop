@@ -10,6 +10,10 @@ import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
+import { checkAgentAction, enforceAgentAction } from './agent-security';
+import { runnerCanClaim } from './runner-load-balancing';
+import { loadRejections, rejectionPromptSection, type TicketRejection } from './ticket-review';
+import { commentStyleSection } from './comment-style';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -52,6 +56,16 @@ export const AGENT_SCHEMA_SQL = [
   // Runner-raised warning (reason text); NULL when nothing needs attention.
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS flag TEXT`,
 ];
+
+/**
+ * The rank reserved for work that must be picked up before anything a human
+ * ordered — today only the merge-conflict requeue (DAT-200). Claiming sorts
+ * `priority DESC, id`: the lead-facing queue API caps priority at 9 and
+ * drag-to-reorder can only reach the lane length (200 ids max), so this sits
+ * above every rank the board can produce, while `id` still keeps FIFO among
+ * several top-priority items.
+ */
+export const TOP_PRIORITY = 1000;
 
 const QueueBody = z.object({
   instructions: z.string().max(8000).optional(),
@@ -146,6 +160,7 @@ export function renderPrompt(
   contextFiles: { name: string }[],
   comments: Record<string, unknown>[] = [],
   attachments: { filename: string; size: number }[] = [],
+  rejections: TicketRejection[] = [],
 ): string {
   const key = txt(task.ticket_key);
   const ac = (() => {
@@ -169,6 +184,10 @@ export function renderPrompt(
     '## Ticket',
     txt(ticket?.description).trim() || '(no description — the title is the scope)',
     ...(ac.length > 0 ? ['', 'Acceptance criteria:', ...ac.map((a) => `- ${a}`)] : []),
+    // Rework context (DAT-217): a ticket that came back from review says why,
+    // ahead of the lead instructions and the comment thread — the agent should
+    // read the reviewer's words before anything else about how to work.
+    ...rejectionPromptSection(rejections),
     ...(txt(task.instructions).trim() ? ['', '## Lead instructions', txt(task.instructions).trim()] : []),
     ...(commentLines.length > 0
       ? [
@@ -196,6 +215,9 @@ export function renderPrompt(
     '- If delivery-console MCP tools are available, post report_agent_progress at plan time and before pushing, and raise flag_agent_work if you get blocked instead of guessing.',
     `- Steering via comments: leads may post new ticket comments while you work. If delivery-console MCP tools are available, re-read the comments with get_ticket (key ${key}) before pushing and apply any new guidance; your own progress notes also appear there — ignore those.`,
     '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
+    '- Your agent identity carries security settings a lead controls on the agent map. If an action comes back 403 with a security reason (claiming work, vending a git credential, posting coordination messages), that is a deliberate restriction, not a bug: do not retry it in a loop or work around it — raise a flag saying which scope you need and stop. Reporting progress and completing the task you already hold are never blocked.',
+    '',
+    ...commentStyleSection(),
     '',
     '## Coordinating with other agents',
     `Other agents may be working other branches of the same repo right now. Your agent id is "${txt(task.agent) || 'agent'}". Use the delivery-console MCP coordination tools (or the /api/agent/coordination REST endpoints) to avoid colliding with them:`,
@@ -223,7 +245,7 @@ export function setupAgentRoutes(
   app: express.Application,
   q: Query,
   files: FilesVolume,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireProjectAccess: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
   telemetry: FilesVolume | null = null,
 ) {
   /** Fire-and-forget: archive a finished run's tool-call log to the telemetry volume. */
@@ -248,6 +270,9 @@ export function setupAgentRoutes(
       null;
     const contextFiles = await listContextFiles(files, engagementId);
     const attachments = await listTicketAttachments(q, ticketKey).catch(() => []);
+    // Prior review rejections ride along so a re-claimed ticket arrives with the
+    // reviewer's feedback instead of a cold re-read (DAT-217).
+    const rejections = await loadRejections(q, ticketKey).catch(() => []);
     return {
       task,
       ticket,
@@ -256,7 +281,8 @@ export function setupAgentRoutes(
       repo,
       contextFiles,
       attachments,
-      prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, comments, attachments),
+      rejections,
+      prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, comments, attachments, rejections),
     };
   };
 
@@ -276,8 +302,8 @@ export function setupAgentRoutes(
         return;
       }
       const engagementId = String(ticket.engagement_id);
-      const lead = await requireLead(req, res, engagementId);
-      if (!lead) return;
+      const user = await requireProjectAccess(req, res, engagementId);
+      if (!user) return;
       // Review tickets are queueable so review feedback (posted as comments)
       // can be sent back to a runner as rework — the comments ride along in
       // the work package and the rendered prompt.
@@ -295,7 +321,7 @@ export function setupAgentRoutes(
       const inserted = await q(
         `INSERT INTO app.agent_tasks (ticket_key, engagement_id, priority, instructions, queued_by)
          VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-        [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', lead.email],
+        [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', user.email],
       );
       console.log(`[agent] queued ${key} as task ${String(inserted.rows[0].id)} (engagement ${engagementId}, priority ${parsed.data.priority ?? 0})`);
       await feed(engagementId, 'YOU', `Queued ${key} — ${String(ticket.title)} for agent work.`);
@@ -316,7 +342,7 @@ export function setupAgentRoutes(
         return;
       }
       const engagementId = String(task.engagement_id);
-      if (!(await requireLead(req, res, engagementId))) return;
+      if (!(await requireProjectAccess(req, res, engagementId))) return;
       await q(`UPDATE app.agent_tasks SET state = 'done', result = $2, flag = NULL, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
         task.id,
         'Marked done from the board.',
@@ -353,7 +379,7 @@ export function setupAgentRoutes(
         return;
       }
       const engagementId = String(task.engagement_id);
-      if (!(await requireLead(req, res, engagementId))) return;
+      if (!(await requireProjectAccess(req, res, engagementId))) return;
       await q(`UPDATE app.agent_tasks SET state = 'cancelled', updated_at = NOW() WHERE id = $1`, [task.id]);
       // A claimed ticket goes back to the backlog; drop the agent as assignee.
       if (task.state !== 'queued') {
@@ -382,7 +408,7 @@ export function setupAgentRoutes(
     }
     try {
       const engagementId = req.params.id;
-      if (!(await requireLead(req, res, engagementId))) return;
+      if (!(await requireProjectAccess(req, res, engagementId))) return;
       const { order } = parsed.data;
       console.log(`[agent] reordering queue for engagement ${engagementId} (${order.length} task(s))`);
       // Claiming sorts priority DESC, so the top of the lane gets the highest
@@ -466,7 +492,7 @@ export function setupAgentRoutes(
       const { agent, engagement, ticket } = parsed.data;
       const identity = await resolveIdentity(req);
       const filters: string[] = [`state = 'queued'`];
-      const params: unknown[] = [agent, identity.email];
+      const params: unknown[] = [];
       if (engagement) {
         params.push(engagement);
         filters.push(`engagement_id = $${params.length}`);
@@ -475,23 +501,46 @@ export function setupAgentRoutes(
         params.push(ticket);
         filters.push(`ticket_key = $${params.length}`);
       }
-      // SKIP LOCKED keeps concurrent runners from claiming the same task.
-      const claimed = (
-        await q(
-          `UPDATE app.agent_tasks SET state = 'claimed', agent = $1, agent_identity = $2,
-             claimed_at = NOW(), last_heartbeat = NOW(), updated_at = NOW()
-           WHERE id = (
-             SELECT id FROM app.agent_tasks WHERE ${filters.join(' AND ')}
-             ORDER BY priority DESC, id LIMIT 1 FOR UPDATE SKIP LOCKED
-           ) RETURNING *`,
-          params,
-        )
-      ).rows[0];
+      const candidates = (await q(`SELECT id, engagement_id FROM app.agent_tasks WHERE ${filters.join(' AND ')} ORDER BY priority DESC, id`, params)).rows;
+      let claimed: Record<string, unknown> | undefined;
+      const eligibility = new Map<string, boolean>();
+      for (const candidate of candidates) {
+        const candidateEngagement = String(candidate.engagement_id);
+        if (!eligibility.has(candidateEngagement)) eligibility.set(candidateEngagement, await runnerCanClaim(q, candidateEngagement, agent));
+        if (!eligibility.get(candidateEngagement)) continue;
+        claimed = (
+          await q(
+            `UPDATE app.agent_tasks SET state = 'claimed', agent = $1, agent_identity = $2,
+               claimed_at = NOW(), last_heartbeat = NOW(), updated_at = NOW()
+             WHERE id = $3 AND state = 'queued' RETURNING *`,
+            [agent, identity.email, candidate.id],
+          )
+        ).rows[0];
+        if (claimed) break;
+      }
       if (!claimed) {
         res.status(404).json({ error: 'No queued work matches' });
         return;
       }
       const key = String(claimed.ticket_key);
+      // Security gate (DAT-212). The claim is atomic and the engagement is only
+      // known once it lands, so a denied agent has its claim released here — the
+      // ticket returns to 'queued' untouched, without ever moving to progress.
+      const decision = await checkAgentAction(q, {
+        engagementId: String(claimed.engagement_id),
+        agent,
+        action: 'claim_work',
+        detail: key,
+      });
+      if (!decision.allowed) {
+        await q(
+          `UPDATE app.agent_tasks SET state = 'queued', agent = NULL, agent_identity = NULL, claimed_at = NULL,
+             last_heartbeat = NULL, updated_at = NOW() WHERE id = $1`,
+          [claimed.id],
+        );
+        res.status(403).json({ error: decision.reason, action: 'claim_work', agent });
+        return;
+      }
       console.log(`[agent] ${agent} claimed task ${String(claimed.id)} (${key}) — ticket moved to progress`);
       await setTicketStatus(q, key, 'progress', { assignee: agent });
       await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work.`);
@@ -540,6 +589,15 @@ export function setupAgentRoutes(
         res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
         return;
       }
+      // Repo write access is the most privileged thing the console hands an
+      // agent — gate it before minting anything (DAT-212).
+      const allowed = await enforceAgentAction(res, q, {
+        engagementId: String(task.engagement_id),
+        agent: parsed.data.agent,
+        action: 'git_credential',
+        detail: String(task.ticket_key),
+      });
+      if (!allowed) return;
       const conn = await loadConnection(q, String(task.engagement_id));
       if (!conn) {
         res.status(404).json({ error: 'No repository connected to this engagement' });
