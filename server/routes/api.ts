@@ -6,6 +6,7 @@ import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
 import { PROJECT_AGENTS_SCHEMA_SQL, setupProjectAgentRoutes } from './agents';
+import { projectAccessGuard } from './project-access';
 import { COORDINATION_SCHEMA_SQL, setupCoordinationRoutes } from './coordination';
 import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
@@ -132,10 +133,12 @@ const SCHEMA_SQL = [
   `CREATE TABLE IF NOT EXISTS app.team_members (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
+    email TEXT,
     role TEXT NOT NULL,
     skills JSONB NOT NULL DEFAULT '[]',
     load INT NOT NULL DEFAULT 0
   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS team_members_email_unique ON app.team_members (LOWER(email)) WHERE email IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS app.suggestions (
     id TEXT PRIMARY KEY,
     ticket TEXT NOT NULL,
@@ -526,7 +529,11 @@ const CreateEngagementBody = z.object({
 
 const MembersBody = z.object({ memberIds: z.array(z.number().int()).max(50) });
 
-const NewMemberBody = z.object({ name: z.string().min(1).max(80), role: z.string().min(1).max(80) });
+const NewMemberBody = z.object({
+  name: z.string().min(1).max(80),
+  email: z.string().email().max(254),
+  role: z.string().min(1).max(80),
+});
 
 const CommentBody = z.object({ body: z.string().min(1).max(4000) });
 
@@ -627,6 +634,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     res.status(403).json({ error: 'Engagement lead access required' });
     return null;
   };
+  const requireProjectAccess = projectAccessGuard(q, resolveIdentity);
 
   const ticketEngagement = async (key: string): Promise<string | null> => {
     const { rows } = await q('SELECT engagement_id FROM app.tickets WHERE key = $1', [key]);
@@ -644,7 +652,15 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const leadOf = (await q('SELECT engagement_id FROM app.engagement_leads WHERE LOWER(email) = LOWER($1)', [id.email])).rows.map(
           (r) => String(r.engagement_id),
         );
-        res.json({ ...id, leadOf });
+        const memberOf = (
+          await q(
+            `SELECT em.engagement_id FROM app.engagement_members em
+             JOIN app.team_members tm ON tm.id = em.member_id
+             WHERE LOWER(tm.email) = LOWER($1)`,
+            [id.email],
+          )
+        ).rows.map((r) => String(r.engagement_id));
+        res.json({ ...id, leadOf, memberOf });
       } catch (err) {
         console.error('me failed:', err);
         res.status(500).json({ error: 'Failed to resolve identity' });
@@ -1722,13 +1738,36 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         if (!(await requireAdmin(req, res))) return;
         const result = await q(
-          `INSERT INTO app.team_members (name, role, skills, load) VALUES ($1,$2,'[0,0,0,0,0,0]',0) RETURNING *`,
-          [parsed.data.name.trim(), parsed.data.role.trim().toUpperCase()],
+          `INSERT INTO app.team_members (name, email, role, skills, load) VALUES ($1,LOWER($2),$3,'[0,0,0,0,0,0]',0) RETURNING *`,
+          [parsed.data.name.trim(), parsed.data.email, parsed.data.role.trim().toUpperCase()],
         );
         res.status(201).json(result.rows[0]);
       } catch (err) {
         console.error('add member failed:', err);
         res.status(500).json({ error: 'Failed to add team member' });
+      }
+    });
+
+    app.put('/api/team-members/:id/email', async (req, res) => {
+      const parsed = z.object({ email: z.string().email().max(254) }).safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'A valid workspace email is required' });
+        return;
+      }
+      try {
+        if (!(await requireAdmin(req, res))) return;
+        const updated = await q('UPDATE app.team_members SET email = LOWER($2) WHERE id = $1 RETURNING *', [
+          Number(req.params.id),
+          parsed.data.email,
+        ]);
+        if (updated.rows.length === 0) {
+          res.status(404).json({ error: 'Member not found' });
+          return;
+        }
+        res.json(updated.rows[0]);
+      } catch (err) {
+        console.error('update member email failed:', err);
+        res.status(500).json({ error: 'Failed to update workspace email' });
       }
     });
 
@@ -1792,8 +1831,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupTicketOrderRoutes(app, q);
     setupVelocityRoutes(app, q);
     setupGithubAppRoutes(app);
-    setupAgentRoutes(app, q, appkit.files('files'), requireLead, telemetry);
-    setupProjectAgentRoutes(app, q, requireLead);
+    setupAgentRoutes(app, q, appkit.files('files'), requireProjectAccess, telemetry);
+    setupProjectAgentRoutes(app, q, requireLead, resolveIdentity);
     setupToolCallRoutes(app, q);
     setupCoordinationRoutes(app, q);
     setupPrConflictRoutes(app, q);

@@ -67,6 +67,7 @@ export function TicketDrawer({
   ticket,
   team,
   lead,
+  runnerAccess,
   agentTask,
   allTickets,
   onOpenTicket,
@@ -86,6 +87,7 @@ export function TicketDrawer({
   ticket: Ticket;
   team: string[];
   lead: boolean;
+  runnerAccess: boolean;
   agentTask: AgentTask | null;
   allTickets: Ticket[];
   onOpenTicket: (key: string) => void;
@@ -125,7 +127,7 @@ export function TicketDrawer({
   const [queueOpen, setQueueOpen] = useState(false);
   const [instructions, setInstructions] = useState('');
   const agentActive = agentTask !== null && ['queued', 'claimed', 'working'].includes(agentTask.state);
-  const canQueue = lead && !agentActive && ['backlog', 'progress'].includes(ticket.status);
+  const canQueue = runnerAccess && !agentActive && ['backlog', 'progress'].includes(ticket.status);
   const [refining, setRefining] = useState(false);
   const [loaded, setLoaded] = useState<{ key: string; list: TicketComment[] | null; error: boolean } | null>(null);
   const [dev, setDev] = useState<{ key: string; data: TicketDev | null } | null>(null);
@@ -1064,7 +1066,7 @@ export function TicketDrawer({
                           {agentTask.agent}
                         </span>
                       )}
-                      {agentActive && lead && (
+                      {agentActive && runnerAccess && (
                         <button
                           className="hv-bad"
                           onClick={onCancelAgent}
