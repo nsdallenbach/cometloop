@@ -23,7 +23,9 @@ interface MemPg {
 let q: Query;
 
 const boardOrder = async (engagementId: string) =>
-  (await q('SELECT key FROM app.tickets WHERE engagement_id = $1 ORDER BY seq', [engagementId])).rows.map((r) => String(r.key));
+  (await q('SELECT key FROM app.tickets WHERE engagement_id = $1 ORDER BY seq DESC', [engagementId])).rows.map((r) =>
+    String(r.key),
+  );
 
 beforeEach(async () => {
   const db = newDb();
@@ -64,9 +66,9 @@ describe('applyTicketOrder', () => {
     expect(await boardOrder('eng-a')).toEqual(['DAT-103', 'DAT-101', 'DAT-102']);
   });
 
-  it('new tickets land after a renumbered board (SERIAL keeps outrunning seq)', async () => {
+  it('new tickets land before a renumbered board (SERIAL keeps outrunning seq)', async () => {
     await applyTicketOrder(q, 'eng-a', ['DAT-103', 'DAT-102', 'DAT-101']);
     await q(`INSERT INTO app.tickets (key, engagement_id, status) VALUES ('DAT-104', 'eng-a', 'backlog')`);
-    expect(await boardOrder('eng-a')).toEqual(['DAT-103', 'DAT-102', 'DAT-101', 'DAT-104']);
+    expect(await boardOrder('eng-a')).toEqual(['DAT-104', 'DAT-103', 'DAT-102', 'DAT-101']);
   });
 });

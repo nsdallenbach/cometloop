@@ -737,7 +737,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                ORDER BY (e.stage = 'flagged') DESC, e.id DESC LIMIT 1
              ) esc ON true
              ${REPO_CONNECTED_JOIN}
-             WHERE t.engagement_id = $1 ORDER BY t.seq`,
+             WHERE t.engagement_id = $1 ORDER BY t.seq DESC`,
             [id],
           )
         ).rows.map((r) => ({ ...r, done_blocked_reason: doneBlockedReason(gateInputFromRow(r)) }));
