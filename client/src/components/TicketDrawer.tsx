@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { api } from '../api';
+import { canonicalTag, suggestedTags } from '../lib/ticket-tags';
 import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
 import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
@@ -130,10 +131,11 @@ export function TicketDrawer({
     (agentTask === null || ['queued', 'cancelled'].includes(agentTask.state));
   const [tagDraft, setTagDraft] = useState('');
 
-  const addTag = () => {
-    const tag = tagDraft.trim();
+  // One path for both ways of adding a tag — typed free text and the standard
+  // feature/bug chips (DAT-210) — so the dedupe and limit rules can't diverge.
+  const addTag = (raw: string) => {
+    const tag = canonicalTag(raw);
     if (!tag) return;
-    setTagDraft('');
     if (ticket.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return;
     if (tag.length > 40) {
       toast('Tags are limited to 40 characters');
@@ -145,6 +147,16 @@ export function TicketDrawer({
     }
     onTags([...ticket.tags, tag]);
   };
+
+  const commitTagDraft = () => {
+    if (!tagDraft.trim()) return;
+    const draft = tagDraft;
+    setTagDraft('');
+    addTag(draft);
+  };
+
+  // Standard tags this ticket doesn't carry yet — the picker's suggestions.
+  const tagOptions = suggestedTags(ticket.tags);
 
   // Branch edits are keyed to the ticket so a draft never bleeds into another
   // ticket, and board polls don't clobber text mid-edit.
@@ -707,10 +719,11 @@ export function TicketDrawer({
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ',') {
                   e.preventDefault();
-                  addTag();
+                  commitTagDraft();
                 }
               }}
-              onBlur={addTag}
+              onBlur={commitTagDraft}
+              list={`tag-options-${ticket.key}`}
               placeholder={ticket.tags.length === 0 ? 'Add a tag…' : '+ tag'}
               style={{
                 width: ticket.tags.length === 0 ? 120 : 70,
@@ -722,6 +735,33 @@ export function TicketDrawer({
                 fontSize: 11.5,
               }}
             />
+            {/* Standard tags (DAT-210): suggested in the input's dropdown and
+                one click away as chips. Ordinary tags either way — nothing
+                here writes a field the free-text input can't. */}
+            <datalist id={`tag-options-${ticket.key}`}>
+              {tagOptions.map((tag) => (
+                <option key={tag} value={tag} />
+              ))}
+            </datalist>
+            {tagOptions.map((tag) => (
+              <button
+                key={tag}
+                className="hv-border"
+                title={`Tag this ticket "${tag}"`}
+                onClick={() => addTag(tag)}
+                style={{
+                  ...mono(500, 10),
+                  color: 'var(--tx3)',
+                  border: '1px dashed var(--line2)',
+                  background: 'none',
+                  borderRadius: 2,
+                  padding: '2px 7px',
+                  cursor: 'pointer',
+                }}
+              >
+                + {tag}
+              </button>
+            ))}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>DESCRIPTION</span>
