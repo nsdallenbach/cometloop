@@ -16,6 +16,7 @@ import type {
   Me,
   ParsedPlan,
   Phase,
+  PlanningReviewFlow,
   ProjectAgentRole,
   ProjectAgentType,
   PrReview,
@@ -111,6 +112,7 @@ function mapTicket(r: Row): Ticket {
     tags: j(r.tags, []),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
+    doneBlockedReason: nz(r.done_blocked_reason),
     roadmapItem: r.roadmap_item == null ? null : s(r.roadmap_item),
     branch: nz(r.branch) ?? nz(r.active_branch) ?? nz(r.pr_branch),
     runner: nz(r.task_agent) !== null && s(r.task_agent) === s(r.assignee) ? s(r.task_agent) : null,
@@ -120,6 +122,11 @@ function mapTicket(r: Row): Ticket {
     // Only live escalations are joined server-side, so any stage here is current.
     escalationStage: r.escalation_stage == null ? null : (s(r.escalation_stage) as EscalationStage),
     escalationPr: r.escalation_pr == null ? null : n(r.escalation_pr),
+    // Expired passes are filtered out server-side, so a flow here is live.
+    planningReview:
+      r.planning_review_flow == null
+        ? null
+        : { flow: s(r.planning_review_flow) as PlanningReviewFlow, startedAt: nz(r.planning_review_started_at) },
     activePr:
       r.pr_number == null
         ? null
@@ -183,7 +190,7 @@ function mapFeed(r: Row): FeedItem {
 }
 
 function mapTeam(r: Row): TeamMember {
-  return { id: n(r.id), name: s(r.name), role: s(r.role), skills: j(r.skills, []), load: n(r.load) };
+  return { id: n(r.id), name: s(r.name), email: r.email == null ? null : s(r.email), role: s(r.role), skills: j(r.skills, []), load: n(r.load) };
 }
 
 function mapSuggestion(r: Row): Suggestion {
@@ -366,11 +373,12 @@ export const api = {
   },
 
   async me(): Promise<Me> {
-    const r = await http<Row & { leadOf?: unknown }>('/api/me');
+    const r = await http<Row & { leadOf?: unknown; memberOf?: unknown }>('/api/me');
     return {
       email: s(r.email),
       role: (s(r.role) as Me['role']) || 'developer',
       leadOf: Array.isArray(r.leadOf) ? r.leadOf.map(s) : [],
+      memberOf: Array.isArray(r.memberOf) ? r.memberOf.map(s) : [],
     };
   },
 
@@ -412,8 +420,12 @@ export const api = {
     return http(`/api/engagements/${engagementId}/members`, { method: 'PUT', ...json({ memberIds }) });
   },
 
-  async addMember(name: string, role: string): Promise<TeamMember> {
-    return mapTeam(await http<Row>('/api/team-members', { method: 'POST', ...json({ name, role }) }));
+  async addMember(name: string, email: string, role: string): Promise<TeamMember> {
+    return mapTeam(await http<Row>('/api/team-members', { method: 'POST', ...json({ name, email, role }) }));
+  },
+
+  async updateMemberEmail(id: number, email: string): Promise<TeamMember> {
+    return mapTeam(await http<Row>(`/api/team-members/${id}/email`, { method: 'PUT', ...json({ email }) }));
   },
 
   // ---- git repo integration ----

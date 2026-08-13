@@ -37,6 +37,7 @@ const CASE: ReviewCase = {
   diff: '--- a/x\n+++ b/x\n+const merged = true;',
   diffTruncated: false,
   ciSummary: 'deploy: success',
+  mergeState: 'clean',
   reviewRunId: 91,
   reviewerName: 'pr-reviewer',
 };
@@ -49,6 +50,12 @@ describe('renderReviewPrompt', () => {
     expect(p).toContain('const merged = true;');
     expect(p).toContain('review_run_id 91');
     expect(p).toContain('deploy: success');
+  });
+
+  it('reports the merge state instead of leaving the reviewer to infer it', () => {
+    expect(renderReviewPrompt(CASE)).toContain('Merge state against main: merges cleanly');
+    expect(renderReviewPrompt({ ...CASE, mergeState: 'conflicts' })).toContain('HAS MERGE CONFLICTS');
+    expect(renderReviewPrompt({ ...CASE, mergeState: 'unknown' })).toContain('mergeability not reported yet');
   });
 
   it('says the criteria are missing rather than inventing them', () => {

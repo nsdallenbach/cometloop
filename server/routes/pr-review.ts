@@ -1,6 +1,8 @@
 import type express from 'express';
 import { z } from 'zod';
 import { invokeAgentEndpoint } from './agents';
+import { prMergeInfo } from './pr-conflicts';
+import { handleReviewedPr, verdictText, type MergeState } from './pr-requeue';
 import { connectionToken, githubHeaders, githubPath, jsonFetch, loadConnection, onPrOpened, type Connection } from './repos';
 import type { Identity } from './roles';
 import type { ScopingToolDef } from './scoping-tools';
@@ -98,9 +100,17 @@ export interface ReviewCase {
   diff: string;
   diffTruncated: boolean;
   ciSummary: string;
+  /** Provider mergeability — the reviewer must not guess at it from the diff. */
+  mergeState: MergeState;
   reviewRunId: number;
   reviewerName: string;
 }
+
+const MERGE_LABEL: Record<MergeState, string> = {
+  clean: 'merges cleanly',
+  conflicts: 'HAS MERGE CONFLICTS — it cannot be merged as it stands',
+  unknown: 'mergeability not reported yet',
+};
 
 /**
  * The reviewer prompt. Kept in server code (prompts ship with deploys, per the
@@ -131,6 +141,7 @@ export function renderReviewPrompt(c: ReviewCase): string {
     `- Branch ${c.branch} → ${c.baseBranch} (head ${c.headSha.slice(0, 8)})`,
     `- ${c.prUrl}`,
     `- CI on this head: ${c.ciSummary}`,
+    `- Merge state against ${c.baseBranch}: ${MERGE_LABEL[c.mergeState]}`,
     `- Files changed (${c.changedFiles.length}): ${c.changedFiles.slice(0, 60).join(', ')}${c.changedFiles.length > 60 ? ', …' : ''}`,
     '',
     '### Diff',
@@ -143,7 +154,7 @@ export function renderReviewPrompt(c: ReviewCase): string {
     '',
     '## How to review',
     '1. For each acceptance criterion, decide met / unmet / unverifiable and cite the file and line that satisfies it. "The author says it works" is not evidence. Unverifiable criteria escalate — never approve on faith.',
-    '2. Judge the CI status above as reported. Do not claim a check passed that you cannot see; if CI is failing or missing, that is a blocking finding.',
+    '2. Judge the CI status and the merge state above as reported. Do not claim a check passed that you cannot see; if CI is failing or missing, that is a blocking finding. If the PR has merge conflicts, say so plainly in a blocking finding — the console requeues conflicted PRs for the runner to resolve, and it reads your words to do it.',
     '3. Check the change against the repo development standards: request bodies validated with zod and lead-only actions behind requireLead; Postgres rows coerced with a typed helper, never bare String(v); new columns added to BOTH the CREATE TABLE and scripts/dev-migrate.cjs; model calls through invokeModel() with a deterministic fallback; markdown rendered through the Markdown component; SVG ids from useId(); ticket key present in the branch or PR title; no secrets in logs or PR bodies.',
     '4. Before writing a finding, name the concrete inputs or state that produce the wrong behavior. If you cannot, drop it or demote it to a question. Do not dress style preferences as defects. At most five non-blocking notes.',
     '5. State the blast radius: what breaks if this is wrong, who sees it, and whether it is reversible. Merged is not deployed — merging starts a CI run that may go red.',
@@ -342,6 +353,7 @@ interface PrDetail {
   headSha: string;
   state: string;
   draft: boolean;
+  merge: MergeState;
 }
 
 async function fetchPrDetail(conn: Connection, token: string, number: number): Promise<PrDetail> {
@@ -350,6 +362,7 @@ async function fetchPrDetail(conn: Connection, token: string, number: number): P
     html_url?: string;
     state?: string;
     draft?: boolean;
+    mergeable?: boolean | null;
     user?: { login?: string };
     head?: { ref?: string; sha?: string };
     base?: { ref?: string };
@@ -363,6 +376,9 @@ async function fetchPrDetail(conn: Connection, token: string, number: number): P
     headSha: d.head?.sha ?? '',
     state: d.state ?? '',
     draft: d.draft === true,
+    // GitHub computes mergeability lazily, so null here means "not yet" — the
+    // requeue path re-asks with polling rather than treating it as clean.
+    merge: d.mergeable == null ? 'unknown' : d.mergeable ? 'clean' : 'conflicts',
   };
 }
 
@@ -537,6 +553,7 @@ export async function runPrReview(
       diff: diffTruncated ? rawDiff.slice(0, DIFF_CHAR_LIMIT) : rawDiff,
       diffTruncated,
       ciSummary,
+      mergeState: pr.merge,
       reviewRunId: reviewId,
       reviewerName: reviewer.name,
     });
@@ -605,6 +622,43 @@ async function publishReview(
     `UPDATE app.pr_reviews SET state = 'posted', verdict = $2, summary = $3, body = $4, submitted_via = $5, completed_at = NOW() WHERE id = $1`,
     [ctx.reviewId, ctx.verdict.verdict, ctx.verdict.summary.slice(0, 2000), body, ctx.via],
   );
+  await requeueIfConflicted(q, ctx, conn);
+}
+
+/**
+ * DAT-200: a review that leaves the PR unable to merge sends the ticket back
+ * to the top of the runner queue to resolve the conflict. Hung off the single
+ * publish point so both routes in — the invoke-side parse and the agent's own
+ * submit_pr_review — get the same treatment, and best-effort throughout: a
+ * requeue that cannot happen must never unpublish a review that already did.
+ */
+async function requeueIfConflicted(
+  q: Query,
+  ctx: { reviewId: number; engagementId: string; ticketKey: string; prNumber: number; prUrl: string; verdict: ReviewVerdict },
+  conn: Connection | null,
+): Promise<void> {
+  try {
+    if (!conn) return;
+    const info = await prMergeInfo(conn, ctx.prNumber);
+    const result = await handleReviewedPr(
+      q,
+      {
+        engagementId: ctx.engagementId,
+        ticketKey: ctx.ticketKey,
+        prNumber: ctx.prNumber,
+        prUrl: ctx.prUrl || info.url,
+        branch: info.headBranch,
+        baseBranch: info.baseBranch,
+        reviewId: ctx.reviewId,
+      },
+      { verdict: ctx.verdict.verdict, mergeState: info.merge, text: verdictText(ctx.verdict) },
+    );
+    if (result.outcome === 'skipped') {
+      console.log(`[pr-review] PR #${String(ctx.prNumber)} (${ctx.ticketKey}) not requeued — ${result.reason}`);
+    }
+  } catch (err) {
+    console.warn(`[pr-review] merge-conflict requeue check failed for PR #${String(ctx.prNumber)}:`, (err as Error).message);
+  }
 }
 
 // ---------- MCP tool: let the agent post its own review ----------

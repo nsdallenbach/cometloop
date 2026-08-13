@@ -10,6 +10,7 @@ import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
 import { loadRejections, rejectionPromptSection, type TicketRejection } from './ticket-review';
+import { commentStyleSection } from './comment-style';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -52,6 +53,16 @@ export const AGENT_SCHEMA_SQL = [
   // Runner-raised warning (reason text); NULL when nothing needs attention.
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS flag TEXT`,
 ];
+
+/**
+ * The rank reserved for work that must be picked up before anything a human
+ * ordered — today only the merge-conflict requeue (DAT-200). Claiming sorts
+ * `priority DESC, id`: the lead-facing queue API caps priority at 9 and
+ * drag-to-reorder can only reach the lane length (200 ids max), so this sits
+ * above every rank the board can produce, while `id` still keeps FIFO among
+ * several top-priority items.
+ */
+export const TOP_PRIORITY = 1000;
 
 const QueueBody = z.object({
   instructions: z.string().max(8000).optional(),
@@ -202,6 +213,8 @@ export function renderPrompt(
     `- Steering via comments: leads may post new ticket comments while you work. If delivery-console MCP tools are available, re-read the comments with get_ticket (key ${key}) before pushing and apply any new guidance; your own progress notes also appear there — ignore those.`,
     '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
     '',
+    ...commentStyleSection(),
+    '',
     '## Coordinating with other agents',
     `Other agents may be working other branches of the same repo right now. Your agent id is "${txt(task.agent) || 'agent'}". Use the delivery-console MCP coordination tools (or the /api/agent/coordination REST endpoints) to avoid colliding with them:`,
     '- Before creating your branch, call list_active_branches and check whether an active branch/task overlaps your scope; if it does, message that agent (request_for_info) before duplicating or contradicting its work.',
@@ -228,7 +241,7 @@ export function setupAgentRoutes(
   app: express.Application,
   q: Query,
   files: FilesVolume,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireProjectAccess: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
   telemetry: FilesVolume | null = null,
 ) {
   /** Fire-and-forget: archive a finished run's tool-call log to the telemetry volume. */
@@ -291,8 +304,8 @@ export function setupAgentRoutes(
         return;
       }
       const engagementId = String(ticket.engagement_id);
-      const lead = await requireLead(req, res, engagementId);
-      if (!lead) return;
+      const user = await requireProjectAccess(req, res, engagementId);
+      if (!user) return;
       // Review tickets are queueable so review feedback (posted as comments)
       // can be sent back to a runner as rework — the comments ride along in
       // the work package and the rendered prompt.
@@ -310,7 +323,7 @@ export function setupAgentRoutes(
       const inserted = await q(
         `INSERT INTO app.agent_tasks (ticket_key, engagement_id, priority, instructions, queued_by)
          VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-        [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', lead.email],
+        [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', user.email],
       );
       console.log(
         `[agent] queued ${key} as task ${String(inserted.rows[0].id)} (engagement ${engagementId}, priority ${parsed.data.priority ?? 0})`,
@@ -335,7 +348,7 @@ export function setupAgentRoutes(
         return;
       }
       const engagementId = String(task.engagement_id);
-      if (!(await requireLead(req, res, engagementId))) return;
+      if (!(await requireProjectAccess(req, res, engagementId))) return;
       await q(`UPDATE app.agent_tasks SET state = 'done', result = $2, flag = NULL, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
         task.id,
         'Marked done from the board.',
@@ -364,7 +377,7 @@ export function setupAgentRoutes(
         return;
       }
       const engagementId = String(task.engagement_id);
-      if (!(await requireLead(req, res, engagementId))) return;
+      if (!(await requireProjectAccess(req, res, engagementId))) return;
       await q(`UPDATE app.agent_tasks SET state = 'cancelled', updated_at = NOW() WHERE id = $1`, [task.id]);
       // A claimed ticket goes back to the backlog; drop the agent as assignee.
       if (task.state !== 'queued') {
@@ -390,7 +403,7 @@ export function setupAgentRoutes(
     }
     try {
       const engagementId = req.params.id;
-      if (!(await requireLead(req, res, engagementId))) return;
+      if (!(await requireProjectAccess(req, res, engagementId))) return;
       const { order } = parsed.data;
       console.log(`[agent] reordering queue for engagement ${engagementId} (${order.length} task(s))`);
       // Claiming sorts priority DESC, so the top of the lane gets the highest
