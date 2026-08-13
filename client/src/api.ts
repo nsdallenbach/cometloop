@@ -1,6 +1,10 @@
 import type {
   ActivePr,
   AdminData,
+  AgentAccessLevel,
+  AgentAction,
+  AgentSecurityCatalog,
+  AgentSecuritySettings,
   AgentTask,
   AgentTaskState,
   AgentsOverview,
@@ -175,6 +179,29 @@ function mapAgentTask(r: Row): AgentTask {
     result: r.result == null ? null : s(r.result),
     resultUrl: r.result_url == null ? null : s(r.result_url),
     createdAt: s(r.created_at),
+  };
+}
+
+const AGENT_ACTIONS: AgentAction[] = ['claim_work', 'git_credential', 'coordination', 'pr_review'];
+const ACCESS_LEVELS: AgentAccessLevel[] = ['restricted', 'standard', 'elevated', 'custom'];
+
+/**
+ * Security settings off the wire. The server always sends a full object (it
+ * falls back to the role baseline itself), so this only guards shape — an
+ * unreadable payload reads as enabled with no extra scopes rather than as a
+ * disabled agent, matching the server's no-silent-lockout rule.
+ */
+function mapAgentSecurity(v: unknown): AgentSecuritySettings {
+  const r = (v && typeof v === 'object' ? v : {}) as Row;
+  const level = ACCESS_LEVELS.includes(s(r.accessLevel) as AgentAccessLevel) ? (s(r.accessLevel) as AgentAccessLevel) : 'standard';
+  return {
+    enabled: r.enabled == null ? true : b(r.enabled),
+    accessLevel: level,
+    allowedActions: Array.isArray(r.allowedActions)
+      ? AGENT_ACTIONS.filter((a) => (r.allowedActions as unknown[]).includes(a))
+      : [],
+    updatedBy: nz(r.updatedBy),
+    updatedAt: nz(r.updatedAt),
   };
 }
 
@@ -570,8 +597,34 @@ export const api = {
         activeTasks: n(r.activeTasks),
         lastSeen: r.lastSeen == null ? null : s(r.lastSeen),
         createdAt: r.createdAt == null ? null : s(r.createdAt),
+        security: mapAgentSecurity(r.security),
       })),
     };
+  },
+
+  // ---- per-agent security controls (DAT-212) ----
+
+  agentSecurityCatalog(): Promise<AgentSecurityCatalog> {
+    return http<AgentSecurityCatalog>('/api/agents/security/catalog');
+  },
+
+  async agentSecurity(projectId: string, agentId: number): Promise<AgentSecuritySettings> {
+    const d = await http<{ security: Row }>(
+      `/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}/security`,
+    );
+    return mapAgentSecurity(d.security);
+  },
+
+  async updateAgentSecurity(
+    projectId: string,
+    agentId: number,
+    payload: { enabled?: boolean; accessLevel?: AgentAccessLevel; allowedActions?: AgentAction[] },
+  ): Promise<AgentSecuritySettings> {
+    const d = await http<{ security: Row }>(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}/security`, {
+      method: 'PUT',
+      ...json(payload),
+    });
+    return mapAgentSecurity(d.security);
   },
 
   async runnerLoadBalancing(projectId: string, modelType: string): Promise<RunnerLoadBalancing> {

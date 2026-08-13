@@ -6,9 +6,9 @@ import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
 import { PROJECT_AGENTS_SCHEMA_SQL, setupProjectAgentRoutes } from './agents';
+import { setupAgentSecurityRoutes } from './agent-security';
 import { RUNNER_LOAD_BALANCING_SCHEMA_SQL, setupRunnerLoadBalancingRoutes } from './runner-load-balancing';
 import { projectAccessGuard } from './project-access';
-
 import { COORDINATION_SCHEMA_SQL, setupCoordinationRoutes } from './coordination';
 import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
@@ -1938,6 +1938,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupAgentRoutes(app, q, appkit.files('files'), requireProjectAccess, telemetry);
     setupProjectAgentRoutes(app, q, requireLead, resolveIdentity);
     setupRunnerLoadBalancingRoutes(app, q, requireLead);
+    setupAgentSecurityRoutes(app, q, requireLead);
     setupToolCallRoutes(app, q);
     setupCoordinationRoutes(app, q);
     setupPrConflictRoutes(app, q);

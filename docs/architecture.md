@@ -87,6 +87,8 @@ with a Lakebase credential.
 
 - `api.ts` — engagements, tickets CRUD, planning-agent flows, admin
 - `agent-work.ts` — runner queue: wait/claim/heartbeat/flag/complete, work packages, rendered prompts
+- `agents.ts` — the agent map: registered endpoint agents, configured runners, observed runners from task history
+- `agent-security.ts` — per-agent security settings: model, validation, the lead-only settings API, and the enforcement check the execution paths call
 - `coordination.ts` — inter-agent messages (announce, request/response, SLAs), mirrored to tickets
 - `repos.ts` — GitHub/ADO providers: PR & commit sync, ticket auto-linking, merge-from-drawer, deploy watch
 - `pr-conflicts.ts` — conflict reports, auto-resolve vs escalate assessment
@@ -151,6 +153,34 @@ two-runner round trip is drill-verified (see
 The same API is exposed to AI tooling as an MCP server (`mcp/server.mjs`) —
 board reads, ticket writes, queue control, flags, coordination, and
 credential vending — so Claude sessions and runners speak one protocol.
+
+## Per-agent security controls
+
+Every agent on the map carries a `security_settings` object on
+`app.project_agents`: an enable switch plus the permission scope it may
+execute. Leads edit it from the agent's panel on `/agents`
+(`PUT /api/projects/:id/agents/:agentId/security`, lead/admin only — an agent
+can never widen its own scope). Four scopes map one-to-one onto real execution
+points, and the check runs there, not at configuration time:
+
+| Scope | Enforced at |
+| --- | --- |
+| `claim_work` | `POST /api/agent/work/claim` — a denied claim is released back to `queued` |
+| `git_credential` | `POST /api/agent/work/:id/git-credential` — checked before any token is minted |
+| `coordination` | `POST /api/agent/coordination/messages` and `/branches` |
+| `pr_review` | `runPrReview()` — a blocked reviewer is skipped before its endpoint is invoked |
+
+Denials return 403 with the reason and land on the engagement feed, so a
+blocked action is visible to humans and not just to the agent that hit it.
+
+Two invariants shape the design. **No silent lockouts**: an agent with no
+stored settings falls back to the baseline for its role, and the rollout
+migration backfilled every existing agent with exactly the scopes it already
+exercised (delivery runners `standard`, review agents `coordination` +
+`pr_review`) — nothing removed, nothing new granted. **No wedged tickets**:
+winding down a task the agent already holds — progress notes, flags,
+completion — is deliberately not gateable, so disabling or narrowing an agent
+never strands a run mid-flight. Stopping a live run is a board cancel.
 
 ## Delivery automation
 

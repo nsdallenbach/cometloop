@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { api } from '../api';
-import type { AgentsOverview, AgentsOverviewProject, ProjectAgent, ProjectAgentRole, ProjectAgentType, RunnerLoadBalance } from '../types';
+import type {
+  AgentAccessLevel,
+  AgentAction,
+  AgentSecurityCatalog,
+  AgentSecuritySettings,
+  AgentsOverview,
+  AgentsOverviewProject,
+  ProjectAgent,
+  ProjectAgentRole,
+  ProjectAgentType,
+  RunnerLoadBalance,
+} from '../types';
 import { HEALTH_COLOR, mono } from '../util';
 import { agentBrand, HARNESS_DEFAULT_PROVIDER, HARNESS_OPTIONS, PROVIDER_OPTIONS } from './AgentLogos';
 import { MAP_LINKS_CLASS, MAP_MARK_CLASS, MapViewport } from './MapViewport';
@@ -100,19 +111,49 @@ function EmptySpoke({ x, y, lead }: { x: number; y: number; lead: boolean }) {
 }
 
 /** Dashed = staged (a runner config awaiting rollout) or an unreachable endpoint. */
-function spokeState(agent: ProjectAgent): { staged: boolean; unreachable: boolean; color: string } {
+function spokeState(agent: ProjectAgent): { staged: boolean; unreachable: boolean; disabled: boolean; color: string } {
   const unreachable = agent.status === 'unreachable';
   const staged = agent.source === 'configured' && !['active', 'idle', 'unreachable'].includes(agent.status);
+  // A security-disabled agent reads as blocked wherever it appears — it is the
+  // one state that overrides "looks healthy" (DAT-212).
+  const disabled = !agent.security.enabled;
   return {
     staged,
     unreachable,
-    color: unreachable ? 'var(--bad)' : agent.status === 'active' ? 'var(--ok)' : staged ? 'var(--warn)' : 'var(--tx3)',
+    disabled,
+    color: disabled
+      ? 'var(--bad)'
+      : unreachable
+        ? 'var(--bad)'
+        : agent.status === 'active'
+          ? 'var(--ok)'
+          : staged
+            ? 'var(--warn)'
+            : 'var(--tx3)',
   };
 }
 
+const ACCESS_LEVEL_LABEL: Record<AgentAccessLevel, string> = {
+  restricted: 'RESTRICTED — no scopes',
+  standard: 'STANDARD — delivery runner',
+  elevated: 'ELEVATED — everything',
+  custom: 'CUSTOM — picked per action',
+};
+
+/** 'claim_work' → 'Claim work', for when the catalog has not loaded yet. */
+const humanizeAction = (id: string) => id.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+
+/**
+ * Only used when the catalog request fails — the labels and preset scopes come
+ * from the server so the permission model has one home. The panel still needs
+ * every action listed to stay usable, and the server normalizes presets on save
+ * either way.
+ */
+const FALLBACK_ACTIONS: AgentAction[] = ['claim_work', 'git_credential', 'coordination', 'pr_review'];
+
 function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number; y: number; onSelect: (agent: ProjectAgent) => void }) {
   const brand = agentBrand(agent);
-  const { staged, unreachable, color: statusColor } = spokeState(agent);
+  const { staged, unreachable, disabled, color: statusColor } = spokeState(agent);
   const sub =
     agent.role === 'pr-reviewer'
       ? ROLE_LABEL['pr-reviewer']
@@ -123,7 +164,11 @@ function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number;
       animate={{ opacity: 1, scale: 1 }}
       whileHover={{ scale: 1.05 }}
       transition={{ type: 'spring', visualDuration: 0.3, bounce: 0.25 }}
-      title={`${agent.name} — click for ${isGeneralCodingAgent(agent) ? 'load balancing' : 'details'}`}
+      title={
+        disabled
+          ? `${agent.name} — disabled by security settings; click for details`
+          : `${agent.name} — click for ${isGeneralCodingAgent(agent) ? 'load balancing' : 'details'}`
+      }
       onClick={() => onSelect(agent)}
       style={{ position: 'absolute', left: x - 62, top: y - 30, width: 124, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, cursor: 'pointer' }}
     >
@@ -135,9 +180,11 @@ function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number;
           height: 38,
           borderRadius: 9,
           background: 'var(--bg3)',
-          border: staged ? '1px dashed var(--warn)' : unreachable ? '1px dashed var(--bad)' : '1px solid var(--line2)',
+          border:
+            disabled || unreachable ? '1px dashed var(--bad)' : staged ? '1px dashed var(--warn)' : '1px solid var(--line2)',
           display: 'grid',
           placeItems: 'center',
+          opacity: disabled ? 0.55 : 1,
         }}
       >
         {brand ? (
@@ -172,9 +219,9 @@ function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number;
       >
         {agent.name}
       </div>
-      <div style={{ ...mono(400, 8), color: 'var(--tx3)', letterSpacing: '.08em', textTransform: 'uppercase' }}>
+      <div style={{ ...mono(400, 8), color: disabled ? 'var(--bad)' : 'var(--tx3)', letterSpacing: '.08em', textTransform: 'uppercase' }}>
         {sub}
-        {staged ? ' · STAGED' : ` · ${agent.status.toUpperCase()}`}
+        {disabled ? ' · DISABLED' : staged ? ' · STAGED' : ` · ${agent.status.toUpperCase()}`}
       </div>
     </motion.div>
   );
@@ -231,8 +278,10 @@ function ProjectCluster({
           {spots.map((p, i) => {
             const agent = agents[i];
             const empty = !agent;
-            const { staged, unreachable } = agent ? spokeState(agent) : { staged: false, unreachable: false };
-            const active = agent?.status === 'active';
+            const { staged, unreachable, disabled } = agent
+              ? spokeState(agent)
+              : { staged: false, unreachable: false, disabled: false };
+            const active = agent?.status === 'active' && !disabled;
             return (
               <line
                 key={agent?.id ?? 'empty'}
@@ -240,9 +289,11 @@ function ProjectCluster({
                 y1={geom.cy}
                 x2={p.x}
                 y2={p.y}
-                stroke={active ? 'var(--agent)' : unreachable ? 'var(--bad)' : staged ? 'var(--warn)' : 'var(--line2)'}
+                stroke={
+                  disabled || unreachable ? 'var(--bad)' : active ? 'var(--agent)' : staged ? 'var(--warn)' : 'var(--line2)'
+                }
                 strokeWidth={active ? 1.6 : 1.1}
-                strokeDasharray={empty || staged || unreachable ? '4 4' : undefined}
+                strokeDasharray={empty || staged || unreachable || disabled ? '4 4' : undefined}
                 opacity={empty ? 0.55 : 0.9}
               />
             );
@@ -562,6 +613,220 @@ function NewAgentModal({
   );
 }
 
+/**
+ * Per-agent security controls (DAT-212), inside the agent's detail panel: the
+ * enable switch and the permission scope the backend enforces at
+ * action-execution time. Leads edit; everyone else reads.
+ *
+ * Each agent's settings are addressed by its own record id, so editing one never
+ * touches another. Observed runners whose stored row has not been written yet
+ * (recordId null) render read-only rather than pretending to save.
+ */
+function SecurityPanel({
+  agent,
+  canEdit,
+  catalog,
+  onSaved,
+  toast,
+}: {
+  agent: ProjectAgent;
+  canEdit: boolean;
+  catalog: AgentSecurityCatalog | null;
+  onSaved: (settings: AgentSecuritySettings) => void;
+  toast: (msg: string) => void;
+}) {
+  // Seeded once per agent: the panel is keyed by agent id, so selecting a
+  // different node remounts it with that agent's settings. No sync effect —
+  // a save updates the draft directly, and the map's 15s poll must never
+  // clobber an edit in progress.
+  const [draft, setDraft] = useState<AgentSecuritySettings>(agent.security);
+  const [busy, setBusy] = useState(false);
+
+  const editable = canEdit && agent.recordId !== null;
+  const actions: { id: AgentAction; label: string }[] =
+    catalog?.actions ?? FALLBACK_ACTIONS.map((id) => ({ id, label: humanizeAction(id) }));
+  const dirty =
+    draft.enabled !== agent.security.enabled ||
+    draft.accessLevel !== agent.security.accessLevel ||
+    draft.allowedActions.join(',') !== agent.security.allowedActions.join(',');
+
+  /** Presets rewrite the scope list; ticking an individual action means custom. */
+  const pickLevel = (level: AgentAccessLevel) =>
+    setDraft((d) => ({
+      ...d,
+      accessLevel: level,
+      allowedActions: level === 'custom' ? d.allowedActions : (catalog?.presets[level] ?? d.allowedActions),
+    }));
+
+  const toggleAction = (id: AgentAction) =>
+    setDraft((d) => ({
+      ...d,
+      accessLevel: 'custom',
+      allowedActions: d.allowedActions.includes(id) ? d.allowedActions.filter((a) => a !== id) : [...d.allowedActions, id],
+    }));
+
+  const save = () => {
+    if (agent.recordId === null) return;
+    setBusy(true);
+    api
+      .updateAgentSecurity(agent.engagementId, agent.recordId, {
+        enabled: draft.enabled,
+        accessLevel: draft.accessLevel,
+        allowedActions: draft.allowedActions,
+      })
+      .then((saved) => {
+        setBusy(false);
+        setDraft(saved);
+        onSaved(saved);
+        toast(`Security settings saved for ${agent.name}`);
+      })
+      .catch((e: Error) => {
+        setBusy(false);
+        setDraft(agent.security);
+        toast(`Could not save security settings — ${e.message}`);
+      });
+  };
+
+  return (
+    <div style={{ marginTop: 6, border: '1px solid var(--line2)', borderRadius: 4, padding: '10px 11px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{ ...mono(600, 9.5), letterSpacing: '.1em', color: 'var(--tx2)' }}>SECURITY</span>
+        <span
+          style={{
+            ...mono(500, 8.5),
+            letterSpacing: '.08em',
+            color: draft.enabled ? 'var(--ok)' : 'var(--bad)',
+            border: `1px solid ${draft.enabled ? 'var(--ok)' : 'var(--bad)'}`,
+            borderRadius: 3,
+            padding: '1px 6px',
+          }}
+        >
+          {draft.enabled ? 'ENABLED' : 'DISABLED'}
+        </span>
+        {editable && (
+          <button
+            className="hv-border"
+            onClick={() => setDraft((d) => ({ ...d, enabled: !d.enabled }))}
+            style={{
+              ...mono(500, 8.5),
+              marginLeft: 'auto',
+              background: 'none',
+              border: `1px solid ${draft.enabled ? 'var(--bad)' : 'var(--ok)'}`,
+              color: draft.enabled ? 'var(--bad)' : 'var(--ok)',
+              borderRadius: 3,
+              padding: '2px 8px',
+              cursor: 'pointer',
+              letterSpacing: '.07em',
+            }}
+          >
+            {draft.enabled ? 'DISABLE AGENT' : 'ENABLE AGENT'}
+          </button>
+        )}
+      </div>
+
+      {editable ? (
+        <div style={{ marginBottom: 8 }}>
+          <div style={LABEL}>ACCESS LEVEL</div>
+          <select style={FIELD} value={draft.accessLevel} onChange={(e) => pickLevel(e.target.value as AgentAccessLevel)}>
+            {(catalog?.accessLevels ?? (['restricted', 'standard', 'elevated', 'custom'] as AgentAccessLevel[])).map((l) => (
+              <option key={l} value={l}>
+                {ACCESS_LEVEL_LABEL[l] ?? l}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 12, alignItems: 'baseline', marginBottom: 8 }}>
+          <span style={{ ...mono(500, 9), color: 'var(--tx3)', letterSpacing: '.08em', width: 118, flex: 'none' }}>ACCESS LEVEL</span>
+          <span style={{ fontSize: 12.5 }}>{ACCESS_LEVEL_LABEL[draft.accessLevel] ?? draft.accessLevel}</span>
+        </div>
+      )}
+
+      <div style={LABEL}>PERMISSION SCOPE</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {actions.map((a) => {
+          const granted = draft.allowedActions.includes(a.id);
+          return (
+            <label
+              key={a.id}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 7,
+                fontSize: 11.5,
+                color: granted ? 'var(--tx)' : 'var(--tx3)',
+                cursor: editable ? 'pointer' : 'default',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={granted}
+                disabled={!editable}
+                onChange={() => toggleAction(a.id)}
+                style={{ marginTop: 2, accentColor: 'var(--agent)' }}
+              />
+              <span>
+                {a.label}
+                <span style={{ ...mono(400, 8.5), color: 'var(--tx3)', letterSpacing: '.06em', marginLeft: 6 }}>{a.id}</span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 10.5, color: 'var(--tx3)', lineHeight: 1.5, marginTop: 8 }}>
+        Enforced when the agent acts, not when it is configured: a blocked action is rejected with the reason and logged to the
+        feed. Closing out a task the agent already holds is always allowed, so disabling one never strands a ticket mid-run —
+        cancel the run on the board for that.
+      </div>
+
+      {draft.updatedBy && (
+        <div style={{ ...mono(400, 8.5), color: 'var(--tx3)', letterSpacing: '.06em', marginTop: 6 }}>
+          LAST CHANGED BY {draft.updatedBy.toUpperCase()}
+          {draft.updatedAt ? ` · ${relTime(draft.updatedAt).toUpperCase()}` : ''}
+        </div>
+      )}
+
+      {canEdit && agent.recordId === null && (
+        <div style={{ fontSize: 10.5, color: 'var(--warn)', marginTop: 6 }}>
+          This runner has no stored record yet — its settings become editable after the next agent-map sync.
+        </div>
+      )}
+
+      {editable && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+          {dirty && (
+            <button
+              className="hv-tx2"
+              onClick={() => setDraft(agent.security)}
+              style={{ ...mono(500, 9), background: 'none', border: '1px solid var(--line2)', color: 'var(--tx3)', borderRadius: 3, padding: '4px 10px', cursor: 'pointer', letterSpacing: '.07em' }}
+            >
+              RESET
+            </button>
+          )}
+          <button
+            onClick={save}
+            disabled={busy || !dirty}
+            style={{
+              ...mono(500, 9),
+              background: dirty ? 'var(--agent)' : 'none',
+              border: `1px solid ${dirty ? 'var(--agent)' : 'var(--line2)'}`,
+              color: dirty ? '#fff' : 'var(--tx3)',
+              borderRadius: 3,
+              padding: '4px 12px',
+              cursor: busy ? 'wait' : dirty ? 'pointer' : 'default',
+              letterSpacing: '.07em',
+              opacity: busy ? 0.7 : 1,
+            }}
+          >
+            {busy ? 'SAVING…' : 'SAVE SECURITY'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LoadBalancingModal({ agent, canEdit, onClose, toast }: { agent: ProjectAgent; canEdit: boolean; onClose: () => void; toast: (message: string) => void }) {
   const modelType = agent.harness ?? '';
   const [runners, setRunners] = useState<RunnerLoadBalance[]>([]);
@@ -625,19 +890,23 @@ function AgentDetailModal({
   agent,
   projectName,
   canEdit,
+  catalog,
   onClose,
   onRemoved,
+  onSecuritySaved,
   toast,
 }: {
   agent: ProjectAgent;
   projectName: string;
   canEdit: boolean;
+  catalog: AgentSecurityCatalog | null;
   onClose: () => void;
   onRemoved: () => void;
+  onSecuritySaved: (settings: AgentSecuritySettings) => void;
   toast: (msg: string) => void;
 }) {
   const brand = agentBrand(agent);
-  const { staged, unreachable, color: statusColor } = spokeState(agent);
+  const { staged, unreachable, disabled, color: statusColor } = spokeState(agent);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const endpointBacked = agent.agentType === 'agentbricks' || agent.agentType === 'serving-endpoint';
   useEffect(() => {
@@ -716,8 +985,8 @@ function AgentDetailModal({
           <div style={{ minWidth: 0 }}>
             <div style={{ ...mono(600, 12), letterSpacing: '.04em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{agent.name}</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, ...mono(400, 9), color: statusColor, letterSpacing: '.08em' }}>
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor, animation: agent.status === 'active' ? 'eec-pulse 2.4s infinite' : undefined }} />
-              {staged ? 'STAGED' : agent.status.toUpperCase()}
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor, animation: agent.status === 'active' && !disabled ? 'eec-pulse 2.4s infinite' : undefined }} />
+              {disabled ? 'DISABLED BY SECURITY' : staged ? 'STAGED' : agent.status.toUpperCase()}
             </div>
           </div>
           <button
@@ -755,6 +1024,7 @@ function AgentDetailModal({
               the CI status, then posts the verdict on the PR and the ticket. It never merges.
             </div>
           )}
+          <SecurityPanel key={agent.id} agent={agent} canEdit={canEdit} catalog={catalog} onSaved={onSecuritySaved} toast={toast} />
           {canEdit && agent.recordId !== null && (
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
               <button
@@ -801,6 +1071,9 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
   const [error, setError] = useState<string | null>(null);
   const [newAgentFor, setNewAgentFor] = useState<AgentsOverviewProject | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<ProjectAgent | null>(null);
+  // Action ids, labels and preset scopes come from the server so the permission
+  // model lives in one place; the panel degrades to humanized ids without it.
+  const [securityCatalog, setSecurityCatalog] = useState<AgentSecurityCatalog | null>(null);
   const [loadBalanceAgent, setLoadBalanceAgent] = useState<ProjectAgent | null>(null);
 
   const load = useCallback(() => {
@@ -818,6 +1091,13 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
     const t = setInterval(() => void load(), 15000);
     return () => clearInterval(t);
   }, [load]);
+
+  useEffect(() => {
+    api
+      .agentSecurityCatalog()
+      .then(setSecurityCatalog)
+      .catch(() => setSecurityCatalog(null));
+  }, []);
 
   const byProject = useMemo(() => {
     const m = new Map<string, ProjectAgent[]>();
@@ -851,7 +1131,8 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
           </span>
         )}
         <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>
-          Read-only architecture view — projects at the center, their agents as spokes.
+          Architecture view — projects at the center, their agents as spokes. Click an agent for its details and security
+          controls.
         </span>
       </div>
 
@@ -862,6 +1143,7 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
           { label: 'IDLE', dot: 'var(--tx3)', dashed: false },
           { label: 'CONFIGURED — ROLLOUT PENDING', dot: 'var(--warn)', dashed: true },
           { label: 'ENDPOINT UNREACHABLE', dot: 'var(--bad)', dashed: true },
+          { label: 'DISABLED BY SECURITY', dot: 'var(--bad)', dashed: true },
         ].map((l) => (
           <span
             key={l.label}
@@ -919,11 +1201,20 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
             agent={selectedAgent}
             projectName={data?.projects.find((p) => p.id === selectedAgent.engagementId)?.name ?? selectedAgent.engagementId}
             canEdit={canLead(selectedAgent.engagementId)}
+            catalog={securityCatalog}
             toast={toast}
             onClose={() => setSelectedAgent(null)}
             onRemoved={() => {
               setSelectedAgent(null);
               void load();
+            }}
+            onSecuritySaved={(security) => {
+              // Reflect the save on the open panel and the node behind it
+              // immediately, rather than waiting for the next 15s poll.
+              setSelectedAgent((a) => (a ? { ...a, security } : a));
+              setData((d) =>
+                d ? { ...d, agents: d.agents.map((a) => (a.id === selectedAgent.id ? { ...a, security } : a)) } : d,
+              );
             }}
           />
         )}
