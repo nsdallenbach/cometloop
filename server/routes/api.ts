@@ -705,7 +705,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                WHERE e.ticket_key = t.key AND e.stage IN ('pinged','flagged')
                ORDER BY (e.stage = 'flagged') DESC, e.id DESC LIMIT 1
              ) esc ON true
-             WHERE t.engagement_id = $1 ORDER BY t.seq`,
+             WHERE t.engagement_id = $1 ORDER BY t.seq DESC`,
             [id],
           )
         ).rows;

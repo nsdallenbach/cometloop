@@ -3,10 +3,10 @@ import express from 'express';
 
 /**
  * Board order: within-lane drag-and-drop reordering persists here. Tickets
- * already render in `seq` order everywhere (the detail endpoint sorts by it),
- * so reordering is just renumbering `seq` to match the board's new array —
- * no new column or migration needed. New tickets keep landing at the end of
- * their lane because the SERIAL default outruns any renumbered value.
+ * render in descending `seq` order everywhere (the detail endpoint sorts by
+ * it), so reordering is just renumbering `seq` in reverse to match the board's
+ * new array — no new column or migration needed. The SERIAL default keeps new
+ * tickets above the existing backlog.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -16,20 +16,21 @@ const OrderBody = z.object({
 });
 
 /**
- * Renumber `seq` to 1..n following `keys` (first key = top of the board).
+ * Renumber `seq` to n..1 following `keys` (first key = top of the board).
  * Keys outside the engagement are ignored; duplicates keep their first
  * position. Returns how many tickets were renumbered.
  */
 export async function applyTicketOrder(q: Query, engagementId: string, keys: string[]): Promise<number> {
   let updated = 0;
   const seen = new Set<string>();
+  const uniqueKeyCount = new Set(keys).size;
   for (const key of keys) {
     if (seen.has(key)) continue;
     seen.add(key);
     const r = await q('UPDATE app.tickets SET seq = $3 WHERE key = $1 AND engagement_id = $2 RETURNING key', [
       key,
       engagementId,
-      seen.size,
+      uniqueKeyCount - seen.size + 1,
     ]);
     updated += r.rows.length;
   }
