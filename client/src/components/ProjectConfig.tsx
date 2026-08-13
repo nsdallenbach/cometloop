@@ -296,7 +296,8 @@ function RunnerConfigCard({ engId, lead, toast }: { engId: string; lead: boolean
 // ---------- git repository ----------
 
 /** Git repository connection card — lives on the Config tab (moved off Sources in DAT-216). */
-function RepoCard({
+/** Also rendered by the Sources tab’s Git sub-tab (DAT-202). */
+export function RepoCard({
   engId,
   lead,
   toast,

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 import { PROJECT_AGENTS_SCHEMA_SQL, inferHarness, loadAgentsOverview } from './agents';
+import { FLEET_SCHEMA_SQL } from './fleet';
 
 /**
  * Runs the agent-map overview against pg-mem, the same in-memory Postgres
@@ -33,7 +34,7 @@ beforeEach(async () => {
   const { Pool } = db.adapters.createPg() as MemPg;
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
-  for (const sql of [...SUPPORT_SQL, ...AGENTS_TABLE_SQL]) await q(sql);
+  for (const sql of [...SUPPORT_SQL, ...AGENTS_TABLE_SQL, ...FLEET_SCHEMA_SQL]) await q(sql);
   await q(`INSERT INTO app.engagements (id, client, name, health, phase) VALUES ('eng-a', 'ACME', 'Console', 'ok', 'Build')`);
   await q(`INSERT INTO app.engagements (id, client, name, health, phase) VALUES ('eng-b', 'BETA', 'Portal', 'risk', 'Plan')`);
 });
@@ -59,6 +60,21 @@ describe('loadAgentsOverview', () => {
     const r1 = agents.find((a) => a.name === 'runner-1');
     expect(r1).toMatchObject({ engagementId: 'eng-a', harness: 'claude-code', modelProvider: 'anthropic', status: 'active', tasks: 2, activeTasks: 1, source: 'observed' });
     expect(agents.find((a) => a.name === 'runner-2')).toMatchObject({ status: 'idle', source: 'observed' });
+  });
+
+  it('calls a runner that stopped reaching the console offline, not idle (DAT-224)', async () => {
+    // Task history alone said 'idle' here — the exact reading that hid a dead
+    // fleet for nine hours.
+    await q(
+      `INSERT INTO app.agent_tasks (ticket_key, engagement_id, state, agent, created_at, updated_at)
+       VALUES ('DAT-1', 'eng-a', 'done', 'dead-runner', NOW() - INTERVAL '9 hours', NOW() - INTERVAL '9 hours')`,
+    );
+    await q(`INSERT INTO app.agent_tasks (ticket_key, engagement_id, state, agent) VALUES ('DAT-2', 'eng-a', 'done', 'live-runner')`);
+    await q(`INSERT INTO app.runner_polls (agent, engagement_id, source) VALUES ('live-runner', '', 'poll')`);
+
+    const { agents } = await loadAgentsOverview(q);
+    expect(agents.find((a) => a.name === 'dead-runner')).toMatchObject({ status: 'offline', source: 'observed' });
+    expect(agents.find((a) => a.name === 'live-runner')).toMatchObject({ status: 'idle', source: 'observed' });
   });
 
   it('includes configured agents and lets an observed runner of the same name win', async () => {

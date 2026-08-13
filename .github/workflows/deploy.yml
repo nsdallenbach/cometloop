@@ -42,6 +42,17 @@ jobs:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
 
+      # Legacy tables are developer-owned, so the app service principal cannot
+      # apply their ALTER migrations during boot. Run the idempotent owner-role
+      # migrations before starting code that depends on new columns.
+      - name: Run database migrations
+        run: |
+          export PGPASSWORD="$(databricks postgres generate-database-credential projects/engagement-console/branches/production/endpoints/primary -o json | jq -r .token)"
+          node scripts/dev-migrate.cjs
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
       - name: Start app with new source
         run: databricks bundle run app
         env:

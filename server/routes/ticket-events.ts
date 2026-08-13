@@ -112,8 +112,9 @@ export interface BurndownDay {
   total: number;
 }
 
-/** Board statuses that count as remaining work; proposed/dismissed sit outside the board. */
-const OPEN_STATUSES = new Set(['backlog', 'progress', 'review']);
+/** Board statuses that count as remaining work; proposed/dismissed sit outside
+ *  the board. Deploying counts as open — approved is not shipped. */
+const OPEN_STATUSES = new Set(['backlog', 'progress', 'review', 'deploying']);
 
 /** Longest series returned; older days collapse into the opening snapshot. */
 const MAX_DAYS = 366;

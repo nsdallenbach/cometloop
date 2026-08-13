@@ -4,6 +4,7 @@ import { api } from '../api';
 import { canonicalTag, suggestedTags } from '../lib/ticket-tags';
 import type {
   AgentTask,
+  FileFolder,
   Ticket,
   TicketAttachment,
   TicketComment,
@@ -11,12 +12,21 @@ import type {
   TicketEscalation,
   TicketLinkType,
   TicketLinks,
+  TicketRejection,
   ToolCall,
 } from '../types';
 import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
+import { nextInQueue, queuePosition, reviewQueue } from '../lib/review-queue';
 import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
 import { CoordCommentBody, parseCoordComment } from './AgentComment';
+import {
+  PLANNING_AGENT_AUTHOR,
+  PLANNING_REVIEW_LABEL,
+  isPlanningAgentAuthor,
+  planningReviewThreadLabel,
+  planningReviewTitle,
+} from '../lib/planning-review';
 
 const AGENT_STATE_LABEL: Record<AgentTask['state'], string> = {
   queued: 'QUEUED — WAITING FOR A RUNNER',
@@ -55,10 +65,10 @@ const DEPLOY_BADGE: Record<string, { label: string; color: string; pulse?: boole
 };
 
 const DEPLOY_NOTE: Record<string, string> = {
-  pending: 'Waiting for the pipeline to pick up the merge — the ticket moves to Done when it succeeds.',
-  running: 'Pipeline running — the ticket moves to Done when it succeeds.',
+  pending: 'Waiting for the pipeline to pick up the merge — the ticket sits in Deploying and moves to Done when it succeeds.',
+  running: 'Pipeline running — the ticket sits in Deploying and moves to Done when it succeeds.',
   success: 'Pipeline succeeded — the ticket moved to Done.',
-  failed: 'Pipeline failed — the ticket stays in Review until a passing run.',
+  failed: 'Pipeline failed — the ticket stays in Deploying until a passing run.',
   none: 'No deploy pipeline detected — the ticket moved straight to Done.',
 };
 
@@ -67,6 +77,7 @@ export function TicketDrawer({
   ticket,
   team,
   lead,
+  runnerAccess,
   agentTask,
   allTickets,
   onOpenTicket,
@@ -86,6 +97,7 @@ export function TicketDrawer({
   ticket: Ticket;
   team: string[];
   lead: boolean;
+  runnerAccess: boolean;
   agentTask: AgentTask | null;
   allTickets: Ticket[];
   onOpenTicket: (key: string) => void;
@@ -125,7 +137,7 @@ export function TicketDrawer({
   const [queueOpen, setQueueOpen] = useState(false);
   const [instructions, setInstructions] = useState('');
   const agentActive = agentTask !== null && ['queued', 'claimed', 'working'].includes(agentTask.state);
-  const canQueue = lead && !agentActive && ['backlog', 'progress'].includes(ticket.status);
+  const canQueue = runnerAccess && !agentActive && ['backlog', 'progress'].includes(ticket.status);
   const [refining, setRefining] = useState(false);
   const [loaded, setLoaded] = useState<{ key: string; list: TicketComment[] | null; error: boolean } | null>(null);
   const [dev, setDev] = useState<{ key: string; data: TicketDev | null } | null>(null);
@@ -261,6 +273,8 @@ export function TicketDrawer({
   const [attach, setAttach] = useState<{ key: string; list: TicketAttachment[] | null } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [attachArm, setAttachArm] = useState<string | null>(null);
+  const [attachFolders, setAttachFolders] = useState<FileFolder[]>([]);
+  const [attachFolder, setAttachFolder] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const loadAttachments = useCallback(() => {
@@ -271,11 +285,22 @@ export function TicketDrawer({
   }, [ticket.key]);
 
   useEffect(loadAttachments, [loadAttachments]);
+  // Volume folders the attachment can be filed into (DAT-202); failure just
+  // leaves the picker on "ticket attachments only".
+  useEffect(() => {
+    void api
+      .fileLibrary(ticket.engagementId)
+      .then((d) => {
+        setAttachFolders(d.folders);
+        setAttachFolder((v) => v || d.folders[0]?.id || '');
+      })
+      .catch(() => undefined);
+  }, [ticket.engagementId]);
 
   const uploadAttachment = (file: File) => {
     setUploading(true);
     api
-      .uploadAttachment(ticket.key, file)
+      .uploadAttachment(ticket.key, file, attachFolder || undefined)
       .then(() => {
         toast(`Attached ${file.name}`);
         loadAttachments();
@@ -331,6 +356,55 @@ export function TicketDrawer({
       })
       .catch((e: Error) => toast(`Dismiss failed — ${e.message}`))
       .finally(() => setDismissing(false));
+  };
+
+  // ---- review rejections (DAT-217) ----
+  // Rejecting is the counterpart to approving a ticket out of Review: the
+  // reason is mandatory client-side too, so the reviewer sees why the button is
+  // dead instead of a 400 after the fact. History is shown on any status — a
+  // ticket that got kicked back twice should say so while it is being reworked.
+  const [rejects, setRejects] = useState<{ key: string; list: TicketRejection[] } | null>(null);
+  // The reason draft is keyed to the ticket, like the branch/description/estimate
+  // edits above: opening another ticket never inherits the previous draft, and
+  // board polls can't clobber half-typed feedback.
+  const [rejectDraft, setRejectDraft] = useState<{ key: string; reason: string; requeue: boolean } | null>(null);
+  const [rejectError, setRejectError] = useState<{ key: string; msg: string } | null>(null);
+  const [rejecting, setRejecting] = useState(false);
+
+  const loadRejections = useCallback(() => {
+    void api
+      .rejections(ticket.key)
+      .then((list) => setRejects({ key: ticket.key, list }))
+      .catch(() => setRejects({ key: ticket.key, list: [] }));
+  }, [ticket.key]);
+
+  useEffect(loadRejections, [loadRejections]);
+
+  const rejections = rejects && rejects.key === ticket.key ? rejects.list : [];
+  const canReject = lead && ticket.status === 'review';
+  const rejectForm = rejectDraft && rejectDraft.key === ticket.key ? rejectDraft : null;
+  const rejectErrorMsg = rejectError && rejectError.key === ticket.key ? rejectError.msg : '';
+
+  const submitRejection = () => {
+    const reason = rejectForm?.reason.trim() ?? '';
+    if (!reason) {
+      setRejectError({ key: ticket.key, msg: 'A rejection reason is required — the next runner works from it.' });
+      return;
+    }
+    if (rejecting) return;
+    setRejecting(true);
+    api
+      .rejectTicket(ticket.key, reason, rejectForm?.requeue ?? true)
+      .then((r) => {
+        setRejectDraft(null);
+        setRejectError(null);
+        toast(`${ticket.key} rejected — back to Backlog${r.requeued ? ' and re-queued for an agent' : ''}`);
+        loadRejections();
+        loadComments();
+        refreshDetail();
+      })
+      .catch((e: Error) => setRejectError({ key: ticket.key, msg: e.message }))
+      .finally(() => setRejecting(false));
   };
 
   // ---- linked tickets & branches ----
@@ -439,14 +513,18 @@ export function TicketDrawer({
   // same ticket; the expiry timer below covers the failure path (the server
   // logs rework failures and moves on without replying).
   const planningReplied =
-    planning !== null && (loaded?.list ?? []).some((c) => c.id > planning.afterId && c.author === 'Planning Agent');
-  const planningActive = planning !== null && planning.key === ticket.key && !planningReplied;
+    planning !== null && (loaded?.list ?? []).some((c) => c.id > planning.afterId && c.author === PLANNING_AGENT_AUTHOR);
+  const localPlanning = planning !== null && planning.key === ticket.key && !planningReplied;
+  // DAT-218: the server-side flag also covers passes this browser did not
+  // start — another person's comment, a lead hitting Refine elsewhere, the
+  // initial plan on a chatbox ticket — and clears itself on error or timeout.
+  const planningActive = localPlanning || ticket.planningReview !== null;
 
   useEffect(() => {
-    if (!planningActive || planning === null) return;
+    if (!localPlanning || planning === null) return;
     const timer = setTimeout(() => setPlanning(null), Math.max(0, planning.at + 45_000 - Date.now()));
     return () => clearTimeout(timer);
-  }, [planningActive, planning]);
+  }, [localPlanning, planning]);
 
   // Agent replies land as comments: poll while the drawer is open — fast while
   // an agent is actively on the ticket or a planning reply is due, relaxed
@@ -494,6 +572,54 @@ export function TicketDrawer({
       })
       .catch((e: Error) => toast(`Merge failed — ${e.message}`))
       .finally(() => setMerging(null));
+  };
+
+  // ---- review decisions (DAT-222) ----
+  // The reviewer's queue: Approve is one click with no confirmation, Reject
+  // takes a note first, and either way the drawer loads the next ticket in
+  // Review so a sitting of sign-offs never returns to the board.
+  const inReview = ticket.status === 'review';
+  const queue = reviewQueue(allTickets);
+  const queueAt = queuePosition(allTickets, ticket.key);
+  // Note drafts are keyed to the ticket like every other draft in this drawer,
+  // so auto-advancing can't carry half-typed feedback onto the next ticket.
+  const [noteDraft, setNoteDraft] = useState<{ key: string; text: string } | null>(null);
+  const [decideError, setDecideError] = useState<{ key: string; msg: string } | null>(null);
+  const [deciding, setDeciding] = useState<'approve' | 'reject' | null>(null);
+  const noteText = noteDraft && noteDraft.key === ticket.key ? noteDraft.text : null;
+  const decideErrorMsg = decideError && decideError.key === ticket.key ? decideError.msg : '';
+
+  const decide = (decision: 'approve' | 'reject', note?: string) => {
+    if (deciding !== null) return;
+    // Resolved before the call: `allTickets` still holds this ticket in Review,
+    // which is exactly the queue the reviewer is looking at.
+    const next = nextInQueue(allTickets, ticket.key);
+    setDeciding(decision);
+    api
+      .decideTicket(ticket.key, decision, note)
+      .then(() => {
+        setNoteDraft(null);
+        setDecideError(null);
+        toast(
+          decision === 'approve'
+            ? `${ticket.key} approved — moved to Deploying`
+            : `${ticket.key} rejected — back to Backlog with your note`,
+        );
+        refreshDetail();
+        if (next) onOpenTicket(next.key);
+        else onClose();
+      })
+      .catch((e: Error) => setDecideError({ key: ticket.key, msg: e.message }))
+      .finally(() => setDeciding(null));
+  };
+
+  const submitDecisionRejection = () => {
+    const note = (noteText ?? '').trim();
+    if (!note) {
+      setDecideError({ key: ticket.key, msg: 'A note is required to reject — say what needs to change.' });
+      return;
+    }
+    decide('reject', note);
   };
 
   const postComment = () => {
@@ -576,6 +702,24 @@ export function TicketDrawer({
               PROPOSED — NOT ON BOARD
             </span>
           )}
+          {/* DAT-218: the same indicator the board card shows, sitting with
+              the key directly above the title and status. */}
+          {ticket.planningReview && (
+            <span
+              title={planningReviewTitle(ticket.planningReview)}
+              style={{
+                ...mono(500, 9),
+                background: 'var(--agentsoft)',
+                color: 'var(--agent)',
+                border: '1px solid var(--agent)',
+                borderRadius: 2,
+                padding: '2px 5px',
+                animation: 'eec-pulse 2.4s infinite',
+              }}
+            >
+              {PLANNING_REVIEW_LABEL}
+            </span>
+          )}
           <button
             className="hv-tx"
             onClick={onClose}
@@ -615,6 +759,14 @@ export function TicketDrawer({
                 ))}
               </select>
             </div>
+            {/* Deploy gate (DAT-213): the board refuses a drop into Done while
+                this is set, so the drawer spells out what is missing. */}
+            {ticket.doneBlockedReason !== null && (
+              <div style={{ gridColumn: '1 / -1', border: '1px solid var(--warn)', borderRadius: 3, padding: '8px 11px' }}>
+                <div style={{ ...mono(400, 9), color: 'var(--warn)', letterSpacing: '.08em', marginBottom: 3 }}>⛔ BLOCKED FROM DONE</div>
+                <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>{ticket.doneBlockedReason}</div>
+              </div>
+            )}
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>◆ AGENT ESTIMATE (H)</div>
               <input
@@ -978,6 +1130,28 @@ export function TicketDrawer({
                 if (file) uploadAttachment(file);
               }}
             />
+            {attachFolders.length > 0 && (
+              <select
+                value={attachFolder}
+                onChange={(e) => setAttachFolder(e.target.value)}
+                title="Volume folder this file is filed into"
+                style={{
+                  background: 'var(--bg)',
+                  border: '1px solid var(--line2)',
+                  color: 'var(--tx2)',
+                  borderRadius: 3,
+                  fontSize: 11,
+                  padding: '2px 4px',
+                }}
+              >
+                <option value="">Ticket attachments only</option>
+                {attachFolders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               className="hv-border"
               disabled={uploading}
@@ -1045,6 +1219,128 @@ export function TicketDrawer({
               </div>
             ))}
           </div>
+          {(canReject || rejections.length > 0) && (
+            <>
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+                REVIEW{rejections.length > 0 ? ` · ${rejections.length} REJECTION${rejections.length > 1 ? 'S' : ''}` : ''}
+              </div>
+              <div
+                style={{
+                  border: `1px solid ${rejections.length > 0 ? 'var(--bad)' : 'var(--line)'}`,
+                  borderRadius: 3,
+                  padding: '10px 12px',
+                  marginBottom: 18,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                }}
+              >
+                {rejections.map((r, i) => (
+                  <div key={r.id} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
+                        ⨯ REJECTED{rejections.length > 1 ? ` #${i + 1}` : ''}
+                      </span>
+                      <span style={{ ...mono(400, 10), color: 'var(--tx2)' }}>{r.rejectedBy || 'reviewer'}</span>
+                      {r.rejectedAt && <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtTime(r.rejectedAt)}</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{r.reason}</div>
+                  </div>
+                ))}
+                {rejections.length > 0 && (
+                  <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', lineHeight: 1.5 }}>
+                    Every reason above is handed to the next runner that claims this ticket.
+                  </div>
+                )}
+                {canReject && rejectForm === null && (
+                  <button
+                    className="hv-bad"
+                    onClick={() => setRejectDraft({ key: ticket.key, reason: '', requeue: true })}
+                    title="Send this ticket back for rework with a reason — it returns to Backlog, not Done"
+                    style={{
+                      alignSelf: 'flex-start',
+                      border: '1px solid var(--bad)',
+                      background: 'none',
+                      color: 'var(--bad)',
+                      borderRadius: 3,
+                      padding: '6px 12px',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ⨯ Reject with reason
+                  </button>
+                )}
+                {canReject && rejectForm !== null && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <textarea
+                      autoFocus
+                      value={rejectForm.reason}
+                      onChange={(e) => {
+                        setRejectDraft({ ...rejectForm, reason: e.target.value });
+                        if (rejectErrorMsg) setRejectError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submitRejection();
+                        if (e.key === 'Escape' && !rejecting) setRejectDraft(null);
+                      }}
+                      rows={4}
+                      maxLength={4000}
+                      placeholder="Why is this being sent back? Be specific — this text is the brief the next agent run works from."
+                      style={{
+                        boxSizing: 'border-box',
+                        background: 'var(--bg)',
+                        border: `1px solid ${rejectErrorMsg ? 'var(--bad)' : 'var(--line2)'}`,
+                        borderRadius: 3,
+                        color: 'var(--tx)',
+                        padding: '8px 10px',
+                        fontSize: 12.5,
+                        lineHeight: 1.5,
+                        resize: 'vertical',
+                      }}
+                    />
+                    {rejectErrorMsg && <div style={{ ...mono(400, 9.5), color: 'var(--bad)' }}>{rejectErrorMsg}</div>}
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--tx2)', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={rejectForm.requeue}
+                        onChange={(e) => setRejectDraft({ ...rejectForm, requeue: e.target.checked })}
+                      />
+                      Queue it straight back for an agent run
+                    </label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        onClick={submitRejection}
+                        disabled={rejecting || !rejectForm.reason.trim()}
+                        title={rejectForm.reason.trim() ? 'Reject this review (Ctrl+Enter)' : 'Enter a reason first'}
+                        style={{
+                          border: 'none',
+                          background: 'var(--bad)',
+                          color: '#fff',
+                          borderRadius: 3,
+                          padding: '6px 14px',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: rejecting || !rejectForm.reason.trim() ? 'not-allowed' : 'pointer',
+                          opacity: rejecting || !rejectForm.reason.trim() ? 0.5 : 1,
+                        }}
+                      >
+                        {rejecting ? 'Rejecting…' : 'Reject'}
+                      </button>
+                      <button
+                        onClick={() => setRejectDraft(null)}
+                        disabled={rejecting}
+                        style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
           {(agentTask || canQueue) && (
             <>
               <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>AGENT WORK</div>
@@ -1064,7 +1360,7 @@ export function TicketDrawer({
                           {agentTask.agent}
                         </span>
                       )}
-                      {agentActive && lead && (
+                      {agentActive && runnerAccess && (
                         <button
                           className="hv-bad"
                           onClick={onCancelAgent}
@@ -1497,6 +1793,11 @@ export function TicketDrawer({
             )}
             {(comments ?? []).map((c) => {
               const coord = parseCoordComment(c.body);
+              // Agent-authored either way — a mirrored coordination message or
+              // a planning-agent reply (DAT-218). Both get the agent card; only
+              // the coordination ones get the structured body renderer.
+              const planningAgent = isPlanningAgentAuthor(c.author);
+              const fromAgent = coord !== null || planningAgent;
               return (
               <motion.div
                 key={c.id}
@@ -1511,31 +1812,35 @@ export function TicketDrawer({
                     width: 22,
                     height: 22,
                     borderRadius: '50%',
-                    background: coord ? 'var(--agentsoft)' : 'var(--bg3)',
-                    border: `1px solid ${coord ? 'var(--agent)' : 'var(--line2)'}`,
+                    background: fromAgent ? 'var(--agentsoft)' : 'var(--bg3)',
+                    border: `1px solid ${fromAgent ? 'var(--agent)' : 'var(--line2)'}`,
                     display: 'grid',
                     placeItems: 'center',
                     ...mono(500, 9),
-                    color: coord ? 'var(--agent)' : 'var(--tx2)',
+                    color: fromAgent ? 'var(--agent)' : 'var(--tx2)',
                   }}
                   title={c.author}
                 >
-                  {coord ? '◆' : initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
+                  {fromAgent ? '◆' : initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
                 </span>
                 <div
                   style={{
                     flex: 1,
                     minWidth: 0,
-                    border: `1px solid ${coord ? 'var(--agent)' : 'var(--line)'}`,
-                    borderLeft: coord ? '3px solid var(--agent)' : '1px solid var(--line)',
+                    border: `1px solid ${fromAgent ? 'var(--agent)' : 'var(--line)'}`,
+                    borderLeft: fromAgent ? '3px solid var(--agent)' : '1px solid var(--line)',
                     borderRadius: 3,
                     padding: '7px 10px',
-                    background: coord ? 'var(--agentsoft)' : 'var(--bg)',
+                    background: fromAgent ? 'var(--agentsoft)' : 'var(--bg)',
                   }}
                 >
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: coord ? 5 : 3 }}>
-                    <span style={{ fontSize: 11.5, fontWeight: 600, color: coord ? 'var(--agent)' : 'var(--tx)' }}>{c.author}</span>
-                    {coord && <span style={{ ...mono(500, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>AGENT&nbsp;COMMS</span>}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: fromAgent ? 5 : 3 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: fromAgent ? 'var(--agent)' : 'var(--tx)' }}>{c.author}</span>
+                    {fromAgent && (
+                      <span style={{ ...mono(500, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>
+                        {coord ? <>AGENT&nbsp;COMMS</> : <>PLANNING&nbsp;AGENT</>}
+                      </span>
+                    )}
                     <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 'auto' }}>{fmtTime(c.createdAt)}</span>
                   </div>
                   {coord ? (
@@ -1601,7 +1906,7 @@ export function TicketDrawer({
                     />
                   ))}
                   <span style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em', marginLeft: 5 }}>
-                    {planningActive ? 'PLANNING AGENT IS REWORKING THE PLAN…' : 'AGENT IS WORKING — REPLIES LAND HERE'}
+                    {planningActive ? planningReviewThreadLabel(ticket.planningReview) : 'AGENT IS WORKING — REPLIES LAND HERE'}
                   </span>
                 </div>
               </motion.div>
@@ -1677,6 +1982,132 @@ export function TicketDrawer({
             </div>
           )}
         </div>
+        {/* Review queue bar (DAT-222): pinned under the scroll area so the
+            decision is always one click away, however long the ticket is. */}
+        {inReview && (
+          <div
+            style={{
+              flex: 'none',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              padding: '14px 18px',
+              borderTop: '1px solid var(--line)',
+              background: 'var(--bg3)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ ...mono(400, 10), color: 'var(--warn)', letterSpacing: '.08em' }}>REVIEW DECISION</span>
+              {queueAt > 0 && queue.length > 1 && (
+                <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
+                  {queueAt} OF {queue.length} IN REVIEW · NEXT LOADS AUTOMATICALLY
+                </span>
+              )}
+            </div>
+            {noteText === null ? (
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  onClick={() => decide('approve')}
+                  disabled={deciding !== null}
+                  title="Approve this ticket — it moves to Deploying and the next ticket in review opens"
+                  style={{
+                    flex: 2,
+                    border: 'none',
+                    background: 'var(--ok)',
+                    color: '#fff',
+                    borderRadius: 3,
+                    padding: '12px 10px',
+                    fontSize: 13.5,
+                    fontWeight: 600,
+                    cursor: deciding !== null ? 'progress' : 'pointer',
+                    opacity: deciding !== null ? 0.6 : 1,
+                  }}
+                >
+                  {deciding === 'approve' ? 'Approving…' : '✓ Approve → Deploying'}
+                </button>
+                <button
+                  onClick={() => {
+                    setDecideError(null);
+                    setNoteDraft({ key: ticket.key, text: '' });
+                  }}
+                  disabled={deciding !== null}
+                  title="Send this ticket back — a note saying what needs to change is required"
+                  style={{
+                    flex: 1,
+                    border: '1px solid var(--bad)',
+                    background: 'none',
+                    color: 'var(--bad)',
+                    borderRadius: 3,
+                    padding: '12px 10px',
+                    fontSize: 13.5,
+                    fontWeight: 600,
+                    cursor: deciding !== null ? 'progress' : 'pointer',
+                  }}
+                >
+                  ⨯ Reject
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <textarea
+                  autoFocus
+                  value={noteText}
+                  onChange={(e) => {
+                    setNoteDraft({ key: ticket.key, text: e.target.value });
+                    if (decideErrorMsg) setDecideError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submitDecisionRejection();
+                    if (e.key === 'Escape' && deciding === null) setNoteDraft(null);
+                  }}
+                  rows={3}
+                  maxLength={4000}
+                  placeholder="Why is this being sent back? The note is saved to the ticket history for whoever picks it up next."
+                  style={{
+                    boxSizing: 'border-box',
+                    background: 'var(--bg)',
+                    border: `1px solid ${decideErrorMsg ? 'var(--bad)' : 'var(--line2)'}`,
+                    borderRadius: 3,
+                    color: 'var(--tx)',
+                    padding: '8px 10px',
+                    fontSize: 12.5,
+                    lineHeight: 1.5,
+                    resize: 'vertical',
+                  }}
+                />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    onClick={submitDecisionRejection}
+                    disabled={deciding !== null || !noteText.trim()}
+                    title={noteText.trim() ? 'Confirm the rejection (Ctrl+Enter)' : 'Write a note first — rejections need one'}
+                    style={{
+                      border: 'none',
+                      background: 'var(--bad)',
+                      color: '#fff',
+                      borderRadius: 3,
+                      padding: '9px 16px',
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      cursor: deciding !== null || !noteText.trim() ? 'not-allowed' : 'pointer',
+                      opacity: deciding !== null || !noteText.trim() ? 0.5 : 1,
+                    }}
+                  >
+                    {deciding === 'reject' ? 'Rejecting…' : 'Confirm rejection'}
+                  </button>
+                  <button
+                    onClick={() => setNoteDraft(null)}
+                    disabled={deciding !== null}
+                    style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '9px 14px', fontSize: 12.5, cursor: 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                  <span style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>CTRL+ENTER TO CONFIRM · ESC TO CANCEL</span>
+                </div>
+              </div>
+            )}
+            {decideErrorMsg && <div style={{ ...mono(400, 9.5), color: 'var(--bad)' }}>{decideErrorMsg}</div>}
+          </div>
+        )}
         {proposed && lead && (
           <div style={{ flex: 'none', display: 'flex', gap: 10, padding: '14px 18px', borderTop: '1px solid var(--line)', background: 'var(--agentsoft)' }}>
             <button

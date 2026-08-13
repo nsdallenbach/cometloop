@@ -17,6 +17,7 @@ export const STATUS_LABEL: Record<string, string> = {
   backlog: 'Backlog',
   progress: 'In Progress',
   review: 'In Review',
+  deploying: 'Deploying',
   done: 'Done',
   proposed: 'Agent proposed',
   dismissed: 'Dismissed',

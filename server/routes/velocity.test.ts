@@ -38,10 +38,21 @@ describe('replayLifecycles', () => {
     const t = life.get('T-1');
     expect(t?.startedAt).toBe('2026-08-02T00:00:00Z');
     expect(t?.doneAt).toBe('2026-08-04T00:00:00Z');
-    expect(t?.reviews).toEqual([{ enteredAt: '2026-08-03T00:00:00Z', leftAt: '2026-08-04T00:00:00Z', toDone: true }]);
+    expect(t?.reviews).toEqual([{ enteredAt: '2026-08-03T00:00:00Z', leftAt: '2026-08-04T00:00:00Z', approved: true }]);
   });
 
-  it('a review bounce records toDone=false and reopening clears doneAt', () => {
+  it('counts an approval into Deploying as a passed review (DAT-222)', () => {
+    const life = replayLifecycles([
+      ev('T-3', 'review', '2026-08-03T00:00:00Z'),
+      ev('T-3', 'deploying', '2026-08-03T06:00:00Z'),
+      ev('T-3', 'done', '2026-08-03T08:00:00Z'),
+    ]);
+    const t = life.get('T-3');
+    expect(t?.reviews).toEqual([{ enteredAt: '2026-08-03T00:00:00Z', leftAt: '2026-08-03T06:00:00Z', approved: true }]);
+    expect(t?.doneAt).toBe('2026-08-03T08:00:00Z');
+  });
+
+  it('a review bounce records approved=false and reopening clears doneAt', () => {
     const life = replayLifecycles([
       ev('T-2', 'backlog', '2026-08-01T00:00:00Z'),
       ev('T-2', 'review', '2026-08-02T00:00:00Z'),
@@ -50,7 +61,7 @@ describe('replayLifecycles', () => {
       ev('T-2', 'backlog', '2026-08-05T00:00:00Z'),
     ]);
     const t = life.get('T-2');
-    expect(t?.reviews[0]?.toDone).toBe(false);
+    expect(t?.reviews[0]?.approved).toBe(false);
     expect(t?.doneAt).toBeNull();
   });
 });

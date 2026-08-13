@@ -1,14 +1,15 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/react';
 import { Plus, Rocket } from 'lucide-react';
 import { api } from '../api';
-import type { AgentTask, ContextFile, Engagement, EngagementDetail, Ticket, TicketStatus } from '../types';
+import type { AgentTask, ContextFile, Engagement, EngagementDetail, FileLibrary, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
-import { dropBoardTicket, laneOf } from '../lib/board-order';
+import { dropBoardTicket, laneOf, type BoardLane } from '../lib/board-order';
 import { needsEstimate } from '../lib/ticket-hours';
+import { PLANNING_REVIEW_LABEL, planningReviewTitle } from '../lib/planning-review';
 import { Analytics } from './Analytics';
-import { ProjectConfig } from './ProjectConfig';
+import { ProjectConfig, RepoCard } from './ProjectConfig';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
 import { RichText } from './AgentComment';
@@ -17,6 +18,7 @@ import type { Tab } from '../App';
 const COLS: [TicketStatus, string][] = [
   ['backlog', 'BACKLOG'],
   ['review', 'REVIEW'],
+  ['deploying', 'DEPLOYING'],
   ['done', 'DONE'],
 ];
 
@@ -28,7 +30,12 @@ type DragPayload =
   | { kind: 'task'; key: string; taskId: number; queued: boolean; w: number; h: number };
 
 /** Where a dragged ticket would land: lane + slot index among its cards. */
-type DropSlot = { lane: Extract<TicketStatus, 'backlog' | 'review' | 'done'>; idx: number };
+type DropSlot = { lane: BoardLane; idx: number };
+
+/** Lanes whose cards the drag engine slots by hand (Done self-sorts). */
+const ORDERED_LANES: BoardLane[] = ['backlog', 'review', 'deploying'];
+const isOrderedLane = (lane: unknown): lane is 'backlog' | 'review' | 'deploying' =>
+  ORDERED_LANES.includes(lane as BoardLane);
 
 const PR_STATE_COLOR: Record<string, string> = { open: 'var(--warn)', merged: 'var(--ok)', closed: 'var(--tx3)' };
 
@@ -88,6 +95,7 @@ export function Workspace({
   const [pendingCreates, setPendingCreates] = useState({ backlog: 0, deploy: 0 });
   const [assignPop, setAssignPop] = useState<{ key: string; x: number; y: number } | null>(null);
   const [bulk, setBulk] = useState<Record<string, boolean>>({});
+  const [sourcesTab, setSourcesTab] = useState<'git' | 'files'>('git');
   const [composer, setComposer] = useState<string | null>(null);
   const [pushed, setPushed] = useState<boolean | null>(null);
   const [drafting, setDrafting] = useState(false);
@@ -167,11 +175,17 @@ export function Workspace({
     () => new Set([...laneTasks.running, ...laneTasks.queued].map((a) => a.ticketKey)),
     [laneTasks],
   );
+  // Fleet liveness (DAT-224): queued work with nothing online to claim it. The
+  // server decides — `down` already accounts for the wait threshold — so the
+  // board just renders the warning it is handed.
+  const fleet = detail?.fleet ?? null;
+  const fleetDown = fleet?.down === true;
   /**
    * A lane's cards in render order — shared by the kanban render and the
    * drag engine so drop slots always line up with what's on screen. No In
    * Progress lane: human-active tickets sit in Backlog until they reach
-   * Review; agent-active ones sit in the agent lane. Done auto-hides work
+   * Review; agent-active ones sit in the agent lane. Deploying holds approved
+   * and merged work until its pipeline goes green. Done auto-hides work
    * completed more than 24h ago (tickets without a completion time age out
    * too) and shows the rest newest-first.
    */
@@ -231,6 +245,7 @@ export function Workspace({
     const agentDone = at?.state === 'done' && t.status === 'review';
     const agentFailed = at?.state === 'failed' && t.status === 'backlog';
     const isDone = t.status === 'done';
+    const isDeploying = t.status === 'deploying';
     return (
     <div
       {...(!clone && {
@@ -241,7 +256,7 @@ export function Workspace({
         className: 'hv-border',
       })}
       style={{
-        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : t.status === 'review' ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
+        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : isDeploying ? 'var(--acc)' : t.status === 'review' ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
         background: 'var(--bg2)',
         borderRadius: 3,
         padding: '9px 11px',
@@ -252,6 +267,24 @@ export function Workspace({
         <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>{t.key}</span>
         {t.agent && (
           <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◆ AGENT</span>
+        )}
+        {/* DAT-218: the planning agent is rewriting this ticket right now. Per
+            ticket, so several cards can pulse independently. */}
+        {t.planningReview && (
+          <span
+            title={planningReviewTitle(t.planningReview)}
+            style={{
+              ...mono(500, 9),
+              background: 'var(--agentsoft)',
+              color: 'var(--agent)',
+              border: '1px solid var(--agent)',
+              borderRadius: 2,
+              padding: '1px 4px',
+              animation: 'eec-pulse 2.4s infinite',
+            }}
+          >
+            {PLANNING_REVIEW_LABEL}
+          </span>
         )}
         {(() => {
           if (!at) return null;
@@ -269,8 +302,28 @@ export function Workspace({
             return <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ AGENT FAILED</span>;
           return null;
         })()}
+        {t.activities.includes('refinement_in_progress') && (
+          <span title="A scheduled backlog refinement pass is processing this ticket" style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
+            ◇ REFINING
+          </span>
+        )}
+        {t.activities.includes('planning_response_in_progress') && (
+          <span title="The planning agent is composing a response on this ticket" style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
+            ◆ PLANNING REPLY
+          </span>
+        )}
         {isDone && (
           <span style={{ ...mono(500, 9), color: 'var(--ok)', border: '1px solid var(--ok)', borderRadius: 2, padding: '1px 4px' }}>✓ DONE</span>
+        )}
+        {/* Approved out of review but no pipeline in flight yet — the deploy
+            chips below take over as soon as one starts (DAT-222). */}
+        {isDeploying && t.deployState !== 'pending' && t.deployState !== 'running' && t.deployState !== 'failed' && (
+          <span
+            title="Approved in review — waiting on the deploy pipeline"
+            style={{ ...mono(500, 9), color: 'var(--acc)', border: '1px solid var(--acc)', borderRadius: 2, padding: '1px 4px' }}
+          >
+            ✓ APPROVED
+          </span>
         )}
         {!isDone && (t.deployState === 'pending' || t.deployState === 'running') && (
           <span style={{ ...mono(500, 9), color: 'var(--acc)', border: '1px solid var(--acc)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
@@ -457,7 +510,8 @@ export function Workspace({
   );
 
   // Lane accents (drag highlight, drop slot): Review yellow, Done green,
-  // Backlog blue.
+  // Backlog and Deploying blue — Deploying reuses the accent its deploy chip
+  // already carries on the card.
   const laneAccent = (k: TicketStatus | 'agent') => (k === 'review' ? 'var(--warn)' : k === 'done' ? 'var(--ok)' : 'var(--acc)');
 
   /** The gap a dragged ticket will drop into; lane cards shift around it. */
@@ -620,7 +674,7 @@ export function Workspace({
         // Done sorts itself newest-first: an entering card lands on top; a
         // within-Done drag goes back where it came from.
         setSlot(origin !== null && origin.lane === 'done' ? origin : { lane: 'done', idx: 0 });
-      } else if (lane !== 'backlog' && lane !== 'review') {
+      } else if (!isOrderedLane(lane)) {
         setSlot(null);
       } else {
         const cardEl = laneEl ? under?.closest('[data-tcard]') : null;
@@ -701,7 +755,15 @@ export function Workspace({
       deployTicket(payload.key);
       return;
     }
-    if (lane !== 'backlog' && lane !== 'review' && lane !== 'done') return;
+    if (!isOrderedLane(lane) && lane !== 'done') return;
+    // DAT-213: Done means deployed. Refuse the drop up front rather than let
+    // the card land and snap back on the server's 409 — the toast carries the
+    // server's own reason, so the two can never say different things.
+    const dropped = tickets.find((x) => x.key === payload.key);
+    if (lane === 'done' && dropped?.doneBlockedReason) {
+      toast(dropped.doneBlockedReason);
+      return;
+    }
     // Land exactly where the slot gap previewed it — including a new order
     // within the lane. Optimistic like every board mutation; a failed save
     // refetches so the board falls back to the server's truth.
@@ -731,15 +793,15 @@ export function Workspace({
       <span title={flagged ? at.flag ?? '' : 'No heartbeat for over 3 minutes'} style={{ ...mono(600, 11), color: 'var(--warn)', flex: 'none', lineHeight: 1 }}>⚠</span>
     ) : (
       <span
-        title={running ? 'Runner active' : 'Waiting for a runner'}
+        title={running ? 'Runner active' : fleetDown ? 'Nothing is online to claim this' : 'Waiting for a runner'}
         style={{
           width: 9,
           height: 9,
           flex: 'none',
           display: 'inline-block',
           borderRadius: '50%',
-          border: `2px solid ${running ? 'var(--ok)' : 'var(--tx3)'}`,
-          borderTopColor: running ? 'transparent' : 'var(--tx3)',
+          border: `2px solid ${running ? 'var(--ok)' : fleetDown ? 'var(--bad)' : 'var(--tx3)'}`,
+          borderTopColor: running ? 'transparent' : fleetDown ? 'var(--bad)' : 'var(--tx3)',
           animation: running ? 'eec-spin .8s linear infinite' : 'none',
         }}
       />
@@ -783,7 +845,18 @@ export function Workspace({
               {flagged ? 'NEEDS ATTENTION' : stale ? 'STALLED' : at.state === 'working' ? 'WORKING' : 'CLAIMED'}
             </span>
           ) : (
-            <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '1px 5px' }}>◇ #{qPos} IN QUEUE</span>
+            <span
+              title={fleetDown ? (fleet?.message ?? '') : undefined}
+              style={{
+                ...mono(500, 9),
+                border: `1px dashed ${fleetDown ? 'var(--bad)' : 'var(--agent)'}`,
+                color: fleetDown ? 'var(--bad)' : 'var(--agent)',
+                borderRadius: 2,
+                padding: '1px 5px',
+              }}
+            >
+              ◇ #{qPos} {fleetDown ? 'QUEUED — NO RUNNER' : 'IN QUEUE'}
+            </span>
           )}
           {lead && !running && (
             <button
@@ -805,6 +878,14 @@ export function Workspace({
           )}
         </div>
         <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35 }}>{t?.title ?? at.ticketKey}</div>
+        {/* A task the fleet watch released from a dead runner (DAT-224) keeps
+            its note — otherwise it would silently reappear in the queue with
+            no trace of the run that died holding it. */}
+        {!running && at.lastNote && (
+          <div style={{ marginTop: 5, fontSize: 11, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            ⚠ {at.lastNote}
+          </div>
+        )}
         {!running && at.instructions && (
           <div style={{ marginTop: 5, fontSize: 11, color: 'var(--tx3)', lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {at.instructions}
@@ -884,6 +965,14 @@ export function Workspace({
       <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderBottom: '1px solid var(--line)' }}>
         <span style={{ ...mono(500, 10), letterSpacing: '.1em', color: 'var(--agent)' }}>◆ DEPLOY TO AGENT</span>
         <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{laneTasks.running.length + laneTasks.queued.length}</span>
+        {fleetDown && (
+          <span
+            title={fleet?.message ?? ''}
+            style={{ marginLeft: 'auto', ...mono(600, 9), background: 'var(--bad)', color: '#fff', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}
+          >
+            ⚠ NO RUNNER ONLINE
+          </span>
+        )}
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
         {laneTasks.running.map((a) => agentCard(a, null))}
@@ -1072,6 +1161,32 @@ export function Workspace({
             )}
           </div>
 
+          {/* Zero runners online while work is queued — the outage the board
+              used to hide behind a lane full of patiently waiting cards. */}
+          {fleetDown && fleet && (
+            <div
+              role="status"
+              style={{
+                flex: 'none',
+                margin: '0 22px 10px',
+                border: '1px solid var(--bad)',
+                borderRadius: 4,
+                background: 'var(--bg2)',
+                padding: '9px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                flexWrap: 'wrap',
+              }}
+            >
+              <span style={{ ...mono(600, 10), color: 'var(--bad)', letterSpacing: '.08em', flex: 'none' }}>⚠ FLEET DOWN</span>
+              <span style={{ fontSize: 12.5, color: 'var(--tx)', lineHeight: 1.45, flex: '1 1 320px' }}>{fleet.message}</span>
+              <span style={{ ...mono(400, 10), color: 'var(--tx3)', flex: 'none', whiteSpace: 'nowrap' }}>
+                {fleet.online} ONLINE · {fleet.offline} OFFLINE · {fleet.queued} QUEUED
+              </span>
+            </div>
+          )}
+
           {proposedTickets.length > 0 && (
             <div style={{ flex: 'none', margin: '0 22px 10px', border: '1px dashed var(--agent)', borderRadius: 4, background: 'var(--agentsoft)', padding: '9px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -1119,7 +1234,9 @@ export function Workspace({
                 </div>
               )}
               <LayoutGroup>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(250px,1fr))', gap: 12, minWidth: 1040, height: '100%' }}>
+              {/* One column per status lane plus the agent lane wedged in
+                  before Review — five since Deploying joined (DAT-222). */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,minmax(220px,1fr))', gap: 12, minWidth: 1180, height: '100%' }}>
                 {COLS.map(([k, label]) => {
                   const colTickets = laneTickets(k);
                   // While a ticket is dragged its card leaves the lane; the
@@ -1204,13 +1321,19 @@ export function Workspace({
                         <td style={tdBase}>
                           <select
                             value={t.status}
+                            // Done is off the menu until the work is deployed
+                            // (DAT-213); the title says why on hover.
+                            title={t.doneBlockedReason ?? undefined}
                             onChange={(e) => setTicket(t.key, { status: e.target.value as TicketStatus })}
                             style={{ background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
                           >
                             <option value="backlog">Backlog</option>
                             <option value="progress">In Progress</option>
                             <option value="review">In Review</option>
-                            <option value="done">Done</option>
+                            <option value="deploying">Deploying</option>
+                            <option value="done" disabled={t.doneBlockedReason !== null}>
+                              {t.doneBlockedReason !== null ? 'Done — not deployed' : 'Done'}
+                            </option>
                           </select>
                         </td>
                         <td style={{ ...tdBase, whiteSpace: 'nowrap' }}>
@@ -1299,7 +1422,31 @@ export function Workspace({
       {/* Files and artifacts only — git setup moved to the Config tab (DAT-216). */}
       {detail && tab === 'sources' && (
         <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
-          <ContextFilesCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
+          <div style={{ display: 'flex', gap: 3, borderBottom: '1px solid var(--line)', marginBottom: 14 }}>
+            {(['git', 'files'] as const).map((key) => (
+              <button
+                key={key}
+                onClick={() => setSourcesTab(key)}
+                style={{
+                  border: 'none',
+                  borderBottom: sourcesTab === key ? '2px solid var(--acc)' : '2px solid transparent',
+                  background: 'none',
+                  color: sourcesTab === key ? 'var(--tx)' : 'var(--tx3)',
+                  padding: '8px 18px',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                {key === 'git' ? 'Git' : 'Files'}
+              </button>
+            ))}
+          </div>
+          {sourcesTab === 'git' && <RepoCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />}
+          {sourcesTab === 'files' && (
+            <>
+              <FileLibraryCard engId={eng.id} lead={lead} tickets={detail.tickets} toast={toast} refreshDetail={refreshDetail} />
+              <ContextFilesCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
           <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid var(--line)', background: 'var(--bg2)' }}>
             <thead>
               <tr>
@@ -1330,7 +1477,9 @@ export function Workspace({
                 </tr>
               ))}
             </tbody>
-          </table>
+              </table>
+            </>
+          )}
         </div>
       )}
 
@@ -2262,6 +2411,293 @@ function ContextFilesCard({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+
+function FileLibraryCard({
+  engId,
+  lead,
+  tickets,
+  toast,
+  refreshDetail,
+}: {
+  engId: string;
+  lead: boolean;
+  tickets: Ticket[];
+  toast: (msg: string) => void;
+  refreshDetail: () => void;
+}) {
+  const [data, setData] = useState<FileLibrary | null>(null);
+  const [folder, setFolder] = useState('');
+  const [newFolder, setNewFolder] = useState('');
+  const [parent, setParent] = useState('');
+  const [ruleName, setRuleName] = useState('Process uploaded file');
+  const [pattern, setPattern] = useState('*');
+  const [action, setAction] = useState<'create_ticket' | 'refine_ticket'>('create_ticket');
+  const [target, setTarget] = useState('');
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const load = useCallback(
+    () =>
+      api
+        .fileLibrary(engId)
+        .then((d) => {
+          setData(d);
+          setFolder((f) => f || d.folders[0]?.id || '');
+        })
+        .catch((e: Error) => toast(e.message)),
+    [engId, toast]
+  );
+  useEffect(() => void load(), [load]);
+  const mutate = (work: Promise<unknown>, message: string) =>
+    work
+      .then(() => {
+        toast(message);
+        void load();
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(e.message));
+  const path = (id: string): string => {
+    const f = data?.folders.find((x) => x.id === id);
+    return f ? `${f.parentId ? `${path(f.parentId)} / ` : ''}${f.name}` : '';
+  };
+  return (
+    <div
+      style={{
+        border: '1px solid var(--line)',
+        borderRadius: 4,
+        background: 'var(--bg2)',
+        marginBottom: 14,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          padding: '10px 14px',
+          borderBottom: '1px solid var(--line)',
+          ...mono(500, 10),
+          color: 'var(--tx3)',
+          letterSpacing: '.08em',
+        }}
+      >
+        VOLUME FILES
+      </div>
+      {!data ? (
+        <Empty label="Loading file library…" />
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', minHeight: 260 }}>
+          <div style={{ borderRight: '1px solid var(--line)', padding: 10 }}>
+            {data.folders.map((f) => (
+              <div
+                key={f.id}
+                style={{
+                  display: 'flex',
+                  gap: 5,
+                  alignItems: 'center',
+                  padding: '5px 4px',
+                  background: folder === f.id ? 'var(--bg3)' : 'transparent',
+                }}
+              >
+                <button
+                  onClick={() => setFolder(f.id)}
+                  style={{
+                    flex: 1,
+                    textAlign: 'left',
+                    border: 0,
+                    background: 'none',
+                    color: 'var(--tx)',
+                    cursor: 'pointer',
+                    fontSize: 11.5,
+                  }}
+                >
+                  {path(f.id)}
+                </button>
+                {lead && (
+                  <>
+                    <button
+                      title="Rename"
+                      onClick={() => {
+                        const n = prompt('Folder name', f.name);
+                        if (n) void mutate(api.renameFolder(engId, f.id, n), 'Folder renamed');
+                      }}
+                      style={{ border: 0, background: 'none', color: 'var(--tx3)', cursor: 'pointer' }}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      title="Delete"
+                      onClick={() => void mutate(api.deleteFolder(engId, f.id), 'Folder deleted')}
+                      style={{ border: 0, background: 'none', color: 'var(--tx3)', cursor: 'pointer' }}
+                    >
+                      ×
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+            {lead && (
+              <div style={{ borderTop: '1px solid var(--line)', marginTop: 8, paddingTop: 8 }}>
+                <input
+                  value={newFolder}
+                  onChange={(e) => setNewFolder(e.target.value)}
+                  placeholder="New folder"
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg)',
+                    border: '1px solid var(--line2)',
+                    color: 'var(--tx)',
+                    padding: 6,
+                  }}
+                />
+                <select
+                  value={parent}
+                  onChange={(e) => setParent(e.target.value)}
+                  style={{ width: '100%', marginTop: 5, background: 'var(--bg)', color: 'var(--tx)', padding: 5 }}
+                >
+                  <option value="">Top level</option>
+                  {data.folders.map((f) => (
+                    <option value={f.id} key={f.id}>
+                      Inside {path(f.id)}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  disabled={!newFolder.trim()}
+                  onClick={() => {
+                    void mutate(api.createFolder(engId, newFolder, parent || null), 'Folder created');
+                    setNewFolder('');
+                  }}
+                  style={{ marginTop: 5, width: '100%' }}
+                >
+                  Create folder
+                </button>
+              </div>
+            )}
+          </div>
+          <div style={{ padding: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <strong style={{ fontSize: 12 }}>{path(folder) || 'Select a folder'}</strong>
+              <div style={{ flex: 1 }} />
+              <input
+                ref={uploadRef}
+                type="file"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = '';
+                  if (f && folder)
+                    void api
+                      .uploadLibraryFile(engId, folder, f)
+                      .then((r) => {
+                        toast(
+                          r.fired.length ? `${f.name} uploaded — ${r.fired.length} rule fired` : `${f.name} uploaded`
+                        );
+                        void load();
+                        refreshDetail();
+                      })
+                      .catch((x: Error) => toast(x.message));
+                }}
+              />
+              <button disabled={!folder} onClick={() => uploadRef.current?.click()}>
+                Upload file
+              </button>
+            </div>
+            {data.files
+              .filter((f) => f.folderId === folder)
+              .map((f) => (
+                <div
+                  key={f.id}
+                  style={{ display: 'flex', gap: 9, padding: '8px 4px', borderTop: '1px solid var(--line)' }}
+                >
+                  <a href={f.url} style={{ color: 'var(--tx)', fontSize: 12, flex: 1 }}>
+                    {f.filename}
+                  </a>
+                  {f.ticketKey && (
+                    <span style={{ ...mono(500, 9), color: 'var(--agent)' }}>ATTACHED TO {f.ticketKey}</span>
+                  )}
+                  <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtSize(f.size)}</span>
+                  {lead && !f.ticketKey && (
+                    <button
+                      onClick={() => void mutate(api.deleteLibraryFile(engId, f.id), 'File deleted')}
+                      style={{ border: 0, background: 'none', color: 'var(--bad)', cursor: 'pointer' }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              ))}
+            {data.files.filter((f) => f.folderId === folder).length === 0 && <Empty label="No files in this folder." />}
+          </div>
+        </div>
+      )}
+      <div style={{ borderTop: '1px solid var(--line)', padding: 12 }}>
+        <div style={{ ...mono(500, 10), color: 'var(--tx3)', marginBottom: 8 }}>AUTOMATION RULES</div>
+        {data?.rules.map((r) => (
+          <div key={r.id} style={{ display: 'flex', gap: 8, padding: '6px 0', fontSize: 11.5 }}>
+            <span style={{ flex: 1 }}>
+              {r.name}: {path(r.folderId)}/{r.filePattern} →{' '}
+              {r.actionType === 'create_ticket' ? 'create ticket' : `refine ${r.targetTicket}`}
+            </span>
+            {lead && (
+              <button onClick={() => void mutate(api.deleteFileRule(engId, r.id), 'Rule deleted')}>Delete</button>
+            )}
+          </div>
+        ))}
+        {lead && data && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+            <input value={ruleName} onChange={(e) => setRuleName(e.target.value)} placeholder="Rule name" />
+            <select value={folder} onChange={(e) => setFolder(e.target.value)}>
+              {data.folders.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {path(f.id)}
+                </option>
+              ))}
+            </select>
+            <input
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              placeholder="*.txt"
+              style={{ width: 80 }}
+            />
+            <select value={action} onChange={(e) => setAction(e.target.value as typeof action)}>
+              <option value="create_ticket">Create ticket</option>
+              <option value="refine_ticket">Refine ticket</option>
+            </select>
+            {action === 'refine_ticket' && (
+              <select value={target} onChange={(e) => setTarget(e.target.value)}>
+                <option value="">Target ticket…</option>
+                {tickets
+                  .filter((t) => !['done', 'dismissed'].includes(t.status))
+                  .map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.key}
+                    </option>
+                  ))}
+              </select>
+            )}
+            <button
+              disabled={!folder || !ruleName.trim() || (action === 'refine_ticket' && !target)}
+              onClick={() =>
+                void mutate(
+                  api.createFileRule(engId, {
+                    name: ruleName,
+                    folderId: folder,
+                    filePattern: pattern,
+                    actionType: action,
+                    targetTicket: target || null,
+                    enabled: true,
+                  }),
+                  'Rule created'
+                )
+              }
+            >
+              Add rule
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

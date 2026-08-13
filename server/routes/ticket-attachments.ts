@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import express from 'express';
 import { resolveIdentity, type Identity } from './roles';
 import type { FilesVolume } from './context-files';
+import { runFileRules } from './file-library';
 
 /**
  * Per-ticket file attachments (screenshots, logs, documents). Bytes live in
@@ -33,11 +34,34 @@ export const MAX_ATTACHMENT_BYTES = 25_000_000; // 25 MB — matches the volume'
 // Executable/script formats have no place on a delivery ticket; everything
 // else (images, logs, archives, office docs) is allowed.
 export const BLOCKED_EXTENSIONS = new Set([
-  'exe', 'dll', 'so', 'dylib', 'msi', 'bat', 'cmd', 'com', 'scr', 'ps1', 'psm1', 'vbs', 'vbe', 'jse', 'wsf', 'wsh', 'jar', 'app', 'apk', 'deb', 'rpm',
+  'exe',
+  'dll',
+  'so',
+  'dylib',
+  'msi',
+  'bat',
+  'cmd',
+  'com',
+  'scr',
+  'ps1',
+  'psm1',
+  'vbs',
+  'vbe',
+  'jse',
+  'wsf',
+  'wsh',
+  'jar',
+  'app',
+  'apk',
+  'deb',
+  'rpm',
 ]);
 
 export function sanitizeAttachmentName(raw: string): string {
-  const cleaned = raw.replace(/[^A-Za-z0-9._ -]/g, '_').replace(/^\.+/, '').trim();
+  const cleaned = raw
+    .replace(/[^A-Za-z0-9._ -]/g, '_')
+    .replace(/^\.+/, '')
+    .trim();
   return cleaned || 'file';
 }
 
@@ -80,7 +104,9 @@ const toEntry = (r: Record<string, unknown>): TicketAttachmentRow => ({
 });
 
 export async function listTicketAttachments(q: Query, ticketKey: string): Promise<TicketAttachmentRow[]> {
-  const { rows } = await q('SELECT * FROM app.ticket_attachments WHERE ticket_key = $1 ORDER BY created_at, id', [ticketKey]);
+  const { rows } = await q('SELECT * FROM app.ticket_attachments WHERE ticket_key = $1 ORDER BY created_at, id', [
+    ticketKey,
+  ]);
   return rows.map(toEntry);
 }
 
@@ -106,6 +132,7 @@ export function setupTicketAttachmentRoutes(
   q: Query,
   files: FilesVolume,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  refineTicket?: (key: string, feedback: string) => Promise<void>
 ) {
   const ticketRow = async (key: string): Promise<{ engagement_id: string } | null> => {
     const { rows } = await q('SELECT engagement_id FROM app.tickets WHERE key = $1', [key]);
@@ -128,50 +155,87 @@ export function setupTicketAttachmentRoutes(
   // Parser limit sits above MAX_ATTACHMENT_BYTES so the size check in
   // attachmentRejection can answer with a clear JSON error instead of the
   // body parser's default 413 page.
-  app.post('/api/tickets/:key/attachments', express.raw({ type: '*/*', limit: MAX_ATTACHMENT_BYTES + 1_000_000 }), async (req, res) => {
-    try {
-      const key = req.params.key;
-      const ticket = await ticketRow(key);
-      if (!ticket) {
-        res.status(404).json({ error: 'Ticket not found' });
-        return;
-      }
-      const rawName = typeof req.query.filename === 'string' ? req.query.filename : '';
-      if (!rawName) {
-        res.status(400).json({ error: 'A filename query parameter is required' });
-        return;
-      }
-      const body = req.body as Buffer;
-      const filename = sanitizeAttachmentName(rawName);
-      const rejection = attachmentRejection(filename, Buffer.isBuffer(body) ? body.length : 0);
-      if (rejection) {
-        res.status(rejection.startsWith('File is') ? 413 : 400).json({ error: rejection });
-        return;
-      }
-      const contentType =
-        typeof req.headers['x-attachment-content-type'] === 'string' && req.headers['x-attachment-content-type'].trim()
-          ? req.headers['x-attachment-content-type'].trim().slice(0, 120)
-          : 'application/octet-stream';
-      const id = randomUUID();
-      const storagePath = `attachments/${key}/${id}-${filename}`;
-      await files.upload(storagePath, body, { overwrite: false });
-      const who = await resolveIdentity(req);
-      const inserted = await q(
-        `INSERT INTO app.ticket_attachments (id, ticket_key, filename, size, content_type, sha256, uploader, storage_path)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-        [id, key, filename, body.length, contentType, createHash('sha256').update(body).digest('hex'), who.email, storagePath],
-      );
-      await q(
-        `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
+  app.post(
+    '/api/tickets/:key/attachments',
+    express.raw({ type: '*/*', limit: MAX_ATTACHMENT_BYTES + 1_000_000 }),
+    async (req, res) => {
+      try {
+        const key = req.params.key;
+        const ticket = await ticketRow(key);
+        if (!ticket) {
+          res.status(404).json({ error: 'Ticket not found' });
+          return;
+        }
+        const rawName = typeof req.query.filename === 'string' ? req.query.filename : '';
+        if (!rawName) {
+          res.status(400).json({ error: 'A filename query parameter is required' });
+          return;
+        }
+        const body = req.body as Buffer;
+        const filename = sanitizeAttachmentName(rawName);
+        const rejection = attachmentRejection(filename, Buffer.isBuffer(body) ? body.length : 0);
+        if (rejection) {
+          res.status(rejection.startsWith('File is') ? 413 : 400).json({ error: rejection });
+          return;
+        }
+        const contentType =
+          typeof req.headers['x-attachment-content-type'] === 'string' &&
+          req.headers['x-attachment-content-type'].trim()
+            ? req.headers['x-attachment-content-type'].trim().slice(0, 120)
+            : 'application/octet-stream';
+        const requestedFolder = typeof req.query.folderId === 'string' ? req.query.folderId : '';
+        let folderId: string | null = null;
+        if (requestedFolder) {
+          const valid = (
+            await q('SELECT id FROM app.file_folders WHERE id=$1 AND engagement_id=$2', [
+              requestedFolder,
+              ticket.engagement_id,
+            ])
+          ).rows[0];
+          if (!valid) {
+            res.status(400).json({ error: 'Folder does not belong to this ticket engagement' });
+            return;
+          }
+          folderId = requestedFolder;
+        }
+        const id = randomUUID();
+        const storagePath = folderId
+          ? `files/${ticket.engagement_id}/${folderId}/${id}-${filename}`
+          : `attachments/${key}/${id}-${filename}`;
+        await files.upload(storagePath, body, { overwrite: false });
+        const who = await resolveIdentity(req);
+        const inserted = await q(
+          `INSERT INTO app.ticket_attachments (id, ticket_key, filename, size, content_type, sha256, uploader, storage_path, folder_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+          [
+            id,
+            key,
+            filename,
+            body.length,
+            contentType,
+            createHash('sha256').update(body).digest('hex'),
+            who.email,
+            storagePath,
+            folderId,
+          ]
+        );
+        await q(
+          `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
          VALUES ($1, 'YOU', $2, 'JUST NOW', $3, false)`,
-        [ticket.engagement_id, `${who.email} attached ${filename} (${Math.ceil(body.length / 1024)} KB) to ${key}.`, filename],
-      );
-      res.status(201).json(toEntry(inserted.rows[0]));
-    } catch (err) {
-      console.error('attachment upload failed:', err);
-      res.status(500).json({ error: 'Upload failed' });
+          [
+            ticket.engagement_id,
+            `${who.email} attached ${filename} (${Math.ceil(body.length / 1024)} KB) to ${key}.`,
+            filename,
+          ]
+        );
+        if (folderId) await runFileRules(q, ticket.engagement_id, folderId, id, filename, refineTicket);
+        res.status(201).json(toEntry(inserted.rows[0]));
+      } catch (err) {
+        console.error('attachment upload failed:', err);
+        res.status(500).json({ error: 'Upload failed' });
+      }
     }
-  });
+  );
 
   app.get('/api/tickets/:key/attachments/:id', async (req, res) => {
     try {
@@ -209,7 +273,10 @@ export function setupTicketAttachmentRoutes(
         return;
       }
       if (!(await requireLead(req, res, ticket.engagement_id))) return;
-      const { rows } = await q('SELECT * FROM app.ticket_attachments WHERE id = $1 AND ticket_key = $2', [req.params.id, key]);
+      const { rows } = await q('SELECT * FROM app.ticket_attachments WHERE id = $1 AND ticket_key = $2', [
+        req.params.id,
+        key,
+      ]);
       if (rows.length === 0) {
         res.status(404).json({ error: 'Attachment not found' });
         return;
@@ -225,7 +292,7 @@ export function setupTicketAttachmentRoutes(
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
          VALUES ($1, 'YOU', $2, 'JUST NOW', $3, false)`,
-        [ticket.engagement_id, `Removed attachment ${String(meta.filename)} from ${key}.`, String(meta.filename)],
+        [ticket.engagement_id, `Removed attachment ${String(meta.filename)} from ${key}.`, String(meta.filename)]
       );
       res.json({ ok: true });
     } catch (err) {

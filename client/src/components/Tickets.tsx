@@ -16,7 +16,7 @@ const th: React.CSSProperties = {
 };
 const td: React.CSSProperties = { borderBottom: '1px solid var(--line)', padding: '8px 10px' };
 
-const STATUS_FILTERS: ('All' | TicketStatus)[] = ['All', 'backlog', 'progress', 'review', 'done', 'proposed'];
+const STATUS_FILTERS: ('All' | TicketStatus)[] = ['All', 'backlog', 'progress', 'review', 'deploying', 'done', 'proposed'];
 
 /** Cross-project tickets list (/tickets); rows link to /tickets/:key. */
 export function Tickets({ onOpen }: { onOpen: (key: string, engagementId: string) => void }) {

@@ -2,8 +2,9 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getHarness, toolLabel } from '../devbox-runner/harnesses.mjs';
+import { getHarness, normalizeState, toolLabel } from '../devbox-runner/harnesses.mjs';
 import { HARNESS_PROVIDER, inferHarness } from '../server/routes/agents';
+import { inferHarness as inferRunnerHarness } from '../client/src/components/RunnerLogo';
 import {
   agentBrand,
   harnessBrand,
@@ -59,16 +60,27 @@ describe('runner harness adapters', () => {
   });
 
   it('resolves every documented harness id, case-insensitively', () => {
-    for (const id of ['claude', 'codex', 'generic', 'CODEX']) {
+    // Two adapter shapes now: process adapters are spawned, service adapters are
+    // bridged to over HTTP. `mode` is what runner.mjs branches on, and it is
+    // absent on the originals — so the default must stay 'process' forever.
+    for (const id of ['claude', 'codex', 'generic', 'omnigent', 'CODEX', 'OMNIGENT']) {
       const h = getHarness(id, GENERIC_ENV);
       expect(typeof h.name, id).toBe('string');
       expect(h.name.length, id).toBeGreaterThan(0);
-      expect(typeof h.bin, id).toBe('string');
-      expect(h.bin.length, id).toBeGreaterThan(0);
-      expect(Array.isArray(h.args), id).toBe(true);
-      expect(['stdin', 'arg'], id).toContain(h.promptVia);
-      expect(typeof h.parseLine, id).toBe('function');
       expect(typeof h.writeConfig, id).toBe('function');
+
+      if (h.mode === 'service') {
+        for (const method of ['submit', 'poll', 'fetchResult', 'cancel']) {
+          expect(typeof h[method], `${id}.${method}`).toBe('function');
+        }
+      } else {
+        expect(h.mode ?? 'process', id).toBe('process');
+        expect(typeof h.bin, id).toBe('string');
+        expect(h.bin.length, id).toBeGreaterThan(0);
+        expect(Array.isArray(h.args), id).toBe(true);
+        expect(['stdin', 'arg'], id).toContain(h.promptVia);
+        expect(typeof h.parseLine, id).toBe('function');
+      }
     }
   });
 
@@ -169,13 +181,62 @@ describe('runner harness adapters', () => {
       expect(path.isAbsolute(server.args[0])).toBe(true);
       expect(server.args[0].endsWith(path.join('mcp', 'server.mjs'))).toBe(true);
 
-      // Codex reads MCP from its global config and the generic agent has none;
-      // neither may leave anything behind in the workdir.
+      // Codex reads MCP from its global config, the generic agent has none, and
+      // Omnigent never runs here at all; none may leave anything in the workdir.
       getHarness('codex', {}).writeConfig(dir, 'mcp/server.mjs');
       getHarness('generic', GENERIC_ENV).writeConfig(dir, 'mcp/server.mjs');
+      getHarness('omnigent', {}).writeConfig(dir, 'mcp/server.mjs');
       expect(readdirSync(dir)).toEqual(['.mcp.json']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('exposes Omnigent as a service adapter with env-driven vendor config', () => {
+    // Every vendor-specific value is configuration, so confirming the real API
+    // (DAT-221 is blocked on vendor docs) stays a config change, not a rewrite.
+    const h = getHarness('omnigent', {});
+    expect(h.mode).toBe('service');
+    expect(h.config.baseUrl).toBe('https://api.omnigent.ai');
+    expect(h.config.pollMs).toBe(5000);
+    expect(h.config.apiKey).toBeNull();
+
+    const custom = getHarness('omnigent', {
+      OMNIGENT_BASE_URL: 'https://omnigent.internal/api/',
+      OMNIGENT_SUBMIT_PATH: '/v2/tasks',
+      OMNIGENT_POLL_MS: '2500',
+      OMNIGENT_API_KEY: 'sk-local-dev',
+    });
+    expect(custom.config.baseUrl).toBe('https://omnigent.internal/api'); // trailing slash trimmed
+    expect(custom.config.submitPath).toBe('/v2/tasks');
+    expect(custom.config.pollMs).toBe(2500);
+    expect(custom.config.apiKey).toBe('sk-local-dev');
+  });
+
+  it('makes the Omnigent stub fail loudly, pointing at the design doc', () => {
+    // Scaffolding must never look like a working runner: a silent no-op would
+    // complete a real ticket as an empty success.
+    const h = getHarness('omnigent', {});
+    for (const method of ['submit', 'poll', 'fetchResult', 'cancel']) {
+      expect(() => h[method]({}, {}), method).toThrow(/not implemented/i);
+      expect(() => h[method]({}, {}), method).toThrow(/omnigent-runner-architecture\.md/);
+    }
+  });
+
+  it('normalizes vendor run states and refuses to guess at unknown ones', () => {
+    expect(normalizeState('QUEUED')).toBe('running');
+    expect(normalizeState('in_progress')).toBe('running');
+    expect(normalizeState('completed')).toBe('succeeded');
+    expect(normalizeState('  Success ')).toBe('succeeded');
+    expect(normalizeState('errored')).toBe('failed');
+    expect(normalizeState('timed_out')).toBe('failed');
+    expect(normalizeState('canceled')).toBe('cancelled');
+
+    // Unknown must be null, not a guess: 'failed' would bin finished work and
+    // 'succeeded' would deliver an empty ticket. The poll loop keeps waiting and
+    // the MAX_RUN_MINUTES watchdog is the backstop.
+    for (const unknown of ['paused', 'needs_input', '', null, undefined]) {
+      expect(normalizeState(unknown), String(unknown)).toBeNull();
     }
   });
 
@@ -209,17 +270,26 @@ describe('server ↔ client harness tables', () => {
 
   it('only ever infers a harness id the map can render', () => {
     const known = Object.keys(HARNESS_PROVIDER);
-    for (const name of ['local-runner', 'devbox-codex-3', 'Gemini-Runner', 'gh-copilot-1', 'cursor-box', '']) {
+    for (const name of ['local-runner', 'devbox-codex-3', 'Gemini-Runner', 'gh-copilot-1', 'cursor-box', 'Omnigent-2', '']) {
       expect(known, name).toContain(inferHarness(name));
     }
     // Unnamed runners are Claude Code — the fleet default.
     expect(inferHarness('local-runner')).toBe('claude-code');
   });
 
+  it('infers the same harness server-side and client-side', () => {
+    // RunnerLogo.tsx keeps its own copy of inferHarness for runner avatars. The
+    // two drifting means a runner is branded one way on the /agents map and
+    // another on its ticket card — pin them instead of trusting the comment.
+    for (const name of ['local-runner', 'devbox-codex-3', 'Gemini-Runner', 'gh-copilot-1', 'cursor-box', 'omnigent-1', '']) {
+      expect(inferRunnerHarness(name), name).toBe(inferHarness(name));
+    }
+  });
+
   it('links runner harness names to the console ids they show up as', () => {
     // The runner's HARNESS values are short ('claude'); the console's ids are
     // brand ids ('claude-code'). This is the one place the two id spaces meet.
-    for (const [runner, consoleId] of Object.entries({ claude: 'claude-code', codex: 'codex' })) {
+    for (const [runner, consoleId] of Object.entries({ claude: 'claude-code', codex: 'codex', omnigent: 'omnigent' })) {
       expect(getHarness(runner, {}).name).toBe(runner);
       expect(inferHarness(`devbox-${runner}-1`)).toBe(consoleId);
       expect(Object.keys(HARNESS_PROVIDER)).toContain(consoleId);
