@@ -214,7 +214,10 @@ const MIGRATIONS = [
     rejected_by TEXT NOT NULL DEFAULT '',
     rejected_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )` },
-  { sql: `CREATE INDEX IF NOT EXISTS ticket_rejections_ticket_idx ON app.ticket_rejections (ticket_key, id)` },
+  // Same ownership split as the escalation indexes above: if boot created the
+  // table as the app SP, the dev role cannot index it. Warn, do not abort — an
+  // aborted run skips every later (required) migration.
+  { sql: `CREATE INDEX IF NOT EXISTS ticket_rejections_ticket_idx ON app.ticket_rejections (ticket_key, id)`, bestEffort: true },
   { sql: `CREATE TABLE IF NOT EXISTS app.ticket_attachments (
     id TEXT PRIMARY KEY,
     ticket_key TEXT NOT NULL REFERENCES app.tickets(key) ON DELETE CASCADE,
