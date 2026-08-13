@@ -6,6 +6,7 @@ import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, 
 import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { dropBoardTicket, laneOf } from '../lib/board-order';
+import { needsEstimate } from '../lib/ticket-hours';
 import { Analytics } from './Analytics';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
@@ -380,7 +381,12 @@ export function Workspace({
         >
           {runner !== null ? runnerBrand(runner).mark(12) : initials(t.assignee)}
         </span>
-        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{t.estHours != null ? fmtDuration(t.estHours) : t.est}</span>
+        <span
+          title={needsEstimate(t) ? 'No agent estimate yet — tagged needs-estimate-review for backfill' : undefined}
+          style={{ ...mono(400, 10), color: needsEstimate(t) ? 'var(--warn)' : 'var(--tx3)' }}
+        >
+          {needsEstimate(t) ? 'NO EST' : t.estHours != null ? fmtDuration(t.estHours) : t.est}
+        </span>
         <span style={{ ...mono(400, 10), color: 'var(--tx3)', marginLeft: 'auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>
           {t.sources[0]?.type ?? ''}
         </span>
@@ -1234,7 +1240,12 @@ export function Workspace({
                             </span>
                           </button>
                         </td>
-                        <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>{t.estHours != null ? fmtDuration(t.estHours) : t.est}</td>
+                        <td
+                          style={{ ...tdBase, ...mono(400, 11), color: needsEstimate(t) ? 'var(--warn)' : 'var(--tx2)' }}
+                          title={needsEstimate(t) ? 'No agent estimate yet — tagged needs-estimate-review for backfill' : undefined}
+                        >
+                          {needsEstimate(t) ? 'NO EST' : t.estHours != null ? fmtDuration(t.estHours) : t.est}
+                        </td>
                         <td style={{ ...tdBase, fontSize: 12, color: 'var(--tx2)', whiteSpace: 'nowrap' }}>{t.workstream}</td>
                         <td style={tdBase}>
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 200 }}>
@@ -1831,14 +1842,18 @@ function NewTicketModal({
 }: {
   lead: boolean;
   onClose: () => void;
-  onCreate: (payload: { description: string; estHours: number; humanEstHours: number }, deploy: boolean) => void;
+  onCreate: (payload: { description: string; estHours?: number; humanEstHours?: number }, deploy: boolean) => void;
 }) {
   const [description, setDescription] = useState('');
-  // DAT-195: both time estimates are mandatory — creation is blocked until
-  // each holds a positive number of hours. Inline errors appear once a field
-  // has been visited, so an untouched form isn't covered in red.
+  // DAT-207: hours are the ticket agent's job, not the creator's — both
+  // fields are optional overrides and creation is never blocked on them.
+  // Typing a bad number still shows an inline error, and because the API
+  // takes the pair or neither, filling one asks for the other.
   const [estHours, setEstHours] = useState('');
   const [humanEstHours, setHumanEstHours] = useState('');
+  // Live Shift tracking so the shortcut hints show which action Ctrl+Enter
+  // will actually fire (leads only — Shift is a no-op for everyone else).
+  const [shiftHeld, setShiftHeld] = useState(false);
   const [estTouched, setEstTouched] = useState({ agent: false, human: false });
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const deployButtonRef = useRef<HTMLButtonElement>(null);
@@ -1849,15 +1864,23 @@ function NewTicketModal({
   };
   const estVal = parseHours(estHours, 400);
   const humanVal = parseHours(humanEstHours, 999);
-  const valid = Boolean(description.trim()) && estVal != null && humanVal != null;
+  const estTyped = estHours.trim() !== '';
+  const humanTyped = humanEstHours.trim() !== '';
+  // Only a half-filled or out-of-range override blocks the button — an
+  // untouched pair means "let the agent estimate it".
+  const estOverrideOk =
+    (!estTyped && !humanTyped) || (estVal != null && humanVal != null);
+  const valid = Boolean(description.trim()) && estOverrideOk;
 
   const create = (deploy: boolean) => {
-    if (!description.trim() || estVal == null || humanVal == null) {
-      // Blocked submit surfaces the inline errors on every missing field.
-      setEstTouched({ agent: true, human: true });
-      return;
-    }
-    onCreate({ description: description.trim(), estHours: estVal, humanEstHours: humanVal }, deploy);
+    if (!valid) return;
+    // Omitting the pair entirely is what hands the estimate to the agent.
+    onCreate(
+      estVal != null && humanVal != null
+        ? { description: description.trim(), estHours: estVal, humanEstHours: humanVal }
+        : { description: description.trim() },
+      deploy,
+    );
   };
 
   // Kbd chip inside the action buttons — same shape as the header's Ctrl+K
@@ -1952,24 +1975,25 @@ function NewTicketModal({
           <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {(
               [
-                { id: 'agent' as const, label: '◆ AGENT EST (HOURS)', value: estHours, set: setEstHours, ok: estVal != null, max: 400, hint: 'Expected Claude Code agent time, e.g. 0.5' },
-                { id: 'human' as const, label: 'HUMAN DEV EST (HOURS)', value: humanEstHours, set: setHumanEstHours, ok: humanVal != null, max: 999, hint: 'Time a human developer would need, e.g. 4' },
+                { id: 'agent' as const, label: '◆ AGENT EST (HOURS)', value: estHours, set: setEstHours, ok: estVal != null, other: humanTyped, max: 400, hint: 'Leave blank — the ticket agent estimates it' },
+                { id: 'human' as const, label: 'HUMAN DEV EST (HOURS)', value: humanEstHours, set: setHumanEstHours, ok: humanVal != null, other: estTyped, max: 999, hint: 'Leave blank — the ticket agent estimates it' },
               ]
             ).map((f) => {
-              const showError = !f.ok && (estTouched[f.id] || f.value.trim() !== '');
+              const typed = f.value.trim() !== '';
+              // Two ways an override is wrong: out of range, or half of a
+              // pair the API will not accept on its own.
+              const showError = typed ? !f.ok : f.other;
               return (
                 <div key={f.id} style={{ flex: 1 }}>
                   <div style={{ ...mono(400, 9), color: f.id === 'agent' ? 'var(--agent)' : 'var(--tx3)', letterSpacing: '.08em', marginBottom: 5 }}>
-                    {f.label} <span style={{ color: 'var(--bad)' }}>*</span>
+                    {f.label} <span style={{ color: 'var(--tx3)' }}>(OPTIONAL)</span>
                   </div>
                   <input
                     type="number"
                     min={0.1}
                     step={0.1}
-                    required
                     value={f.value}
                     onChange={(e) => f.set(e.target.value)}
-                    onBlur={() => setEstTouched((t) => ({ ...t, [f.id]: true }))}
                     placeholder={f.hint}
                     title={f.hint}
                     style={{
@@ -1985,11 +2009,17 @@ function NewTicketModal({
                     }}
                   />
                   {showError && (
-                    <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 4 }}>Required — enter hours between 0 and {f.max}</div>
+                    <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 4 }}>
+                      {typed ? `Enter hours between 0 and ${f.max}` : 'Set both estimates, or clear both and let the agent estimate'}
+                    </div>
                   )}
                 </div>
               );
             })}
+          </div>
+          <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', marginTop: 9, lineHeight: 1.5 }}>
+            LEAVE BOTH BLANK AND THE TICKET AGENT ESTIMATES THE WORK — ANYTHING IT CAN&apos;T ESTIMATE IS TAGGED
+            NEEDS-ESTIMATE-REVIEW
           </div>
         </div>
         <div style={{ padding: '11px 18px 13px', borderTop: '1px solid var(--line)' }}>

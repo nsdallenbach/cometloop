@@ -13,6 +13,14 @@ import { setupContextFileRoutes } from './context-files';
 import { ATTACHMENT_SCHEMA_SQL, deleteAttachmentFiles, setupTicketAttachmentRoutes } from './ticket-attachments';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
 import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
+import {
+  NEEDS_ESTIMATE_TAG,
+  PROVISIONAL_EST_HOURS,
+  PROVISIONAL_HUMAN_EST_HOURS,
+  clearNeedsEstimateFlag,
+  ensureTicketHours,
+  setupTicketHoursRoutes,
+} from './ticket-hours';
 import { invokeModel, setupLlmHealthRoutes } from './llm-health';
 import { normalizeTags } from './ticket-tags';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
@@ -527,13 +535,22 @@ export const CreateTicketBody = z
     assignee: z.string().max(80).optional(),
     est: z.string().max(16).optional(),
     workstream: z.string().max(80).optional(),
-    // DAT-195: both time estimates are mandatory on every ticket.
-    estHours: z.number().gt(0).max(400),
-    humanEstHours: z.number().gt(0).max(999),
+    // DAT-207: estimates are the ticket agent's job, so they are optional on
+    // the wire — omit them and the agent fills them in at creation (see
+    // ticket-hours.ts). Supplied values are still honoured verbatim, which is
+    // why they stay range-checked and can never be an explicit null.
+    estHours: z.number().gt(0).max(400).optional(),
+    humanEstHours: z.number().gt(0).max(999).optional(),
   })
-  .refine((b) => b.title?.trim() || b.description?.trim(), { message: 'A title or description is required' });
+  .refine((b) => b.title?.trim() || b.description?.trim(), { message: 'A title or description is required' })
+  // All-or-nothing: a lone figure would either be clobbered by the agent's
+  // pair or leave a half-human/half-model estimate nobody can interpret.
+  .refine((b) => (b.estHours == null) === (b.humanEstHours == null), {
+    message: 'Supply both estimates or neither',
+    path: ['estHours'],
+  });
 
-/** True when any validation issue is about the mandatory estimate fields. */
+/** True when any validation issue is about the estimate fields. */
 function hasEstimateIssue(error: z.ZodError): boolean {
   return error.issues.some((i) => i.path[0] === 'estHours' || i.path[0] === 'humanEstHours');
 }
@@ -879,6 +896,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           // Ready for review: log the actual LLM working time against the estimate.
           void recordActualHours(q, updated.key, 'status-patch');
         }
+        if (parsed.data.estHours !== undefined || parsed.data.humanEstHours !== undefined) {
+          // DAT-207: hours entered by hand resolve the needs-estimate flag as
+          // surely as the agent's do — otherwise the card keeps reading NO EST
+          // and the sweep re-estimates over what the lead just typed.
+          await clearNeedsEstimateFlag(q, updated.key);
+        }
         if (status !== undefined && before) {
           await recordTicketEvent(q, updated.key, before.engagementId, before.status, status);
         }
@@ -1023,7 +1046,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       if (!parsed.success) {
         res.status(400).json({
           error: hasEstimateIssue(parsed.error)
-            ? 'Both time estimates are required — estHours (agent) and humanEstHours (human dev) must be positive numbers'
+            ? 'Time estimates are optional — the ticket agent fills them in — but estHours and humanEstHours must be supplied together, both positive numbers'
             : 'A ticket title or description is required',
         });
         return;
@@ -1052,9 +1075,14 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         let description = parsed.data.description?.trim() ?? '';
         let title = parsed.data.title?.trim() ?? '';
         let ac: string[] = [];
-        // DAT-195: the creator's estimates are mandatory in the body and are
-        // the values of record — the planning model never overrides them.
+        // DAT-207: estimates are optional on the wire. Supplied ones are the
+        // values of record (the model never overrides them, per DAT-195);
+        // when the caller omits them — the console's New Ticket modal, the
+        // MCP create_ticket tool, any direct API call — the row lands on the
+        // NOT NULL columns with provisional hours plus the needs-estimate
+        // flag, and the ticket agent replaces both below.
         const { estHours, humanEstHours } = parsed.data;
+        const agentEstimates = estHours == null || humanEstHours == null;
         let roadmapItem: string | null = null;
         const author = requestAuthor(req);
         const chatbox = !title;
@@ -1066,20 +1094,23 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         // the board so its link/consolidate tool calls have a subject. The
         // refined plan folds into the row right after, within this request.
         const inserted = await q(
-          `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, est_hours, human_est_hours, roadmap_item)
-           VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,$9,false,$10,$11,$12) RETURNING *`,
+          `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, tags, est_hours, human_est_hours, roadmap_item)
+           VALUES ($1,$2,$3,'backlog',$4,$5,$6,false,$7,$8,$9,false,$10,$11,$12,$13) RETURNING *`,
           [
             key,
             engId,
             title.trim(),
             assignee?.trim() || '—',
-            est?.trim() || `${estHours}h`,
+            est?.trim() || (estHours != null ? `${estHours}h` : '—'),
             workstream?.trim() ?? '',
             JSON.stringify([{ type: 'MANUAL', label: `Created in console by ${author}` }]),
             description,
             JSON.stringify(ac),
-            estHours,
-            humanEstHours,
+            // The flag goes on before the row exists, so a ticket is never
+            // silently incomplete even if the process dies mid-request.
+            JSON.stringify(agentEstimates ? [NEEDS_ESTIMATE_TAG] : []),
+            estHours ?? PROVISIONAL_EST_HOURS,
+            humanEstHours ?? PROVISIONAL_HUMAN_EST_HOURS,
             roadmapItem,
           ],
         );
@@ -1113,7 +1144,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           const updated = await q(
             `UPDATE app.tickets SET title = $2, description = $3, ac = $4, est = $5, roadmap_item = $6
              WHERE key = $1 RETURNING *`,
-            [key, title.trim(), description, JSON.stringify(ac), est?.trim() || `${estHours}h`, roadmapItem],
+            [key, title.trim(), description, JSON.stringify(ac), est?.trim() || (estHours != null ? `${estHours}h` : '—'), roadmapItem],
           );
           row = updated.rows[0] ?? row;
           console.log(
@@ -1121,10 +1152,26 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           );
         }
         console.log(`[api] created ticket ${key} in ${engId} (${ac.length} AC)`);
-        // No background estimation at creation since DAT-195: both estimates
-        // arrive with the request and the model must not clobber human input.
-        // Content-based re-estimation still runs on /refine and the DAT-197
-        // estimate backfill endpoint.
+        // DAT-207: hours the caller did not supply are the ticket agent's to
+        // fill in — awaited (not backgrounded) so every path, the MCP tool
+        // included, gets real hours back in the create response, and so the
+        // flag tag is resolved before anyone reads the row. It runs after the
+        // chatbox refine so the estimate sees the planned scope, not the raw
+        // request. Never throws: a model outage leaves the ticket flagged.
+        if (agentEstimates) {
+          const hours = await ensureTicketHours(q, appkit.serving.bind(appkit), {
+            key,
+            engagementId: engId,
+            title: title.trim(),
+            description,
+            ac,
+          });
+          const refreshed = (await q('SELECT * FROM app.tickets WHERE key = $1', [key])).rows[0];
+          if (refreshed) row = refreshed;
+          if (hours.status === 'flagged') {
+            console.warn(`[api] ${key} created without hours — tagged ${NEEDS_ESTIMATE_TAG} for backfill`);
+          }
+        }
         await recordTicketEvent(q, key, engId, null, 'backlog');
         const who = assignee?.trim();
         await q(
@@ -1736,6 +1783,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupCoordinationRoutes(app, q);
     setupPrConflictRoutes(app, q);
     setupEstimateRoutes(app, q, appkit.serving.bind(appkit), requireLead);
+    setupTicketHoursRoutes(app, q, appkit.serving.bind(appkit), requireLead);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
     setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);

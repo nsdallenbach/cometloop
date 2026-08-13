@@ -260,15 +260,16 @@ export const api = {
 
   async createTicket(
     engId: string,
-    // DAT-195: both time estimates are mandatory on creation.
+    // DAT-207: estimates are optional — the ticket agent fills them in at
+    // creation. Supply both or neither; the API rejects a lone figure.
     payload: {
       title?: string;
       description?: string;
       assignee?: string;
       est?: string;
       workstream?: string;
-      estHours: number;
-      humanEstHours: number;
+      estHours?: number;
+      humanEstHours?: number;
     },
   ): Promise<Ticket> {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));

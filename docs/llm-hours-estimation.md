@@ -1,16 +1,16 @@
-# LLM-hours estimation (DAT-120, DAT-175, DAT-195)
+# LLM-hours estimation (DAT-120, DAT-175, DAT-195, DAT-207)
 
 Every ticket gets an estimate of **actual LLM working time in hours** (one
 decimal place, e.g. `2.5h`). Model-produced estimates come from the Databricks
 model serving endpoint the console already uses for planning
 (`serving('default')`, bound to `DATABRICKS_SERVING_ENDPOINT_NAME`).
 
-Since DAT-195 both `tickets.est_hours` and `tickets.human_est_hours` are
-**mandatory** (`NOT NULL`, enforced by the create/patch endpoints and the UI):
-creation requires caller-supplied values for both, estimates can be revised
-but never cleared, and tickets that predated the rule were backfilled by
-`scripts/dev-migrate.cjs` (hour-suffixed `est` labels parsed, everything else
-defaulted to 1h/4h and tagged `needs-estimate-review`).
+Both `tickets.est_hours` and `tickets.human_est_hours` are **mandatory on the
+row** (`NOT NULL` since DAT-195) but **not on the caller**: since DAT-207 the
+ticket agent populates them and the human never has to. Estimates can be
+revised but never cleared, and tickets that predated the rule were backfilled
+by `scripts/dev-migrate.cjs` (hour-suffixed `est` labels parsed, everything
+else defaulted to 1h/4h and tagged `needs-estimate-review`).
 
 Since DAT-175 the same model call also returns a **human-developer estimate**
 (`tickets.human_est_hours`) — an independently reasoned figure for the same
@@ -25,16 +25,23 @@ are measured from agent runs.
 
 ## Flow
 
-1. **Estimates at creation are caller-supplied (DAT-195)** — ticket creation
-   (`POST /api/engagements/:id/tickets`) requires `estHours` and
-   `humanEstHours` (> 0) in the body; the console's New Ticket modal and the
-   stdio MCP `create_ticket` tool both collect them. The model no longer
-   estimates at creation — human-entered figures must not be clobbered. A
-   **Refine** re-plans the scope, so it does re-estimate (`kind = 'revised'`,
-   written to `tickets.est` / `tickets.est_hours` with a full record — raw
-   model hours, calibration applied, confidence, rationale — appended to
-   `app.ticket_estimates`), as does the DAT-197 estimate backfill endpoint
-   (`POST /api/engagements/:id/estimates/backfill`).
+1. **The agent estimates at creation (DAT-207)** — `estHours` and
+   `humanEstHours` are optional on `POST /api/engagements/:id/tickets`
+   (supply both or neither; a lone figure is rejected). When they are omitted
+   — the console's New Ticket modal and the stdio MCP `create_ticket` tool
+   both omit them by default — the row lands with provisional 1h/4h and the
+   `needs-estimate-review` tag, then `ensureTicketHours`
+   (`server/routes/ticket-hours.ts`) runs the estimation agent **within the
+   request** and clears the tag once real hours exist. Because every create
+   path (app, MCP, direct API) goes through that one endpoint, they all get
+   the same population and the same validation. Caller-supplied figures are
+   still the values of record and skip the agent entirely — DAT-195's
+   "never clobber human input" rule holds for callers that do have numbers.
+   A **Refine** re-plans the scope, so it does re-estimate
+   (`kind = 'revised'`, written to `tickets.est` / `tickets.est_hours` with a
+   full record — raw model hours, calibration applied, confidence, rationale
+   — appended to `app.ticket_estimates`), as does the DAT-197 estimate
+   backfill endpoint (`POST /api/engagements/:id/estimates/backfill`).
 2. **Log actuals at ready-for-review** — whenever a ticket transitions into
    Review (agent `complete` with outcome `done`, the board's queue/complete
    drag, a status `PATCH`, or a bulk move), the actual agent time is computed
@@ -49,6 +56,22 @@ are measured from agent runs.
    estimate-vs-actual pairs are also included in the prompt as few-shot
    examples, so the model grounds new estimates in the project's real
    velocity.
+
+## Missing-hours validation (DAT-207)
+
+A ticket is never persisted silently incomplete. `needs-estimate-review` is
+the single visible flag: it goes on at insert whenever the caller supplied no
+estimates, comes off only when the agent produced real hours, and shows up as
+`NO EST` in warn colour on the board card and the ticket table plus a tag chip
+in the drawer. A failed estimation also logs `[hours]` and posts an engagement
+feed item.
+
+- `GET /api/engagements/:id/tickets/missing-hours` — the standing check:
+  every non-dismissed ticket whose hours are absent, non-positive, or still
+  flagged.
+- `POST /api/engagements/:id/tickets/missing-hours/backfill` (lead) — re-runs
+  the same populate/validate routine over that list in the background, for
+  tickets that landed while the serving endpoint was down.
 
 ## Accuracy endpoint
 

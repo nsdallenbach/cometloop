@@ -179,7 +179,7 @@ tool(
 
 tool(
   'create_ticket',
-  'Create a ticket in an engagement backlog. Both time estimates are mandatory (DAT-195). Returns the new key.',
+  'Create a ticket in an engagement backlog. Time estimates are optional — omit them and the ticket agent estimates the work (DAT-207); a ticket it cannot estimate comes back tagged needs-estimate-review. Returns the new key.',
   {
     engagement_id: z.string(),
     title: z.string().min(3),
@@ -187,14 +187,28 @@ tool(
     assignee: z.string().optional(),
     est: z.string().optional().describe('Estimate label, e.g. "3d"'),
     workstream: z.string().optional(),
-    est_hours: z.number().gt(0).max(400).describe('Agent (LLM) time estimate in hours — required'),
-    human_est_hours: z.number().gt(0).max(999).describe('Human developer time estimate in hours — required'),
+    est_hours: z
+      .number()
+      .gt(0)
+      .max(400)
+      .optional()
+      .describe('Agent (LLM) time estimate in hours — optional; the ticket agent estimates when omitted'),
+    human_est_hours: z
+      .number()
+      .gt(0)
+      .max(999)
+      .optional()
+      .describe('Human developer time estimate in hours — optional; supply it only together with est_hours'),
   },
   async ({ engagement_id, est_hours, human_est_hours, ...payload }) => {
+    // Pass through only what was supplied and let the API's both-or-neither
+    // rule be the single source of truth on a lone figure.
+    const estimates = {};
+    if (est_hours != null) estimates.estHours = est_hours;
+    if (human_est_hours != null) estimates.humanEstHours = human_est_hours;
     const t = await call('POST', `/api/engagements/${encodeURIComponent(engagement_id)}/tickets`, {
       ...payload,
-      estHours: est_hours,
-      humanEstHours: human_est_hours,
+      ...estimates,
     });
     return trimTicket(t);
   },
