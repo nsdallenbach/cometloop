@@ -9,6 +9,7 @@ import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
+import { humanDuration, recordRunnerPoll } from './fleet';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -50,6 +51,9 @@ export const AGENT_SCHEMA_SQL = [
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS last_note TEXT`,
   // Runner-raised warning (reason text); NULL when nothing needs attention.
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS flag TEXT`,
+  // How many times the fleet watch has released this task from a dead runner
+  // (DAT-224) — past MAX_RECLAIMS it fails for a human instead of cycling.
+  `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS reclaims INT NOT NULL DEFAULT 0`,
 ];
 
 /**
@@ -61,6 +65,35 @@ export const AGENT_SCHEMA_SQL = [
  * several top-priority items.
  */
 export const TOP_PRIORITY = 1000;
+
+/**
+ * A pre-DAT-224 runner long-polls without identifying itself, so it cannot be
+ * counted as online while idle and the fleet looks emptier than it is. Say so
+ * once per process rather than on every poll — it is an upgrade nudge, not an
+ * error.
+ */
+let warnedAnonymousPoll = false;
+function warnAnonymousPoll(): void {
+  if (warnedAnonymousPoll) return;
+  warnedAnonymousPoll = true;
+  console.warn('[agent] a runner is long-polling without an agent id — update devbox-runner so its liveness is visible to the fleet monitor');
+}
+
+/**
+ * Why a ticket cannot be queued right now, in terms a lead can act on: which
+ * run holds it, who claimed it, how long that runner has been silent, and the
+ * one action that clears it.
+ */
+export function blockedByRun(active: Record<string, unknown>, now: number = Date.now()): string {
+  const state = typeof active.state === 'string' ? active.state : 'active';
+  if (state === 'queued') return 'This ticket is already queued for agent work';
+  const agent = typeof active.agent === 'string' && active.agent ? active.agent : 'a runner';
+  const id = typeof active.id === 'number' ? String(active.id) : typeof active.id === 'string' ? active.id : '?';
+  const hb = active.last_heartbeat;
+  const beat = hb instanceof Date ? hb.getTime() : typeof hb === 'string' ? Date.parse(hb) : Number.NaN;
+  const silence = Number.isFinite(beat) ? `, last heartbeat ${humanDuration(now - beat)} ago` : ', never heartbeated';
+  return `${agent} is already working this ticket (run ${id}, state '${state}'${silence}). Recall it first (remove the card from the agent lane) to queue a fresh run.`;
+}
 
 const QueueBody = z.object({
   instructions: z.string().max(8000).optional(),
@@ -301,10 +334,19 @@ export function setupAgentRoutes(
         return;
       }
       const active = (
-        await q(`SELECT id FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`, [key])
+        await q(
+          `SELECT id, state, agent, last_heartbeat FROM app.agent_tasks
+           WHERE ticket_key = $1 AND state IN ('queued','claimed','working')`,
+          [key],
+        )
       ).rows[0];
       if (active) {
-        res.status(409).json({ error: 'This ticket is already queued for agent work' });
+        // Say which run is in the way and how to clear it. A run held by a
+        // runner that has since died is invisible in the queue listing, so
+        // "already queued" alone left leads with no way to discover the block
+        // (DAT-224) — the fleet watch reclaims these, but the answer to
+        // "why can't I queue this?" must stand on its own.
+        res.status(409).json({ error: blockedByRun(active) });
         return;
       }
       const inserted = await q(
@@ -415,10 +457,18 @@ export function setupAgentRoutes(
    * Long-poll pickup: hold the request up to ~55s and answer the moment
    * matching work is queued. Runners loop on this for push-like latency
    * with outbound-only connections (no ingress, no registration).
+   *
+   * The optional `agent` parameter is the fleet liveness ping (DAT-224): an
+   * idle-but-alive runner reaches this endpoint every ~70s anyway, so stamping
+   * it here is what separates 'idle' from 'the process exited hours ago'
+   * without a single extra request.
    */
   app.get('/api/agent/work/wait', async (req, res) => {
     try {
       const engagement = typeof req.query.engagement === 'string' ? req.query.engagement : null;
+      const agent = typeof req.query.agent === 'string' ? req.query.agent : null;
+      if (agent) await recordRunnerPoll(q, agent, engagement, 'poll');
+      else warnAnonymousPoll();
       const deadline = Date.now() + 55_000;
       for (;;) {
         const params: unknown[] = [];
@@ -449,6 +499,7 @@ export function setupAgentRoutes(
     try {
       const engagement = typeof req.query.engagement === 'string' ? req.query.engagement : null;
       const agent = typeof req.query.agent === 'string' ? req.query.agent : null;
+      if (agent) await recordRunnerPoll(q, agent, engagement, 'poll');
       const params: unknown[] = [];
       let where = `state = 'queued'`;
       if (engagement) {
@@ -476,6 +527,7 @@ export function setupAgentRoutes(
     }
     try {
       const { agent, engagement, ticket } = parsed.data;
+      await recordRunnerPoll(q, agent, engagement ?? null, 'claim');
       const identity = await resolveIdentity(req);
       const filters: string[] = [`state = 'queued'`];
       const params: unknown[] = [agent, identity.email];
@@ -601,6 +653,7 @@ export function setupAgentRoutes(
       console.log(
         `[agent] progress on task ${String(task.id)} (${String(task.ticket_key)}) from ${parsed.data.agent} — note ${parsed.data.note.trim().length} chars, state '${String(task.state)}' → 'working'`,
       );
+      await recordRunnerPoll(q, parsed.data.agent, null, 'heartbeat');
       await q(`UPDATE app.agent_tasks SET state = 'working', last_note = $2, last_heartbeat = NOW(), updated_at = NOW() WHERE id = $1`, [
         task.id,
         parsed.data.note.trim(),
@@ -620,7 +673,9 @@ export function setupAgentRoutes(
   /**
    * Silent liveness ping: updates last_heartbeat without posting a comment.
    * Runners call this every couple of minutes during long Claude runs so the
-   * board's STALLED detector stays honest without spamming the ticket.
+   * board's STALLED detector stays honest without spamming the ticket. It also
+   * stamps fleet liveness — a runner deep in a long task is not long-polling
+   * for new work, so these heartbeats are the only proof it is still up.
    */
   app.post('/api/agent/work/:id/heartbeat', async (req, res) => {
     const parsed = z.object({ agent: z.string().min(1).max(80) }).safeParse(req.body);
@@ -640,6 +695,7 @@ export function setupAgentRoutes(
         res.status(404).json({ error: 'No active task with this id for this agent' });
         return;
       }
+      await recordRunnerPoll(q, parsed.data.agent, null, 'heartbeat');
       res.json({ ok: true });
     } catch (err) {
       console.error('heartbeat failed:', err);

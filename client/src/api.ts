@@ -13,6 +13,7 @@ import type {
   EngagementDetail,
   EscalationStage,
   FeedItem,
+  FleetStatus,
   Me,
   ParsedPlan,
   Phase,
@@ -229,9 +230,17 @@ export const api = {
   },
 
   async detail(engId: string): Promise<EngagementDetail> {
-    const d = await http<{ tickets: Row[]; sources: Row[]; feed: Row[]; team: Row[]; suggestions: Row[]; agentTasks?: Row[] }>(
-      `/api/engagements/${engId}/detail`,
-    );
+    // fleet arrives already camelCased (built server-side, not a row) — pass
+    // it through, and treat a missing/failed check as "nothing to warn about".
+    const d = await http<{
+      tickets: Row[];
+      sources: Row[];
+      feed: Row[];
+      team: Row[];
+      suggestions: Row[];
+      agentTasks?: Row[];
+      fleet?: FleetStatus | null;
+    }>(`/api/engagements/${engId}/detail`);
     return {
       tickets: d.tickets.map(mapTicket),
       sources: d.sources.map(mapSource),
@@ -239,6 +248,7 @@ export const api = {
       team: d.team.map(mapTeam),
       suggestions: d.suggestions.map(mapSuggestion),
       agentTasks: (d.agentTasks ?? []).map(mapAgentTask),
+      fleet: d.fleet ?? null,
     };
   },
 

@@ -116,7 +116,15 @@ that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
 
 - Lifecycle: long-poll `/api/agent/work/wait` → atomic claim → work →
   complete `done` (→ Review) or `failed` (→ Backlog). Never leave a claim
-  hanging — that is what the STALLED detector exists to catch.
+  hanging — that is what the STALLED detector exists to catch. A claim that
+  goes silent for 15 minutes is reclaimed by the fleet watch and requeued for
+  someone else; treat a `404` from heartbeat or complete as "this run is no
+  longer mine" and abandon it, which the bundled runner already does.
+- **Identify yourself on the poll** (`/api/agent/work/wait?agent=<name>`).
+  Runner liveness is that stamp: no poll inside the grace window means
+  `offline`, not `idle`, and queued work with zero online runners raises
+  FLEET DOWN on the board. A runner that polls anonymously looks dead while
+  idle — and, worse, a dead fleet looks fine (DAT-224).
 - **Be chatty**: progress note at claim, at plan, and before pushing;
   silent heartbeat at least every 2 minutes during long runs; raise a flag
   (`/flag`) when stuck instead of guessing or dying quietly.

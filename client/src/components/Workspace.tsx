@@ -166,6 +166,11 @@ export function Workspace({
     () => new Set([...laneTasks.running, ...laneTasks.queued].map((a) => a.ticketKey)),
     [laneTasks],
   );
+  // Fleet liveness (DAT-224): queued work with nothing online to claim it. The
+  // server decides — `down` already accounts for the wait threshold — so the
+  // board just renders the warning it is handed.
+  const fleet = detail?.fleet ?? null;
+  const fleetDown = fleet?.down === true;
   /**
    * A lane's cards in render order — shared by the kanban render and the
    * drag engine so drop slots always line up with what's on screen. No In
@@ -729,15 +734,15 @@ export function Workspace({
       <span title={flagged ? at.flag ?? '' : 'No heartbeat for over 3 minutes'} style={{ ...mono(600, 11), color: 'var(--warn)', flex: 'none', lineHeight: 1 }}>⚠</span>
     ) : (
       <span
-        title={running ? 'Runner active' : 'Waiting for a runner'}
+        title={running ? 'Runner active' : fleetDown ? 'Nothing is online to claim this' : 'Waiting for a runner'}
         style={{
           width: 9,
           height: 9,
           flex: 'none',
           display: 'inline-block',
           borderRadius: '50%',
-          border: `2px solid ${running ? 'var(--ok)' : 'var(--tx3)'}`,
-          borderTopColor: running ? 'transparent' : 'var(--tx3)',
+          border: `2px solid ${running ? 'var(--ok)' : fleetDown ? 'var(--bad)' : 'var(--tx3)'}`,
+          borderTopColor: running ? 'transparent' : fleetDown ? 'var(--bad)' : 'var(--tx3)',
           animation: running ? 'eec-spin .8s linear infinite' : 'none',
         }}
       />
@@ -781,7 +786,18 @@ export function Workspace({
               {flagged ? 'NEEDS ATTENTION' : stale ? 'STALLED' : at.state === 'working' ? 'WORKING' : 'CLAIMED'}
             </span>
           ) : (
-            <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '1px 5px' }}>◇ #{qPos} IN QUEUE</span>
+            <span
+              title={fleetDown ? (fleet?.message ?? '') : undefined}
+              style={{
+                ...mono(500, 9),
+                border: `1px dashed ${fleetDown ? 'var(--bad)' : 'var(--agent)'}`,
+                color: fleetDown ? 'var(--bad)' : 'var(--agent)',
+                borderRadius: 2,
+                padding: '1px 5px',
+              }}
+            >
+              ◇ #{qPos} {fleetDown ? 'QUEUED — NO RUNNER' : 'IN QUEUE'}
+            </span>
           )}
           {lead && !running && (
             <button
@@ -803,6 +819,14 @@ export function Workspace({
           )}
         </div>
         <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35 }}>{t?.title ?? at.ticketKey}</div>
+        {/* A task the fleet watch released from a dead runner (DAT-224) keeps
+            its note — otherwise it would silently reappear in the queue with
+            no trace of the run that died holding it. */}
+        {!running && at.lastNote && (
+          <div style={{ marginTop: 5, fontSize: 11, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            ⚠ {at.lastNote}
+          </div>
+        )}
         {!running && at.instructions && (
           <div style={{ marginTop: 5, fontSize: 11, color: 'var(--tx3)', lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {at.instructions}
@@ -882,6 +906,14 @@ export function Workspace({
       <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderBottom: '1px solid var(--line)' }}>
         <span style={{ ...mono(500, 10), letterSpacing: '.1em', color: 'var(--agent)' }}>◆ DEPLOY TO AGENT</span>
         <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{laneTasks.running.length + laneTasks.queued.length}</span>
+        {fleetDown && (
+          <span
+            title={fleet?.message ?? ''}
+            style={{ marginLeft: 'auto', ...mono(600, 9), background: 'var(--bad)', color: '#fff', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}
+          >
+            ⚠ NO RUNNER ONLINE
+          </span>
+        )}
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
         {laneTasks.running.map((a) => agentCard(a, null))}
@@ -1069,6 +1101,32 @@ export function Workspace({
               </>
             )}
           </div>
+
+          {/* Zero runners online while work is queued — the outage the board
+              used to hide behind a lane full of patiently waiting cards. */}
+          {fleetDown && fleet && (
+            <div
+              role="status"
+              style={{
+                flex: 'none',
+                margin: '0 22px 10px',
+                border: '1px solid var(--bad)',
+                borderRadius: 4,
+                background: 'var(--bg2)',
+                padding: '9px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                flexWrap: 'wrap',
+              }}
+            >
+              <span style={{ ...mono(600, 10), color: 'var(--bad)', letterSpacing: '.08em', flex: 'none' }}>⚠ FLEET DOWN</span>
+              <span style={{ fontSize: 12.5, color: 'var(--tx)', lineHeight: 1.45, flex: '1 1 320px' }}>{fleet.message}</span>
+              <span style={{ ...mono(400, 10), color: 'var(--tx3)', flex: 'none', whiteSpace: 'nowrap' }}>
+                {fleet.online} ONLINE · {fleet.offline} OFFLINE · {fleet.queued} QUEUED
+              </span>
+            </div>
+          )}
 
           {proposedTickets.length > 0 && (
             <div style={{ flex: 'none', margin: '0 22px 10px', border: '1px dashed var(--agent)', borderRadius: 4, background: 'var(--agentsoft)', padding: '9px 12px' }}>

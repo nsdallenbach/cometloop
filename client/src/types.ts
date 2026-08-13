@@ -324,6 +324,34 @@ export type BurndownDay = {
   total: number;
 };
 
+/** One runner's liveness as the fleet monitor sees it (DAT-224). */
+export interface FleetRunner {
+  agent: string;
+  /** Last poll/claim/heartbeat that reached the server. */
+  lastPolledAt: string | null;
+  lastSeenAt: string | null;
+  online: boolean;
+  busy: boolean;
+}
+
+/**
+ * Whether anything is actually online to claim this engagement's queued work.
+ * `down` means work has been waiting past the threshold with zero online
+ * runners — the board raises it rather than leaving the card sitting silently.
+ */
+export interface FleetStatus {
+  engagementId: string;
+  runners: FleetRunner[];
+  online: number;
+  offline: number;
+  queued: number;
+  oldestQueuedKey: string | null;
+  oldestQueuedAt: string | null;
+  waitingMs: number;
+  down: boolean;
+  message: string | null;
+}
+
 export interface EngagementDetail {
   tickets: Ticket[];
   sources: ContextSource[];
@@ -331,6 +359,8 @@ export interface EngagementDetail {
   team: TeamMember[];
   suggestions: Suggestion[];
   agentTasks: AgentTask[];
+  /** Null when the fleet check could not run — treat as "no warning to show". */
+  fleet: FleetStatus | null;
 }
 
 export interface Proposal {

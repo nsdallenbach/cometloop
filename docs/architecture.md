@@ -87,6 +87,7 @@ with a Lakebase credential.
 
 - `api.ts` — engagements, tickets CRUD, planning-agent flows, admin
 - `agent-work.ts` — runner queue: wait/claim/heartbeat/flag/complete, work packages, rendered prompts
+- `fleet.ts` — runner liveness: poll stamps, online/offline, the FLEET DOWN board warning
 - `coordination.ts` — inter-agent messages (announce, request/response, SLAs), mirrored to tickets
 - `repos.ts` — GitHub/ADO providers: PR & commit sync, ticket auto-linking, merge-from-drawer, deploy watch
 - `pr-conflicts.ts` — conflict reports, auto-resolve vs escalate assessment
@@ -135,6 +136,23 @@ ship with console deploys instead of fleet updates. Runners are expected to
 be chatty (progress notes, sub-2-minute heartbeats, flags instead of silent
 death); a stalled-heartbeat detector and yellow flag badges surface trouble
 on the board without moving lanes.
+
+Two different silences get caught. A runner wedged mid-task is STALLED on its
+card (DAT-184). A runner that is simply *gone* is caught by the poll stamp
+(`app.runner_polls`): the wait long-poll carries the runner's name, so an idle
+runner proves liveness every ~70s without extra traffic, and one that stops
+reaching the console flips from `idle` to `offline` on the agent map. Queued
+work with zero online runners for its engagement raises a board-level FLEET
+DOWN banner and an activity-feed entry (DAT-224) — the failure that had two
+tickets waiting nine hours behind a fleet that had already exited.
+
+The same watch reclaims what the dead runners were holding. A claimed/working
+task silent past the orphan window is released back to `queued` (agent
+cleared, ticket out of progress) so any live runner takes it; after
+`MAX_RECLAIMS` releases it fails for a human instead of cycling. The zombie
+runner is handled by the existing contract from the other side: once the task
+is no longer its own, the runner's next heartbeat 404s and it abandons the
+run.
 
 Runners never hold long-lived credentials: workspace tokens are minted via
 the CLI (≤10 min cache, 401 → refresh-and-retry-once), and git access uses

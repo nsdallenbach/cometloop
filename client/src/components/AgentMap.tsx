@@ -91,14 +91,25 @@ function EmptySpoke({ x, y, lead }: { x: number; y: number; lead: boolean }) {
   );
 }
 
-/** Dashed = staged (a runner config awaiting rollout) or an unreachable endpoint. */
+/**
+ * Dashed = staged (a runner config awaiting rollout) or an unreachable
+ * endpoint. 'offline' is amber rather than the neutral grey 'idle' wears: a
+ * runner that has stopped polling is a fact worth seeing, not a resting state
+ * (DAT-224).
+ */
 function spokeState(agent: ProjectAgent): { staged: boolean; unreachable: boolean; color: string } {
   const unreachable = agent.status === 'unreachable';
-  const staged = agent.source === 'configured' && !['active', 'idle', 'unreachable'].includes(agent.status);
+  const staged = agent.source === 'configured' && !['active', 'idle', 'offline', 'unreachable'].includes(agent.status);
   return {
     staged,
     unreachable,
-    color: unreachable ? 'var(--bad)' : agent.status === 'active' ? 'var(--ok)' : staged ? 'var(--warn)' : 'var(--tx3)',
+    color: unreachable
+      ? 'var(--bad)'
+      : agent.status === 'active'
+        ? 'var(--ok)'
+        : agent.status === 'offline' || staged
+          ? 'var(--warn)'
+          : 'var(--tx3)',
   };
 }
 

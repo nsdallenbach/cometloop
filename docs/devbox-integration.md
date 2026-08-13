@@ -65,6 +65,7 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 
 | Method | Path | Purpose |
 |---|---|---|
+| `GET` | `/api/agent/work/wait?engagement=&agent=` | Long-poll for queued work (~55s hold) — also the fleet liveness ping |
 | `GET` | `/api/agent/work?engagement=&agent=` | List queued tasks (and this runner's active claims) |
 | `POST` | `/api/agent/work/claim` | Atomically claim the next task → returns the work package |
 | `GET` | `/api/agent/work/:id` | Re-fetch the work package for a claimed task |
@@ -83,6 +84,32 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 | `POST` | `/api/tickets/:key/attachments?filename=` | Upload an attachment (raw body, max 25 MB; executables rejected) |
 | `GET` | `/api/tickets/:key/attachments/:id` | Download one attachment (`X-Content-Sha256` header carries the checksum) |
 | `DELETE` | `/api/tickets/:key/attachments/:id` | Delete an attachment (lead only) |
+
+### Wait (and say who you are)
+
+```bash
+curl -s "$APP/api/agent/work/wait?agent=devbox-1" -H "$AUTH"
+```
+
+Always pass `agent` on the poll. The console stamps `last_polled_at` for that
+runner and treats anything without a stamp inside the grace window (4 minutes,
+about three missed cycles) as **offline** rather than idle — that stamp is the
+only thing separating "waiting for work" from "the process died". Task
+heartbeats count too, so a runner deep in a long run stays online while it is
+not polling.
+
+The payoff is on the board: when work has been queued past the alert threshold
+(10 minutes) with zero online runners for its engagement, the console raises a
+**FLEET DOWN** warning instead of leaving the card sitting quietly in the lane.
+Omit `agent` and your runner is invisible to that check while idle (the console
+logs a one-time warning saying so).
+
+The console also reclaims work you drop. If a claimed task goes 15 minutes
+without a heartbeat, it is released back to `queued` for another runner (and
+after two releases it fails for a human). Keep heartbeating while you work, and
+treat `404`/`409` from heartbeat or complete as "this run is no longer mine" —
+kill the agent and go back to waiting rather than finishing a run the console
+has already handed to someone else.
 
 ### Claim
 
