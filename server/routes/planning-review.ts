@@ -149,7 +149,7 @@ export const PLANNING_REVIEW_JOIN_SQL =
 
 export const PLANNING_REVIEW_COLUMNS_SQL = 'plr.flow AS planning_review_flow, plr.started_at AS planning_review_started_at';
 
-/** The lateral join above, bound to a tickets alias (`t`, `ti`, …). */
+/** The join above, bound to a tickets alias (`t`, `ti`, …). */
 export function planningReviewJoin(ticketsAlias: string): string {
   return PLANNING_REVIEW_JOIN_SQL.replace(/%T%/g, ticketsAlias);
 }
