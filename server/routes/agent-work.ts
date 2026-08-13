@@ -52,6 +52,16 @@ export const AGENT_SCHEMA_SQL = [
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS flag TEXT`,
 ];
 
+/**
+ * The rank reserved for work that must be picked up before anything a human
+ * ordered — today only the merge-conflict requeue (DAT-200). Claiming sorts
+ * `priority DESC, id`: the lead-facing queue API caps priority at 9 and
+ * drag-to-reorder can only reach the lane length (200 ids max), so this sits
+ * above every rank the board can produce, while `id` still keeps FIFO among
+ * several top-priority items.
+ */
+export const TOP_PRIORITY = 1000;
+
 const QueueBody = z.object({
   instructions: z.string().max(8000).optional(),
   priority: z.number().int().min(0).max(9).optional(),
