@@ -147,8 +147,18 @@ showed non-interactive runs need an explicit allowlist — without it, file
 writes and MCP tools get auto-denied. The tested set:
 
 ```bash
-CLAUDE_ARGS='--permission-mode acceptEdits --allowedTools Write,Edit,Bash(git:*),Bash(gh:*),Bash(curl:*),Bash(node:*),Bash(npm:*),mcp__delivery-console__*'
+CLAUDE_ARGS='--permission-mode acceptEdits --allowedTools Write,Edit,WebSearch,WebFetch,Bash(git:*),Bash(gh:*),Bash(curl:*),Bash(node:*),Bash(npm:*),mcp__delivery-console__*'
 ```
+
+**The allowlist is also the agent's research budget.** Anything omitted is
+auto-denied with no prompt to approve it, because nobody is at the keyboard —
+and the agent cannot tell that apart from a capability the box does not have. A
+DAT-221 run reported "no web access" and shipped a design built on guesses about
+a vendor API; the box had working egress the whole time, and the vendor is
+open-source with a published OpenAPI spec. `WebSearch`/`WebFetch` are in the set
+above for that reason: `Bash(curl:*)` already grants unrestricted outbound HTTP,
+so they widen no network posture — they only stop the agent from concluding it
+is offline.
 
 On Windows, `run-local.ps1` launches the emulation with this configuration
 baked in. On a locked-down single-purpose VM,
