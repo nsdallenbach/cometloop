@@ -16,6 +16,7 @@ import type {
   Me,
   ParsedPlan,
   Phase,
+  PlanningReviewFlow,
   ProjectAgentRole,
   ProjectAgentType,
   PrReview,
@@ -119,6 +120,11 @@ function mapTicket(r: Row): Ticket {
     // Only live escalations are joined server-side, so any stage here is current.
     escalationStage: r.escalation_stage == null ? null : (s(r.escalation_stage) as EscalationStage),
     escalationPr: r.escalation_pr == null ? null : n(r.escalation_pr),
+    // Expired passes are filtered out server-side, so a flow here is live.
+    planningReview:
+      r.planning_review_flow == null
+        ? null
+        : { flow: s(r.planning_review_flow) as PlanningReviewFlow, startedAt: nz(r.planning_review_started_at) },
     activePr:
       r.pr_number == null
         ? null

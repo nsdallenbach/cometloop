@@ -17,6 +17,13 @@ import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
 import { CoordCommentBody, parseCoordComment } from './AgentComment';
+import {
+  PLANNING_AGENT_AUTHOR,
+  PLANNING_REVIEW_LABEL,
+  isPlanningAgentAuthor,
+  planningReviewThreadLabel,
+  planningReviewTitle,
+} from '../lib/planning-review';
 
 const AGENT_STATE_LABEL: Record<AgentTask['state'], string> = {
   queued: 'QUEUED — WAITING FOR A RUNNER',
@@ -439,14 +446,18 @@ export function TicketDrawer({
   // same ticket; the expiry timer below covers the failure path (the server
   // logs rework failures and moves on without replying).
   const planningReplied =
-    planning !== null && (loaded?.list ?? []).some((c) => c.id > planning.afterId && c.author === 'Planning Agent');
-  const planningActive = planning !== null && planning.key === ticket.key && !planningReplied;
+    planning !== null && (loaded?.list ?? []).some((c) => c.id > planning.afterId && c.author === PLANNING_AGENT_AUTHOR);
+  const localPlanning = planning !== null && planning.key === ticket.key && !planningReplied;
+  // DAT-218: the server-side flag also covers passes this browser did not
+  // start — another person's comment, a lead hitting Refine elsewhere, the
+  // initial plan on a chatbox ticket — and clears itself on error or timeout.
+  const planningActive = localPlanning || ticket.planningReview !== null;
 
   useEffect(() => {
-    if (!planningActive || planning === null) return;
+    if (!localPlanning || planning === null) return;
     const timer = setTimeout(() => setPlanning(null), Math.max(0, planning.at + 45_000 - Date.now()));
     return () => clearTimeout(timer);
-  }, [planningActive, planning]);
+  }, [localPlanning, planning]);
 
   // Agent replies land as comments: poll while the drawer is open — fast while
   // an agent is actively on the ticket or a planning reply is due, relaxed
@@ -574,6 +585,24 @@ export function TicketDrawer({
           {proposed && (
             <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '2px 5px' }}>
               PROPOSED — NOT ON BOARD
+            </span>
+          )}
+          {/* DAT-218: the same indicator the board card shows, sitting with
+              the key directly above the title and status. */}
+          {ticket.planningReview && (
+            <span
+              title={planningReviewTitle(ticket.planningReview)}
+              style={{
+                ...mono(500, 9),
+                background: 'var(--agentsoft)',
+                color: 'var(--agent)',
+                border: '1px solid var(--agent)',
+                borderRadius: 2,
+                padding: '2px 5px',
+                animation: 'eec-pulse 2.4s infinite',
+              }}
+            >
+              {PLANNING_REVIEW_LABEL}
             </span>
           )}
           <button
@@ -1497,6 +1526,11 @@ export function TicketDrawer({
             )}
             {(comments ?? []).map((c) => {
               const coord = parseCoordComment(c.body);
+              // Agent-authored either way — a mirrored coordination message or
+              // a planning-agent reply (DAT-218). Both get the agent card; only
+              // the coordination ones get the structured body renderer.
+              const planningAgent = isPlanningAgentAuthor(c.author);
+              const fromAgent = coord !== null || planningAgent;
               return (
               <motion.div
                 key={c.id}
@@ -1511,31 +1545,35 @@ export function TicketDrawer({
                     width: 22,
                     height: 22,
                     borderRadius: '50%',
-                    background: coord ? 'var(--agentsoft)' : 'var(--bg3)',
-                    border: `1px solid ${coord ? 'var(--agent)' : 'var(--line2)'}`,
+                    background: fromAgent ? 'var(--agentsoft)' : 'var(--bg3)',
+                    border: `1px solid ${fromAgent ? 'var(--agent)' : 'var(--line2)'}`,
                     display: 'grid',
                     placeItems: 'center',
                     ...mono(500, 9),
-                    color: coord ? 'var(--agent)' : 'var(--tx2)',
+                    color: fromAgent ? 'var(--agent)' : 'var(--tx2)',
                   }}
                   title={c.author}
                 >
-                  {coord ? '◆' : initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
+                  {fromAgent ? '◆' : initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
                 </span>
                 <div
                   style={{
                     flex: 1,
                     minWidth: 0,
-                    border: `1px solid ${coord ? 'var(--agent)' : 'var(--line)'}`,
-                    borderLeft: coord ? '3px solid var(--agent)' : '1px solid var(--line)',
+                    border: `1px solid ${fromAgent ? 'var(--agent)' : 'var(--line)'}`,
+                    borderLeft: fromAgent ? '3px solid var(--agent)' : '1px solid var(--line)',
                     borderRadius: 3,
                     padding: '7px 10px',
-                    background: coord ? 'var(--agentsoft)' : 'var(--bg)',
+                    background: fromAgent ? 'var(--agentsoft)' : 'var(--bg)',
                   }}
                 >
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: coord ? 5 : 3 }}>
-                    <span style={{ fontSize: 11.5, fontWeight: 600, color: coord ? 'var(--agent)' : 'var(--tx)' }}>{c.author}</span>
-                    {coord && <span style={{ ...mono(500, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>AGENT&nbsp;COMMS</span>}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: fromAgent ? 5 : 3 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: fromAgent ? 'var(--agent)' : 'var(--tx)' }}>{c.author}</span>
+                    {fromAgent && (
+                      <span style={{ ...mono(500, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>
+                        {coord ? <>AGENT&nbsp;COMMS</> : <>PLANNING&nbsp;AGENT</>}
+                      </span>
+                    )}
                     <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 'auto' }}>{fmtTime(c.createdAt)}</span>
                   </div>
                   {coord ? (
@@ -1601,7 +1639,7 @@ export function TicketDrawer({
                     />
                   ))}
                   <span style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em', marginLeft: 5 }}>
-                    {planningActive ? 'PLANNING AGENT IS REWORKING THE PLAN…' : 'AGENT IS WORKING — REPLIES LAND HERE'}
+                    {planningActive ? planningReviewThreadLabel(ticket.planningReview) : 'AGENT IS WORKING — REPLIES LAND HERE'}
                   </span>
                 </div>
               </motion.div>

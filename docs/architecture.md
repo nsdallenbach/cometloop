@@ -71,7 +71,7 @@ component. Mutations are optimistic with rollback; the board polls every 8s.
 
 | Store | Contents |
 |---|---|
-| Lakebase Postgres (`app.*`) | engagements, tickets (+events/links/tags/attachments/estimates), comments, feed, team, agent_tasks, coordination_messages, repo connections/PRs/commits, PR review-SLA escalations |
+| Lakebase Postgres (`app.*`) | engagements, tickets (+events/links/tags/attachments/estimates), comments, feed, team, agent_tasks, coordination_messages, repo connections/PRs/commits, PR review-SLA escalations, in-flight planning reviews |
 | UC volume `sow_docs` | uploaded SOW/SOP documents, per-engagement context files, standards docs |
 | UC volume `agent_telemetry` | per-run tool-call logs archived as NDJSON under `tool-calls/<engagement>/<ticket>/` |
 
@@ -92,6 +92,7 @@ with a Lakebase credential.
 - `pr-conflicts.ts` — conflict reports, auto-resolve vs escalate assessment
 - `pr-escalation.ts` — review-SLA watch: 24h lead ping, 48h PR comment + board flag, lead dismissal resets the timers
 - `estimates.ts` — agent + human hour estimates, per-engagement calibration from actuals
+- `planning-review.ts` — "agent reviewing" status while a planning pass rewrites a ticket: `app.planning_reviews` rows with a TTL, so a pass that dies mid-flight clears its own badge
 - `ticket-events / -links / -tags / -order / -attachments` — the event trail, dependencies, tags, board ordering, file attachments
 - `tool-calls.ts` — live tool-call streaming from runners, archived to telemetry
 - `standards.ts` — per-engagement standards docs with AI-assisted editing
