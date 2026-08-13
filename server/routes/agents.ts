@@ -299,7 +299,10 @@ export async function syncProjectAgents(q: Query): Promise<void> {
       `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, endpoint_type, endpoint_name, role, status, config, created_by)
        VALUES ($1,'planning-agent','serving-endpoint',NULL,'databricks',$2,'model-serving',$5,'planning',$3,$4,'system:serving')
        ON CONFLICT (engagement_id, lower(name))
-       DO UPDATE SET model = $2, status = $3, config = $4, endpoint_name = COALESCE(app.project_agents.endpoint_name, $5)`,
+       -- role is forced, not COALESCEd: rows that predate the role column
+       -- carry the 'delivery' default, and this row is system-owned anyway.
+       DO UPDATE SET model = $2, status = $3, config = $4, role = 'planning',
+                     endpoint_name = COALESCE(app.project_agents.endpoint_name, $5)`,
       [txt(e.id), state?.servedModel ?? SERVING_ENDPOINT, endpointStatus(state), config, SERVING_ENDPOINT],
     );
   }

@@ -792,12 +792,6 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
             {l.label}
           </span>
         ))}
-        <span
-          title="Placeholder node types — created for projects in a future release"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px dashed var(--line2)', borderRadius: 3, padding: '3px 8px', ...mono(400, 8.5), color: 'var(--tx3)', letterSpacing: '.07em' }}
-        >
-          ◇ SERVING ENDPOINT · AGENTBRICKS · FOUNDRY — COMING SOON
-        </span>
       </div>
 
       {error && (
