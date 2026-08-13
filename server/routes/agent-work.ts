@@ -9,6 +9,7 @@ import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
+import { commentStyleSection } from './comment-style';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -205,6 +206,8 @@ export function renderPrompt(
     '- If delivery-console MCP tools are available, post report_agent_progress at plan time and before pushing, and raise flag_agent_work if you get blocked instead of guessing.',
     `- Steering via comments: leads may post new ticket comments while you work. If delivery-console MCP tools are available, re-read the comments with get_ticket (key ${key}) before pushing and apply any new guidance; your own progress notes also appear there — ignore those.`,
     '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
+    '',
+    ...commentStyleSection(),
     '',
     '## Coordinating with other agents',
     `Other agents may be working other branches of the same repo right now. Your agent id is "${txt(task.agent) || 'agent'}". Use the delivery-console MCP coordination tools (or the /api/agent/coordination REST endpoints) to avoid colliding with them:`,

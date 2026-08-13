@@ -98,6 +98,10 @@ that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
   never fail the user's action.
 - Preserve human words: refinement flows keep the original request verbatim
   under `## Original request`.
+- Any prompt whose output becomes a ticket comment renders the shared style
+  rules from `server/routes/comment-style.ts` — `commentStyleSection()` when
+  the model's output *is* the comment, `commentStyleBrief()` when the comment
+  is one field of a JSON contract. Do not restate the rules inline; they drift.
 - Model calls go through `invokeModel()` (`server/routes/llm-health.ts`),
   never `serving('default').invoke` directly — that is what retries transient
   errors, counts failures per flow, and posts the ⚠ feed item when a call
@@ -126,6 +130,12 @@ that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
 - **Be chatty**: progress note at claim, at plan, and before pushing;
   silent heartbeat at least every 2 minutes during long runs; raise a flag
   (`/flag`) when stuck instead of guessing or dying quietly.
+- **Be readable**: comment bodies render as markdown in the drawer, so notes,
+  flags and completion summaries use short paragraphs, bullets once there are
+  three or more items, and `code` for files and identifiers. The rules are a
+  single source of truth in `server/routes/comment-style.ts` and are rendered
+  into every prompt that writes a comment — add new comment-writing flows
+  there rather than restating the style inline.
 - Auth: mint workspace tokens via the CLI, cache no longer than 10 minutes,
   and treat any 401 as "refresh and retry once" — long-lived daemons that
   cache tokens without a 401 path will eventually replay a dead token forever.
