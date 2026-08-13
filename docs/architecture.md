@@ -91,6 +91,7 @@ with a Lakebase credential.
 - `repos.ts` — GitHub/ADO providers: PR & commit sync, ticket auto-linking, merge-from-drawer, deploy watch
 - `pr-conflicts.ts` — conflict reports, auto-resolve vs escalate assessment
 - `pr-escalation.ts` — review-SLA watch: 24h lead ping, 48h PR comment + board flag, lead dismissal resets the timers
+- `ticket-review.ts` — reason-based rejection out of Review: rejection history, requeue, prompt context
 - `estimates.ts` — agent + human hour estimates, per-engagement calibration from actuals
 - `ticket-events / -links / -tags / -order / -attachments` — the event trail, dependencies, tags, board ordering, file attachments
 - `tool-calls.ts` — live tool-call streaming from runners, archived to telemetry
@@ -166,6 +167,15 @@ board. Every stage transition is claimed with a conditional UPDATE, so a
 threshold checked repeatedly still notifies exactly once; a lead can dismiss
 the escalation from the ticket drawer, which resets both timers, and review,
 merge or closure stops the clock for good.
+
+Review has a second exit next to approval: a lead can reject a ticket that is
+in Review with a reason (`POST /api/tickets/:key/reject`, the drawer's REVIEW
+panel). The reason is mandatory — a blank one is refused before anything is
+written — and the ticket goes back to Backlog, never Done, re-queued for an
+agent by default. Reasons accumulate in `app.ticket_rejections` (one row per
+cycle, so a third rejection does not erase the first two) and the newest five
+are rendered into the runner prompt above the lead instructions, so the next
+run starts from the reviewer's words instead of a cold re-read.
 
 CI (`deploy.yml`) runs typecheck → lint → build → `databricks bundle
 deploy` → `bundle run app` on every push to main, serialized by a

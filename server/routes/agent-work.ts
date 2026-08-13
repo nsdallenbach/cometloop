@@ -9,6 +9,7 @@ import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
+import { loadRejections, rejectionPromptSection, type TicketRejection } from './ticket-review';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -145,6 +146,7 @@ export function renderPrompt(
   contextFiles: { name: string }[],
   comments: Record<string, unknown>[] = [],
   attachments: { filename: string; size: number }[] = [],
+  rejections: TicketRejection[] = [],
 ): string {
   const key = txt(task.ticket_key);
   const ac = (() => {
@@ -168,6 +170,10 @@ export function renderPrompt(
     '## Ticket',
     txt(ticket?.description).trim() || '(no description — the title is the scope)',
     ...(ac.length > 0 ? ['', 'Acceptance criteria:', ...ac.map((a) => `- ${a}`)] : []),
+    // Rework context (DAT-217): a ticket that came back from review says why,
+    // ahead of the lead instructions and the comment thread — the agent should
+    // read the reviewer's words before anything else about how to work.
+    ...rejectionPromptSection(rejections),
     ...(txt(task.instructions).trim() ? ['', '## Lead instructions', txt(task.instructions).trim()] : []),
     ...(commentLines.length > 0
       ? [
@@ -253,6 +259,9 @@ export function setupAgentRoutes(
       ).rows[0] ?? null;
     const contextFiles = await listContextFiles(files, engagementId);
     const attachments = await listTicketAttachments(q, ticketKey).catch(() => []);
+    // Prior review rejections ride along so a re-claimed ticket arrives with the
+    // reviewer's feedback instead of a cold re-read (DAT-217).
+    const rejections = await loadRejections(q, ticketKey).catch(() => []);
     return {
       task,
       ticket,
@@ -261,7 +270,8 @@ export function setupAgentRoutes(
       repo,
       contextFiles,
       attachments,
-      prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, comments, attachments),
+      rejections,
+      prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, comments, attachments, rejections),
     };
   };
 

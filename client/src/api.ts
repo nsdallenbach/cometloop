@@ -35,6 +35,7 @@ import type {
   TicketLink,
   TicketLinkType,
   TicketLinks,
+  TicketRejection,
   TicketStatus,
   TicketWithEngagement,
   ToolCall,
@@ -602,6 +603,19 @@ export const api = {
 
   runPrReview(ticketKey: string, prNumber: number): Promise<{ ok: boolean; verdict?: string }> {
     return http(`/api/tickets/${encodeURIComponent(ticketKey)}/prs/${String(prNumber)}/review`, { method: 'POST', ...json({}) });
+  },
+
+  // ---- ticket review (DAT-217) ----
+
+  /** Every review rejection this ticket has collected, oldest first. */
+  async rejections(ticketKey: string): Promise<TicketRejection[]> {
+    const d = await http<{ rejections: TicketRejection[] }>(`/api/tickets/${encodeURIComponent(ticketKey)}/rejections`);
+    return d.rejections;
+  },
+
+  /** Send a reviewed ticket back with a reason; the server refuses a blank one. */
+  rejectTicket(ticketKey: string, reason: string, requeue: boolean): Promise<{ ok: boolean; requeued: boolean; count: number }> {
+    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/reject`, { method: 'POST', ...json({ reason, requeue }) });
   },
 
   // ---- ticket attachments ----

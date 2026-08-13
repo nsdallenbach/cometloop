@@ -193,6 +193,20 @@ const MIGRATIONS = [
   )` },
   { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_ticket ON app.pr_review_escalations (ticket_key)` },
   { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_stage ON app.pr_review_escalations (stage)` },
+  // DAT-217 review rejections. Like the tables above it FKs onto dev-owned
+  // app.tickets, so it is created here as the dev role; the boot schema creates
+  // the identical table on a fresh install. Nothing reads it before the first
+  // rejection, so running this after the deploy is harmless — the reject
+  // endpoint just 500s until it exists.
+  { sql: `CREATE TABLE IF NOT EXISTS app.ticket_rejections (
+    id SERIAL PRIMARY KEY,
+    ticket_key TEXT NOT NULL REFERENCES app.tickets(key) ON DELETE CASCADE,
+    engagement_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    rejected_by TEXT NOT NULL DEFAULT '',
+    rejected_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )` },
+  { sql: `CREATE INDEX IF NOT EXISTS ticket_rejections_ticket_idx ON app.ticket_rejections (ticket_key, id)` },
   { sql: `CREATE TABLE IF NOT EXISTS app.ticket_attachments (
     id TEXT PRIMARY KEY,
     ticket_key TEXT NOT NULL REFERENCES app.tickets(key) ON DELETE CASCADE,
