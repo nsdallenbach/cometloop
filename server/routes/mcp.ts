@@ -1,4 +1,5 @@
 import type express from 'express';
+import { executeReviewTool, reviewToolDefs } from './pr-review';
 import { executeScopingTool, scopingToolDefs } from './scoping-tools';
 
 /**
@@ -15,6 +16,11 @@ import { executeScopingTool, scopingToolDefs } from './scoping-tools';
  * streams — and no new runtime dependency in the app bundle. The stdio server
  * in mcp/ remains for desktop/devbox clients; both surface the same tool
  * contracts from scoping-tools.ts.
+ *
+ * This is also the tool surface an AgentBricks agent attaches to (DAT-209):
+ * board tools from scoping-tools.ts plus the review gate's submit_pr_review.
+ * Registering it there is a URL and a permission — see
+ * docs/mcp-databricks-registration.md.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -29,6 +35,13 @@ interface JsonRpcRequest {
   method?: unknown;
   params?: unknown;
 }
+
+/** Everything this endpoint exposes: board tools plus the review gate's tools. */
+export function mcpToolDefs() {
+  return [...scopingToolDefs(), ...reviewToolDefs()];
+}
+
+const REVIEW_TOOLS = new Set(reviewToolDefs().map((d) => d.name));
 
 const rpcResult = (id: unknown, result: unknown) => ({ jsonrpc: '2.0', id: id ?? null, result });
 const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
@@ -58,19 +71,21 @@ export async function handleMcpMessage(q: Query, msg: JsonRpcRequest, author: st
         capabilities: { tools: {} },
         serverInfo: { name: 'delivery-console', version: '1.0.0' },
         instructions:
-          'Delivery Console board tools: search_tickets and get_ticket to read a board, link_tickets to record relationships, consolidate_tickets to merge duplicates. Engagement ids come from search_tickets calls; ticket keys look like DAT-42.',
+          'Delivery Console board tools: search_tickets and get_ticket to read a board, link_tickets to record relationships, consolidate_tickets to merge duplicates. Review gate: submit_pr_review publishes a PR review verdict (never merges) using the review_run_id from a review prompt. Engagement ids come from search_tickets calls; ticket keys look like DAT-42.',
       });
     }
     case 'ping':
       return rpcResult(msg.id, {});
     case 'tools/list':
       return rpcResult(msg.id, {
-        tools: scopingToolDefs().map((d) => ({ name: d.name, description: d.description, inputSchema: d.parameters })),
+        tools: mcpToolDefs().map((d) => ({ name: d.name, description: d.description, inputSchema: d.parameters })),
       });
     case 'tools/call': {
       const name = typeof params.name === 'string' ? params.name : '';
       const args = (params.arguments && typeof params.arguments === 'object' ? params.arguments : {}) as Record<string, unknown>;
-      const result = await executeScopingTool({ q, author, feedActor: 'YOU' }, name, args);
+      const result = REVIEW_TOOLS.has(name)
+        ? await executeReviewTool(q, name, args)
+        : await executeScopingTool({ q, author, feedActor: 'YOU' }, name, args);
       return rpcResult(msg.id, {
         content: [{ type: 'text', text: JSON.stringify(result.ok ? result.data : { error: result.error }, null, 2) }],
         ...(result.ok ? {} : { isError: true }),

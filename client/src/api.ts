@@ -1,6 +1,10 @@
 import type {
   ActivePr,
   AdminData,
+  AgentAccessLevel,
+  AgentAction,
+  AgentSecurityCatalog,
+  AgentSecuritySettings,
   AgentTask,
   AgentTaskState,
   AgentsOverview,
@@ -14,26 +18,34 @@ import type {
   DeployState,
   Engagement,
   EngagementDetail,
+  EscalationStage,
   FeedItem,
   Me,
+  Notification,
   ParsedPlan,
   Phase,
+  PlanningReviewFlow,
+  ProjectAgentRole,
   ProjectAgentType,
+  PrReview,
   ProjectStandards,
   RepoCommit,
   RepoConnection,
   RepoDetail,
   RepoPr,
   RoadmapSettings,
+  RunnerLoadBalancing,
   Suggestion,
   TeamMember,
   Ticket,
   TicketAttachment,
   TicketComment,
   TicketDev,
+  TicketEscalation,
   TicketLink,
   TicketLinkType,
   TicketLinks,
+  TicketRejection,
   TicketStatus,
   TicketWithEngagement,
   ToolCall,
@@ -109,12 +121,21 @@ function mapTicket(r: Row): Ticket {
     tags: j(r.tags, []),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
+    doneBlockedReason: nz(r.done_blocked_reason),
     roadmapItem: r.roadmap_item == null ? null : s(r.roadmap_item),
     branch: nz(r.branch) ?? nz(r.active_branch) ?? nz(r.pr_branch),
     runner: nz(r.task_agent) !== null && s(r.task_agent) === s(r.assignee) ? s(r.task_agent) : null,
     doneAt: r.done_at == null ? null : s(r.done_at),
     updatedAt: r.updated_at == null ? null : s(r.updated_at),
     waitingOn: n(r.waiting_on),
+    // Only live escalations are joined server-side, so any stage here is current.
+    escalationStage: r.escalation_stage == null ? null : (s(r.escalation_stage) as EscalationStage),
+    escalationPr: r.escalation_pr == null ? null : n(r.escalation_pr),
+    // Expired passes are filtered out server-side, so a flow here is live.
+    planningReview:
+      r.planning_review_flow == null
+        ? null
+        : { flow: s(r.planning_review_flow) as PlanningReviewFlow, startedAt: nz(r.planning_review_started_at) },
     activePr:
       r.pr_number == null
         ? null
@@ -167,6 +188,29 @@ function mapAgentTask(r: Row): AgentTask {
   };
 }
 
+const AGENT_ACTIONS: AgentAction[] = ['claim_work', 'git_credential', 'coordination', 'pr_review'];
+const ACCESS_LEVELS: AgentAccessLevel[] = ['restricted', 'standard', 'elevated', 'custom'];
+
+/**
+ * Security settings off the wire. The server always sends a full object (it
+ * falls back to the role baseline itself), so this only guards shape — an
+ * unreadable payload reads as enabled with no extra scopes rather than as a
+ * disabled agent, matching the server's no-silent-lockout rule.
+ */
+function mapAgentSecurity(v: unknown): AgentSecuritySettings {
+  const r = (v && typeof v === 'object' ? v : {}) as Row;
+  const level = ACCESS_LEVELS.includes(s(r.accessLevel) as AgentAccessLevel) ? (s(r.accessLevel) as AgentAccessLevel) : 'standard';
+  return {
+    enabled: r.enabled == null ? true : b(r.enabled),
+    accessLevel: level,
+    allowedActions: Array.isArray(r.allowedActions)
+      ? AGENT_ACTIONS.filter((a) => (r.allowedActions as unknown[]).includes(a))
+      : [],
+    updatedBy: nz(r.updatedBy),
+    updatedAt: nz(r.updatedAt),
+  };
+}
+
 function mapFeed(r: Row): FeedItem {
   return {
     id: n(r.id),
@@ -180,7 +224,7 @@ function mapFeed(r: Row): FeedItem {
 }
 
 function mapTeam(r: Row): TeamMember {
-  return { id: n(r.id), name: s(r.name), role: s(r.role), skills: j(r.skills, []), load: n(r.load) };
+  return { id: n(r.id), name: s(r.name), email: r.email == null ? null : s(r.email), role: s(r.role), skills: j(r.skills, []), load: n(r.load) };
 }
 
 function mapSuggestion(r: Row): Suggestion {
@@ -221,6 +265,31 @@ const json = (body: unknown): RequestInit => ({
 });
 
 export const api = {
+  async notifications(): Promise<{ notifications: Notification[]; unread: number }> {
+    const data = await http<{ notifications: Row[]; unread: number }>('/api/notifications');
+    return {
+      unread: data.unread,
+      notifications: data.notifications.map((r) => ({
+        id: n(r.id),
+        type: s(r.type),
+        title: s(r.title),
+        message: s(r.message),
+        ticketKey: nz(r.ticket_key),
+        engagementId: nz(r.engagement_id),
+        read: b(r.read),
+        createdAt: s(r.created_at),
+      })),
+    };
+  },
+
+  markNotificationRead(id: number) {
+    return http(`/api/notifications/${id}/read`, { method: 'PATCH', ...json({}) });
+  },
+
+  markAllNotificationsRead() {
+    return http('/api/notifications/read-all', { method: 'POST', ...json({}) });
+  },
+
   async engagements(): Promise<Engagement[]> {
     const rows = await http<Row[]>('/api/engagements');
     return rows.map(mapEngagement);
@@ -270,15 +339,16 @@ export const api = {
 
   async createTicket(
     engId: string,
-    // DAT-195: both time estimates are mandatory on creation.
+    // DAT-207: estimates are optional — the ticket agent fills them in at
+    // creation. Supply both or neither; the API rejects a lone figure.
     payload: {
       title?: string;
       description?: string;
       assignee?: string;
       est?: string;
       workstream?: string;
-      estHours: number;
-      humanEstHours: number;
+      estHours?: number;
+      humanEstHours?: number;
     }
   ): Promise<Ticket> {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
@@ -379,11 +449,12 @@ export const api = {
   },
 
   async me(): Promise<Me> {
-    const r = await http<Row & { leadOf?: unknown }>('/api/me');
+    const r = await http<Row & { leadOf?: unknown; memberOf?: unknown }>('/api/me');
     return {
       email: s(r.email),
       role: (s(r.role) as Me['role']) || 'developer',
       leadOf: Array.isArray(r.leadOf) ? r.leadOf.map(s) : [],
+      memberOf: Array.isArray(r.memberOf) ? r.memberOf.map(s) : [],
     };
   },
 
@@ -425,8 +496,12 @@ export const api = {
     return http(`/api/engagements/${engagementId}/members`, { method: 'PUT', ...json({ memberIds }) });
   },
 
-  async addMember(name: string, role: string): Promise<TeamMember> {
-    return mapTeam(await http<Row>('/api/team-members', { method: 'POST', ...json({ name, role }) }));
+  async addMember(name: string, email: string, role: string): Promise<TeamMember> {
+    return mapTeam(await http<Row>('/api/team-members', { method: 'POST', ...json({ name, email, role }) }));
+  },
+
+  async updateMemberEmail(id: number, email: string): Promise<TeamMember> {
+    return mapTeam(await http<Row>(`/api/team-members/${id}/email`, { method: 'PUT', ...json({ email }) }));
   },
 
   // ---- git repo integration ----
@@ -469,6 +544,23 @@ export const api = {
   async ticketDev(key: string): Promise<TicketDev> {
     const d = await http<{ prs: Row[]; commits: Row[] }>(`/api/tickets/${key}/dev`);
     return { prs: d.prs.map(mapRepoPr), commits: d.commits.map(mapRepoCommit) };
+  },
+
+  // ---- PR review SLA (DAT-201) ----
+
+  /** The live review-SLA clock on the ticket's open PR, or null when none is running. */
+  async ticketEscalation(key: string): Promise<TicketEscalation | null> {
+    const d = await http<{ escalation: TicketEscalation | null }>(`/api/tickets/${key}/escalation`);
+    return d.escalation;
+  },
+
+  /** Lead-only: reset the 24h and 48h timers and clear the board flag. */
+  async dismissEscalation(key: string): Promise<TicketEscalation | null> {
+    const d = await http<{ escalation: TicketEscalation | null }>(`/api/tickets/${key}/escalation/dismiss`, {
+      method: 'POST',
+      ...json({}),
+    });
+    return d.escalation;
   },
 
   // ---- linked tickets ----
@@ -537,37 +629,133 @@ export const api = {
       })),
       agents: (d.agents ?? []).map((r) => ({
         id: s(r.id),
+        recordId: r.recordId == null ? null : n(r.recordId),
         engagementId: s(r.engagementId),
         name: s(r.name),
         agentType: (s(r.agentType) as ProjectAgentType) || 'runner',
+        role: (s(r.role) as ProjectAgentRole) || 'delivery',
+        description: r.description == null ? null : s(r.description),
         harness: r.harness == null ? null : s(r.harness),
         modelProvider: r.modelProvider == null ? null : s(r.modelProvider),
         model: r.model == null ? null : s(r.model),
         endpointType: r.endpointType == null ? null : s(r.endpointType),
+        endpointName: r.endpointName == null ? null : s(r.endpointName),
+        endpointError: r.endpointError == null ? null : s(r.endpointError),
         status: s(r.status) || 'configured',
         source: s(r.source) === 'observed' ? 'observed' : 'configured',
         tasks: n(r.tasks),
         activeTasks: n(r.activeTasks),
         lastSeen: r.lastSeen == null ? null : s(r.lastSeen),
         createdAt: r.createdAt == null ? null : s(r.createdAt),
+        security: mapAgentSecurity(r.security),
       })),
     };
   },
 
-  /** Scaffolded deploy: persists the configuration; rollout itself is future work.
-   *  Returns the raw stored row — callers refetch the overview for mapped data. */
-  deployAgent(
+  // ---- per-agent security controls (DAT-212) ----
+
+  agentSecurityCatalog(): Promise<AgentSecurityCatalog> {
+    return http<AgentSecurityCatalog>('/api/agents/security/catalog');
+  },
+
+  async agentSecurity(projectId: string, agentId: number): Promise<AgentSecuritySettings> {
+    const d = await http<{ security: Row }>(
+      `/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}/security`,
+    );
+    return mapAgentSecurity(d.security);
+  },
+
+  async updateAgentSecurity(
+    projectId: string,
+    agentId: number,
+    payload: { enabled?: boolean; accessLevel?: AgentAccessLevel; allowedActions?: AgentAction[] },
+  ): Promise<AgentSecuritySettings> {
+    const d = await http<{ security: Row }>(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}/security`, {
+      method: 'PUT',
+      ...json(payload),
+    });
+    return mapAgentSecurity(d.security);
+  },
+
+  async runnerLoadBalancing(projectId: string, modelType: string): Promise<RunnerLoadBalancing> {
+    const d = await http<{ modelType: unknown; runners?: Row[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/runner-load-balancing/${encodeURIComponent(modelType)}`,
+    );
+    return {
+      modelType: s(d.modelType),
+      runners: (d.runners ?? []).map((r) => ({
+        name: s(r.name), status: s(r.status), weight: n(r.weight), cap: r.cap == null ? null : n(r.cap), activeTasks: n(r.activeTasks),
+      })),
+    };
+  },
+
+  saveRunnerLoadBalancing(projectId: string, modelType: string, runners: { name: string; weight: number; cap: number | null }[]): Promise<RunnerLoadBalancing> {
+    return http(`/api/projects/${encodeURIComponent(projectId)}/runner-load-balancing/${encodeURIComponent(modelType)}`, {
+      method: 'PUT', ...json({ runners }),
+    });
+  },
+
+  /** Register an agent on a project. Endpoint-backed agents (AgentBricks, model
+   *  serving) go live immediately; harness runners are staged until rollout. */
+  createAgent(
     projectId: string,
     payload: {
       name: string;
       agentType?: ProjectAgentType;
+      role?: ProjectAgentRole;
       harness?: string;
       modelProvider?: string;
       model?: string;
+      endpointName?: string;
+      description?: string;
       notes?: string;
     }
   ): Promise<unknown> {
     return http(`/api/projects/${encodeURIComponent(projectId)}/agents`, { method: 'POST', ...json(payload) });
+  },
+
+  updateAgent(
+    projectId: string,
+    agentId: number,
+    payload: { role?: ProjectAgentRole; description?: string; endpointName?: string }
+  ): Promise<unknown> {
+    return http(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}`, {
+      method: 'PATCH',
+      ...json(payload),
+    });
+  },
+
+  deleteAgent(projectId: string, agentId: number): Promise<unknown> {
+    return http(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}`, { method: 'DELETE' });
+  },
+
+  // ---- PR review gate ----
+
+  async prReview(ticketKey: string, prNumber: number): Promise<PrReview | null> {
+    const d = await http<{ review: PrReview | null }>(
+      `/api/tickets/${encodeURIComponent(ticketKey)}/prs/${String(prNumber)}/review`
+    );
+    return d.review;
+  },
+
+  runPrReview(ticketKey: string, prNumber: number): Promise<{ ok: boolean; verdict?: string }> {
+    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/prs/${String(prNumber)}/review`, {
+      method: 'POST',
+      ...json({}),
+    });
+  },
+
+  // ---- ticket review (DAT-217) ----
+
+  /** Every review rejection this ticket has collected, oldest first. */
+  async rejections(ticketKey: string): Promise<TicketRejection[]> {
+    const d = await http<{ rejections: TicketRejection[] }>(`/api/tickets/${encodeURIComponent(ticketKey)}/rejections`);
+    return d.rejections;
+  },
+
+  /** Send a reviewed ticket back with a reason; the server refuses a blank one. */
+  rejectTicket(ticketKey: string, reason: string, requeue: boolean): Promise<{ ok: boolean; requeued: boolean; count: number }> {
+    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/reject`, { method: 'POST', ...json({ reason, requeue }) });
   },
 
   // ---- ticket attachments ----

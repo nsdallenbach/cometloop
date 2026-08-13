@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import { api } from '../api';
+import { ticketMatchesQuery } from '../lib/ticket-tags';
 import type { TicketStatus, TicketWithEngagement } from '../types';
 import { initials, mono, STATUS_LABEL } from '../util';
 import { runnerBrand } from './RunnerLogo';
@@ -41,13 +42,7 @@ export function Tickets({ onOpen }: { onOpen: (key: string, engagementId: string
 
   const filtered = useMemo(() => {
     if (!rows) return [];
-    const needle = query.trim().toLowerCase();
-    return rows.filter(
-      (t) =>
-        (fStatus === 'All' || t.status === fStatus) &&
-        (!needle ||
-          [t.key, t.title, t.assignee, t.client, t.engagementName].some((v) => v.toLowerCase().includes(needle))),
-    );
+    return rows.filter((t) => (fStatus === 'All' || t.status === fStatus) && ticketMatchesQuery(t, query));
   }, [rows, fStatus, query]);
 
   const nProgress = rows?.filter((t) => t.status === 'progress').length ?? 0;
@@ -66,7 +61,7 @@ export function Tickets({ onOpen }: { onOpen: (key: string, engagementId: string
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Filter by key, title, assignee, project…"
+          placeholder="Filter by key, title, assignee, project, tag…"
           style={{
             border: '1px solid var(--line2)',
             background: 'var(--bg2)',

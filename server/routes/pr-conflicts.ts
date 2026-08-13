@@ -258,6 +258,31 @@ const adoOps: ConflictOps = {
 
 const opsFor = (conn: Connection): ConflictOps => (conn.provider === 'github' ? githubOps : adoOps);
 
+/**
+ * Post a comment on a PR through the provider the connection uses, resolving a
+ * live token first. The one entry point for "the console says something on a
+ * PR" — shared with the review-SLA escalation (DAT-201).
+ */
+export async function postPrComment(conn: Connection, number: number, body: string): Promise<void> {
+  const live = { ...conn, token: await connectionToken(conn) };
+  await opsFor(conn).comment(live, number, body);
+}
+
+/**
+ * Mergeability plus the branch coordinates, straight from the provider — the
+ * authoritative answer to "does this PR conflict?". Shared with the review
+ * gate's merge-conflict requeue (DAT-200), which needs the same lazy-
+ * mergeability polling this module already does.
+ */
+export async function prMergeInfo(
+  conn: Connection,
+  number: number,
+): Promise<{ merge: 'clean' | 'conflicts' | 'unknown'; baseBranch: string; headBranch: string; url: string }> {
+  const live = { ...conn, token: await connectionToken(conn) };
+  const pr = await opsFor(conn).prInfo(live, number);
+  return { merge: pr.merge, baseBranch: pr.baseBranch, headBranch: pr.headBranch, url: pr.url };
+}
+
 // ---------- shared analysis ----------
 
 interface ConflictReport {

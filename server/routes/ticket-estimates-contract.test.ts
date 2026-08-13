@@ -2,16 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { CreateTicketBody, PatchTicketBody, seedEstimates } from './api';
 
 /**
- * DAT-195: est_hours and human_est_hours are mandatory on every ticket.
- * These are the request-body contracts the create/patch endpoints enforce
- * before anything reaches the (NOT NULL) database columns.
+ * DAT-207: est_hours and human_est_hours are populated by the ticket agent,
+ * so they are optional on create (DAT-195 had made them mandatory human
+ * input). Supplying them is still allowed — they must then be a valid pair,
+ * because the agent writes both or neither. Revisions keep the DAT-195 rule:
+ * an existing estimate can be changed but never cleared.
  */
 
-describe('CreateTicketBody — estimates are mandatory', () => {
+describe('CreateTicketBody — estimates are optional, the agent fills them in', () => {
   const base = { description: 'Do the thing' };
 
-  it('rejects a create without either estimate', () => {
-    expect(CreateTicketBody.safeParse(base).success).toBe(false);
+  it('accepts a create with no estimates at all', () => {
+    expect(CreateTicketBody.safeParse(base).success).toBe(true);
+    expect(CreateTicketBody.safeParse({ title: 'T' }).success).toBe(true);
+  });
+
+  it('accepts a create that supplies both estimates', () => {
+    expect(CreateTicketBody.safeParse({ ...base, estHours: 0.5, humanEstHours: 4 }).success).toBe(true);
+    expect(CreateTicketBody.safeParse({ title: 'T', estHours: 2, humanEstHours: 8 }).success).toBe(true);
+  });
+
+  it('rejects a lone estimate — the pair is written together', () => {
     expect(CreateTicketBody.safeParse({ ...base, estHours: 1 }).success).toBe(false);
     expect(CreateTicketBody.safeParse({ ...base, humanEstHours: 4 }).success).toBe(false);
   });
@@ -28,15 +39,8 @@ describe('CreateTicketBody — estimates are mandatory', () => {
     expect(CreateTicketBody.safeParse({ ...base, estHours: 1, humanEstHours: 1000 }).success).toBe(false);
   });
 
-  it('accepts a chatbox create (description only) with both estimates', () => {
-    expect(CreateTicketBody.safeParse({ ...base, estHours: 0.5, humanEstHours: 4 }).success).toBe(true);
-  });
-
-  it('accepts a titled create with both estimates', () => {
-    expect(CreateTicketBody.safeParse({ title: 'T', estHours: 2, humanEstHours: 8 }).success).toBe(true);
-  });
-
   it('still requires a title or description', () => {
+    expect(CreateTicketBody.safeParse({}).success).toBe(false);
     expect(CreateTicketBody.safeParse({ estHours: 1, humanEstHours: 4 }).success).toBe(false);
   });
 });

@@ -1,46 +1,32 @@
-import type { ReactNode } from 'react';
+import { CLAUDE_CODE, harnessBrand, type AgentBrand } from './AgentLogos';
 
 /**
  * Runner-software branding for assigned-runner avatars: resolves a runner id
  * (the agent name on a claimed task) to the logo shown in place of initials.
+ *
+ * The marks themselves live in AgentLogos.tsx — this module only maps a runner
+ * id onto one, so the dependency runs one way (RunnerLogo → AgentLogos).
  */
 
-export interface RunnerBrand {
-  /** Runner software name, for tooltips ("Claude Code"). */
-  label: string;
-  mark: (size: number) => ReactNode;
-}
+export type RunnerBrand = AgentBrand;
+export { CLAUDE_CODE };
 
 /**
- * The Claude Code pixel mascot ("Clawd") in the brand terracotta — NOT the
- * Claude starburst, which brands the Claude product rather than Claude Code.
- * Drawn as one even-odd path on a 20×14 pixel grid: body with side arms, two
- * eye cutouts (transparent, so the avatar background shows through), four
- * legs. Scales crisply with the avatar.
+ * A runner names its own harness (`codex-1`, `gemini-2`, …). This mirrors
+ * `inferHarness` in server/routes/agents.ts, which brands the same fleet on
+ * the /agents map — keep the two in step when a harness is added.
  */
-export const CLAUDE_CODE: RunnerBrand = {
-  label: 'Claude Code',
-  mark: (size) => (
-    <svg width={size} height={size * 0.7} viewBox="0 0 20 14" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
-      <path
-        fill="#D97757"
-        fillRule="evenodd"
-        d="M3,2 H17 V6 H20 V9 H17 V11 H3 V9 H0 V6 H3 Z
-           M6,4 H8 V7 H6 Z
-           M12,4 H14 V7 H12 Z
-           M4,11 H5.5 V14 H4 Z
-           M6.5,11 H8 V14 H6.5 Z
-           M12,11 H13.5 V14 H12 Z
-           M14.5,11 H16 V14 H14.5 Z"
-      />
-    </svg>
-  ),
-};
+export function inferHarness(runner: string): string {
+  const n = runner.toLowerCase();
+  if (n.includes('codex')) return 'codex';
+  if (n.includes('gemini')) return 'gemini';
+  if (n.includes('copilot')) return 'copilot';
+  if (n.includes('cursor')) return 'cursor';
+  if (n.includes('omnigent')) return 'omnigent';
+  return 'claude-code';
+}
 
-/** Runner ids with non-default branding — add entries as new runner types come online. */
-const BRANDS: Record<string, RunnerBrand> = {};
-
-/** Every runner in the fleet today is a Claude Code instance, so that's the default. */
+/** Claude Code is the default: an unnamed harness is the fleet's original one. */
 export function runnerBrand(runner: string): RunnerBrand {
-  return BRANDS[runner] ?? CLAUDE_CODE;
+  return harnessBrand(inferHarness(runner)) ?? CLAUDE_CODE;
 }

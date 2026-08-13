@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { api } from '../api';
+import { canonicalTag, suggestedTags } from '../lib/ticket-tags';
 import type {
   AgentTask,
   FileFolder,
@@ -8,14 +9,23 @@ import type {
   TicketAttachment,
   TicketComment,
   TicketDev,
+  TicketEscalation,
   TicketLinkType,
   TicketLinks,
+  TicketRejection,
   ToolCall,
 } from '../types';
 import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
 import { CoordCommentBody, parseCoordComment } from './AgentComment';
+import {
+  PLANNING_AGENT_AUTHOR,
+  PLANNING_REVIEW_LABEL,
+  isPlanningAgentAuthor,
+  planningReviewThreadLabel,
+  planningReviewTitle,
+} from '../lib/planning-review';
 
 const AGENT_STATE_LABEL: Record<AgentTask['state'], string> = {
   queued: 'QUEUED — WAITING FOR A RUNNER',
@@ -66,6 +76,7 @@ export function TicketDrawer({
   ticket,
   team,
   lead,
+  runnerAccess,
   agentTask,
   allTickets,
   onOpenTicket,
@@ -85,6 +96,7 @@ export function TicketDrawer({
   ticket: Ticket;
   team: string[];
   lead: boolean;
+  runnerAccess: boolean;
   agentTask: AgentTask | null;
   allTickets: Ticket[];
   onOpenTicket: (key: string) => void;
@@ -124,7 +136,7 @@ export function TicketDrawer({
   const [queueOpen, setQueueOpen] = useState(false);
   const [instructions, setInstructions] = useState('');
   const agentActive = agentTask !== null && ['queued', 'claimed', 'working'].includes(agentTask.state);
-  const canQueue = lead && !agentActive && ['backlog', 'progress'].includes(ticket.status);
+  const canQueue = runnerAccess && !agentActive && ['backlog', 'progress'].includes(ticket.status);
   const [refining, setRefining] = useState(false);
   const [loaded, setLoaded] = useState<{ key: string; list: TicketComment[] | null; error: boolean } | null>(null);
   const [dev, setDev] = useState<{ key: string; data: TicketDev | null } | null>(null);
@@ -140,10 +152,11 @@ export function TicketDrawer({
     (agentTask === null || ['queued', 'cancelled'].includes(agentTask.state));
   const [tagDraft, setTagDraft] = useState('');
 
-  const addTag = () => {
-    const tag = tagDraft.trim();
+  // One path for both ways of adding a tag — typed free text and the standard
+  // feature/bug chips (DAT-210) — so the dedupe and limit rules can't diverge.
+  const addTag = (raw: string) => {
+    const tag = canonicalTag(raw);
     if (!tag) return;
-    setTagDraft('');
     if (ticket.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return;
     if (tag.length > 40) {
       toast('Tags are limited to 40 characters');
@@ -155,6 +168,16 @@ export function TicketDrawer({
     }
     onTags([...ticket.tags, tag]);
   };
+
+  const commitTagDraft = () => {
+    if (!tagDraft.trim()) return;
+    const draft = tagDraft;
+    setTagDraft('');
+    addTag(draft);
+  };
+
+  // Standard tags this ticket doesn't carry yet — the picker's suggestions.
+  const tagOptions = suggestedTags(ticket.tags);
 
   // Branch edits are keyed to the ticket so a draft never bleeds into another
   // ticket, and board polls don't clobber text mid-edit.
@@ -175,12 +198,8 @@ export function TicketDrawer({
   // Estimate edits (DAT-195): same keying rule as branch edits. Both time
   // estimates are mandatory — clearing or a non-positive value is blocked
   // with an inline error instead of a save.
-  const [estEdit, setEstEdit] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; value: string } | null>(
-    null
-  );
-  const [estError, setEstError] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; msg: string } | null>(
-    null
-  );
+  const [estEdit, setEstEdit] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; value: string } | null>(null);
+  const [estError, setEstError] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; msg: string } | null>(null);
   const estEditValue = (field: 'estHours' | 'humanEstHours'): string | null =>
     estEdit && estEdit.key === ticket.key && estEdit.field === field ? estEdit.value : null;
   const estFieldError = (field: 'estHours' | 'humanEstHours'): string | null =>
@@ -243,13 +262,9 @@ export function TicketDrawer({
             return { key: ticket.key, list: [...list, ...extra], error: false };
           }
           return { key: ticket.key, list, error: false };
-        })
+        }),
       )
-      .catch(() =>
-        setLoaded((cur) =>
-          cur && cur.key === ticket.key && cur.list ? cur : { key: ticket.key, list: null, error: true }
-        )
-      );
+      .catch(() => setLoaded((cur) => (cur && cur.key === ticket.key && cur.list ? cur : { key: ticket.key, list: null, error: true })));
   }, [ticket.key]);
 
   useEffect(loadComments, [loadComments]);
@@ -269,6 +284,8 @@ export function TicketDrawer({
   }, [ticket.key]);
 
   useEffect(loadAttachments, [loadAttachments]);
+  // Volume folders the attachment can be filed into (DAT-202); failure just
+  // leaves the picker on "ticket attachments only".
   useEffect(() => {
     void api
       .fileLibrary(ticket.engagementId)
@@ -311,6 +328,84 @@ export function TicketDrawer({
 
   useEffect(loadDev, [loadDev]);
 
+  // ---- review SLA (DAT-201) ----
+  const [escalation, setEscalation] = useState<{ key: string; data: TicketEscalation | null } | null>(null);
+  const [dismissing, setDismissing] = useState(false);
+
+  const loadEscalation = useCallback(() => {
+    void api
+      .ticketEscalation(ticket.key)
+      .then((data) => setEscalation({ key: ticket.key, data }))
+      .catch(() => setEscalation({ key: ticket.key, data: null }));
+  }, [ticket.key]);
+
+  useEffect(loadEscalation, [loadEscalation]);
+
+  const esc = escalation && escalation.key === ticket.key ? escalation.data : null;
+
+  const dismissEscalation = () => {
+    if (dismissing) return;
+    setDismissing(true);
+    api
+      .dismissEscalation(ticket.key)
+      .then(() => {
+        toast(`Review escalation dismissed — 24h and 48h timers reset for ${ticket.key}`);
+        loadEscalation();
+        refreshDetail(); // clears the flag chip on the board card
+      })
+      .catch((e: Error) => toast(`Dismiss failed — ${e.message}`))
+      .finally(() => setDismissing(false));
+  };
+
+  // ---- review rejections (DAT-217) ----
+  // Rejecting is the counterpart to approving a ticket out of Review: the
+  // reason is mandatory client-side too, so the reviewer sees why the button is
+  // dead instead of a 400 after the fact. History is shown on any status — a
+  // ticket that got kicked back twice should say so while it is being reworked.
+  const [rejects, setRejects] = useState<{ key: string; list: TicketRejection[] } | null>(null);
+  // The reason draft is keyed to the ticket, like the branch/description/estimate
+  // edits above: opening another ticket never inherits the previous draft, and
+  // board polls can't clobber half-typed feedback.
+  const [rejectDraft, setRejectDraft] = useState<{ key: string; reason: string; requeue: boolean } | null>(null);
+  const [rejectError, setRejectError] = useState<{ key: string; msg: string } | null>(null);
+  const [rejecting, setRejecting] = useState(false);
+
+  const loadRejections = useCallback(() => {
+    void api
+      .rejections(ticket.key)
+      .then((list) => setRejects({ key: ticket.key, list }))
+      .catch(() => setRejects({ key: ticket.key, list: [] }));
+  }, [ticket.key]);
+
+  useEffect(loadRejections, [loadRejections]);
+
+  const rejections = rejects && rejects.key === ticket.key ? rejects.list : [];
+  const canReject = lead && ticket.status === 'review';
+  const rejectForm = rejectDraft && rejectDraft.key === ticket.key ? rejectDraft : null;
+  const rejectErrorMsg = rejectError && rejectError.key === ticket.key ? rejectError.msg : '';
+
+  const submitRejection = () => {
+    const reason = rejectForm?.reason.trim() ?? '';
+    if (!reason) {
+      setRejectError({ key: ticket.key, msg: 'A rejection reason is required — the next runner works from it.' });
+      return;
+    }
+    if (rejecting) return;
+    setRejecting(true);
+    api
+      .rejectTicket(ticket.key, reason, rejectForm?.requeue ?? true)
+      .then((r) => {
+        setRejectDraft(null);
+        setRejectError(null);
+        toast(`${ticket.key} rejected — back to Backlog${r.requeued ? ' and re-queued for an agent' : ''}`);
+        loadRejections();
+        loadComments();
+        refreshDetail();
+      })
+      .catch((e: Error) => setRejectError({ key: ticket.key, msg: e.message }))
+      .finally(() => setRejecting(false));
+  };
+
   // ---- linked tickets & branches ----
   const [linked, setLinked] = useState<{ key: string; data: TicketLinks | null } | null>(null);
   const [linkType, setLinkType] = useState<'blocked_by' | 'blocks' | 'relates'>('blocked_by');
@@ -329,7 +424,7 @@ export function TicketDrawer({
   const linksData = linked && linked.key === ticket.key ? linked.data : null;
   const linkedKeys = new Set((linksData?.links ?? []).filter((l) => l.type !== 'mention').map((l) => l.key));
   const linkableTickets = allTickets.filter(
-    (t) => t.key !== ticket.key && !linkedKeys.has(t.key) && !['dismissed', 'proposed'].includes(t.status)
+    (t) => t.key !== ticket.key && !linkedKeys.has(t.key) && !['dismissed', 'proposed'].includes(t.status),
   );
 
   const addLink = () => {
@@ -406,8 +501,7 @@ export function TicketDrawer({
   // poll so merges and pipeline progress show up without reopening the drawer.
   // ('failed' stays watched too — a re-run pipeline can still turn it green.)
   const watchDev =
-    devData?.prs.some((p) => p.state === 'open' || ['pending', 'running', 'failed'].includes(p.deployState ?? '')) ??
-    false;
+    devData?.prs.some((p) => p.state === 'open' || ['pending', 'running', 'failed'].includes(p.deployState ?? '')) ?? false;
   useEffect(() => {
     if (!watchDev) return;
     const iv = setInterval(loadDev, 8000);
@@ -418,14 +512,18 @@ export function TicketDrawer({
   // same ticket; the expiry timer below covers the failure path (the server
   // logs rework failures and moves on without replying).
   const planningReplied =
-    planning !== null && (loaded?.list ?? []).some((c) => c.id > planning.afterId && c.author === 'Planning Agent');
-  const planningActive = planning !== null && planning.key === ticket.key && !planningReplied;
+    planning !== null && (loaded?.list ?? []).some((c) => c.id > planning.afterId && c.author === PLANNING_AGENT_AUTHOR);
+  const localPlanning = planning !== null && planning.key === ticket.key && !planningReplied;
+  // DAT-218: the server-side flag also covers passes this browser did not
+  // start — another person's comment, a lead hitting Refine elsewhere, the
+  // initial plan on a chatbox ticket — and clears itself on error or timeout.
+  const planningActive = localPlanning || ticket.planningReview !== null;
 
   useEffect(() => {
-    if (!planningActive || planning === null) return;
+    if (!localPlanning || planning === null) return;
     const timer = setTimeout(() => setPlanning(null), Math.max(0, planning.at + 45_000 - Date.now()));
     return () => clearTimeout(timer);
-  }, [planningActive, planning]);
+  }, [localPlanning, planning]);
 
   // Agent replies land as comments: poll while the drawer is open — fast while
   // an agent is actively on the ticket or a planning reply is due, relaxed
@@ -485,7 +583,7 @@ export function TicketDrawer({
         setLoaded((cur) =>
           cur && cur.key === ticket.key && cur.list
             ? { key: cur.key, list: [...cur.list, c], error: false }
-            : { key: ticket.key, list: [c], error: false }
+            : { key: ticket.key, list: [c], error: false },
         );
         setDraft('');
         // On un-picked-up tickets the planning agent may rework the plan and
@@ -496,7 +594,7 @@ export function TicketDrawer({
           setTimeout(() => {
             loadComments();
             refreshDetail();
-          }, ms)
+          }, ms),
         );
       })
       .catch(() => toast('Comment failed to post'))
@@ -507,9 +605,7 @@ export function TicketDrawer({
     const d = new Date(iso);
     return isNaN(+d)
       ? ''
-      : d
-          .toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
-          .toUpperCase();
+      : d.toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).toUpperCase();
   };
 
   const assigneeOptions = [...new Set(['—', ...team, ticket.assignee])];
@@ -547,55 +643,38 @@ export function TicketDrawer({
           title="Drag to resize"
           style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 6, cursor: 'ew-resize', zIndex: 1 }}
         />
-        <div
-          style={{
-            flex: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '14px 18px',
-            borderBottom: '1px solid var(--line)',
-          }}
-        >
+        <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--line)' }}>
           <span style={{ ...mono(500, 11), color: 'var(--tx3)' }}>{ticket.key}</span>
           {ticket.agent && !proposed && (
+            <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '2px 5px' }}>◆ AGENT-CREATED</span>
+          )}
+          {proposed && (
+            <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '2px 5px' }}>
+              PROPOSED — NOT ON BOARD
+            </span>
+          )}
+          {/* DAT-218: the same indicator the board card shows, sitting with
+              the key directly above the title and status. */}
+          {ticket.planningReview && (
             <span
+              title={planningReviewTitle(ticket.planningReview)}
               style={{
                 ...mono(500, 9),
                 background: 'var(--agentsoft)',
                 color: 'var(--agent)',
+                border: '1px solid var(--agent)',
                 borderRadius: 2,
                 padding: '2px 5px',
+                animation: 'eec-pulse 2.4s infinite',
               }}
             >
-              ◆ AGENT-CREATED
-            </span>
-          )}
-          {proposed && (
-            <span
-              style={{
-                ...mono(500, 9),
-                border: '1px dashed var(--agent)',
-                color: 'var(--agent)',
-                borderRadius: 2,
-                padding: '2px 5px',
-              }}
-            >
-              PROPOSED — NOT ON BOARD
+              {PLANNING_REVIEW_LABEL}
             </span>
           )}
           <button
             className="hv-tx"
             onClick={onClose}
-            style={{
-              marginLeft: 'auto',
-              border: 'none',
-              background: 'none',
-              color: 'var(--tx3)',
-              fontSize: 16,
-              cursor: 'pointer',
-              padding: '2px 6px',
-            }}
+            style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 16, cursor: 'pointer', padding: '2px 6px' }}
           >
             ×
           </button>
@@ -604,15 +683,11 @@ export function TicketDrawer({
           <h2 style={{ margin: '0 0 14px', fontSize: 15, fontWeight: 600, lineHeight: 1.4 }}>{ticket.title}</h2>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
-                STATUS
-              </div>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>STATUS</div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{STATUS_LABEL[ticket.status] ?? ticket.status}</div>
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
-                ASSIGNEE
-              </div>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>ASSIGNEE</div>
               <select
                 value={ticket.assignee}
                 onChange={(e) => onAssign(e.target.value)}
@@ -635,10 +710,16 @@ export function TicketDrawer({
                 ))}
               </select>
             </div>
-            <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>
-                ◆ AGENT ESTIMATE (H)
+            {/* Deploy gate (DAT-213): the board refuses a drop into Done while
+                this is set, so the drawer spells out what is missing. */}
+            {ticket.doneBlockedReason !== null && (
+              <div style={{ gridColumn: '1 / -1', border: '1px solid var(--warn)', borderRadius: 3, padding: '8px 11px' }}>
+                <div style={{ ...mono(400, 9), color: 'var(--warn)', letterSpacing: '.08em', marginBottom: 3 }}>⛔ BLOCKED FROM DONE</div>
+                <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>{ticket.doneBlockedReason}</div>
               </div>
+            )}
+            <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
+              <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>◆ AGENT ESTIMATE (H)</div>
               <input
                 type="number"
                 min={0.1}
@@ -685,16 +766,12 @@ export function TicketDrawer({
               )}
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
-                HUMAN DEV ESTIMATE (H)
-              </div>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>HUMAN DEV ESTIMATE (H)</div>
               <input
                 type="number"
                 min={0.1}
                 step={0.1}
-                value={
-                  estEditValue('humanEstHours') ?? (ticket.humanEstHours != null ? String(ticket.humanEstHours) : '')
-                }
+                value={estEditValue('humanEstHours') ?? (ticket.humanEstHours != null ? String(ticket.humanEstHours) : '')}
                 onChange={(e) => {
                   setEstEdit({ key: ticket.key, field: 'humanEstHours', value: e.target.value });
                   if (estFieldError('humanEstHours')) setEstError(null);
@@ -717,25 +794,15 @@ export function TicketDrawer({
                 }}
               />
               {estFieldError('humanEstHours') && (
-                <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 3 }}>
-                  {estFieldError('humanEstHours')}
-                </div>
+                <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 3 }}>{estFieldError('humanEstHours')}</div>
               )}
             </div>
-            <div
-              style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}
-            >
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
-                WORKSTREAM
-              </div>
+            <div style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>WORKSTREAM</div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.workstream}</div>
             </div>
-            <div
-              style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}
-            >
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
-                BRANCH
-              </div>
+            <div style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>BRANCH</div>
               <input
                 value={branchValue}
                 onChange={(e) => setBranchEdit({ key: ticket.key, value: e.target.value })}
@@ -782,15 +849,7 @@ export function TicketDrawer({
                   className="hv-bad"
                   title={`Remove tag "${tag}"`}
                   onClick={() => onTags(ticket.tags.filter((t) => t !== tag))}
-                  style={{
-                    border: 'none',
-                    background: 'none',
-                    color: 'var(--tx3)',
-                    fontSize: 11,
-                    cursor: 'pointer',
-                    padding: '0 2px',
-                    lineHeight: 1,
-                  }}
+                  style={{ border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 11, cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}
                 >
                   ×
                 </button>
@@ -802,10 +861,11 @@ export function TicketDrawer({
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ',') {
                   e.preventDefault();
-                  addTag();
+                  commitTagDraft();
                 }
               }}
-              onBlur={addTag}
+              onBlur={commitTagDraft}
+              list={`tag-options-${ticket.key}`}
               placeholder={ticket.tags.length === 0 ? 'Add a tag…' : '+ tag'}
               style={{
                 width: ticket.tags.length === 0 ? 120 : 70,
@@ -817,6 +877,33 @@ export function TicketDrawer({
                 fontSize: 11.5,
               }}
             />
+            {/* Standard tags (DAT-210): suggested in the input's dropdown and
+                one click away as chips. Ordinary tags either way — nothing
+                here writes a field the free-text input can't. */}
+            <datalist id={`tag-options-${ticket.key}`}>
+              {tagOptions.map((tag) => (
+                <option key={tag} value={tag} />
+              ))}
+            </datalist>
+            {tagOptions.map((tag) => (
+              <button
+                key={tag}
+                className="hv-border"
+                title={`Tag this ticket "${tag}"`}
+                onClick={() => addTag(tag)}
+                style={{
+                  ...mono(500, 10),
+                  color: 'var(--tx3)',
+                  border: '1px dashed var(--line2)',
+                  background: 'none',
+                  borderRadius: 2,
+                  padding: '2px 7px',
+                  cursor: 'pointer',
+                }}
+              >
+                + {tag}
+              </button>
+            ))}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>DESCRIPTION</span>
@@ -955,24 +1042,17 @@ export function TicketDrawer({
               <Markdown text={ticket.description} />
             )}
           </div>
-          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
-            ACCEPTANCE CRITERIA
-          </div>
+          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>ACCEPTANCE CRITERIA</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 16 }}>
             {ticket.ac.map((a, i) => (
               // eslint-disable-next-line react/no-array-index-key -- AC lines have no stable id and can repeat verbatim
-              <div
-                key={`${i}-${a}`}
-                style={{ display: 'flex', gap: 8, fontSize: 12.5, lineHeight: 1.45, color: 'var(--tx2)' }}
-              >
+              <div key={`${i}-${a}`} style={{ display: 'flex', gap: 8, fontSize: 12.5, lineHeight: 1.45, color: 'var(--tx2)' }}>
                 <span style={{ color: 'var(--tx3)', ...mono(400, 11) }}>—</span>
                 {a}
               </div>
             ))}
           </div>
-          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
-            PROVENANCE
-          </div>
+          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>PROVENANCE</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
             {ticket.sources.map((sr) => (
               <div
@@ -980,27 +1060,9 @@ export function TicketDrawer({
                 className="hv-agent"
                 onClick={goSources}
                 title="Open the Sources tab"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 9,
-                  border: '1px solid var(--line)',
-                  borderRadius: 3,
-                  padding: '8px 11px',
-                  cursor: 'pointer',
-                }}
+                style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px', cursor: 'pointer' }}
               >
-                <span
-                  style={{
-                    ...mono(500, 9),
-                    color: 'var(--agent)',
-                    border: '1px solid var(--agent)',
-                    borderRadius: 2,
-                    padding: '1px 5px',
-                  }}
-                >
-                  {sr.type}
-                </span>
+                <span style={{ ...mono(500, 9), color: 'var(--agent)', border: '1px solid var(--agent)', borderRadius: 2, padding: '1px 5px' }}>{sr.type}</span>
                 <span style={{ fontSize: 12, color: 'var(--tx2)', flex: 1 }}>{sr.label}</span>
               </div>
             ))}
@@ -1019,26 +1081,28 @@ export function TicketDrawer({
                 if (file) uploadAttachment(file);
               }}
             />
-            <select
-              value={attachFolder}
-              onChange={(e) => setAttachFolder(e.target.value)}
-              title="Volume folder"
-              style={{
-                background: 'var(--bg)',
-                border: '1px solid var(--line2)',
-                color: 'var(--tx2)',
-                borderRadius: 3,
-                padding: '4px 7px',
-                fontSize: 11,
-              }}
-            >
-              <option value="">Ticket attachments only</option>
-              {attachFolders.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </select>
+            {attachFolders.length > 0 && (
+              <select
+                value={attachFolder}
+                onChange={(e) => setAttachFolder(e.target.value)}
+                title="Volume folder this file is filed into"
+                style={{
+                  background: 'var(--bg)',
+                  border: '1px solid var(--line2)',
+                  color: 'var(--tx2)',
+                  borderRadius: 3,
+                  fontSize: 11,
+                  padding: '2px 4px',
+                }}
+              >
+                <option value="">Ticket attachments only</option>
+                {attachFolders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               className="hv-border"
               disabled={uploading}
@@ -1067,53 +1131,20 @@ export function TicketDrawer({
             {(attachments ?? []).map((a) => (
               <div
                 key={a.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 9,
-                  border: '1px solid var(--line)',
-                  borderRadius: 3,
-                  padding: '7px 11px',
-                }}
+                style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '7px 11px' }}
               >
-                <span
-                  style={{
-                    ...mono(500, 9),
-                    color: 'var(--tx3)',
-                    border: '1px solid var(--line2)',
-                    borderRadius: 2,
-                    padding: '1px 5px',
-                  }}
-                >
+                <span style={{ ...mono(500, 9), color: 'var(--tx3)', border: '1px solid var(--line2)', borderRadius: 2, padding: '1px 5px' }}>
                   {fmtSize(a.size)}
                 </span>
                 <a
                   href={a.url}
                   download={a.filename}
                   title={`Uploaded by ${a.uploader}${a.createdAt ? ` · ${fmtTime(a.createdAt)}` : ''}`}
-                  style={{
-                    fontSize: 12,
-                    color: 'var(--tx)',
-                    flex: 1,
-                    minWidth: 0,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    textDecoration: 'none',
-                  }}
+                  style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textDecoration: 'none' }}
                 >
                   {a.filename}
                 </a>
-                <span
-                  style={{
-                    ...mono(400, 9),
-                    color: 'var(--tx3)',
-                    maxWidth: 140,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
+                <span style={{ ...mono(400, 9), color: 'var(--tx3)', maxWidth: 140, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {a.uploader.split('@')[0]}
                 </span>
                 {lead && (
@@ -1139,62 +1170,152 @@ export function TicketDrawer({
               </div>
             ))}
           </div>
-          {(agentTask || canQueue) && (
+          {(canReject || rejections.length > 0) && (
             <>
               <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
-                AGENT WORK
+                REVIEW{rejections.length > 0 ? ` · ${rejections.length} REJECTION${rejections.length > 1 ? 'S' : ''}` : ''}
               </div>
               <div
                 style={{
-                  border: `1px solid ${agentActive ? 'var(--agent)' : 'var(--line)'}`,
+                  border: `1px solid ${rejections.length > 0 ? 'var(--bad)' : 'var(--line)'}`,
                   borderRadius: 3,
                   padding: '10px 12px',
                   marginBottom: 18,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
                 }}
               >
+                {rejections.map((r, i) => (
+                  <div key={r.id} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
+                        ⨯ REJECTED{rejections.length > 1 ? ` #${i + 1}` : ''}
+                      </span>
+                      <span style={{ ...mono(400, 10), color: 'var(--tx2)' }}>{r.rejectedBy || 'reviewer'}</span>
+                      {r.rejectedAt && <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtTime(r.rejectedAt)}</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{r.reason}</div>
+                  </div>
+                ))}
+                {rejections.length > 0 && (
+                  <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', lineHeight: 1.5 }}>
+                    Every reason above is handed to the next runner that claims this ticket.
+                  </div>
+                )}
+                {canReject && rejectForm === null && (
+                  <button
+                    className="hv-bad"
+                    onClick={() => setRejectDraft({ key: ticket.key, reason: '', requeue: true })}
+                    title="Send this ticket back for rework with a reason — it returns to Backlog, not Done"
+                    style={{
+                      alignSelf: 'flex-start',
+                      border: '1px solid var(--bad)',
+                      background: 'none',
+                      color: 'var(--bad)',
+                      borderRadius: 3,
+                      padding: '6px 12px',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ⨯ Reject with reason
+                  </button>
+                )}
+                {canReject && rejectForm !== null && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <textarea
+                      autoFocus
+                      value={rejectForm.reason}
+                      onChange={(e) => {
+                        setRejectDraft({ ...rejectForm, reason: e.target.value });
+                        if (rejectErrorMsg) setRejectError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submitRejection();
+                        if (e.key === 'Escape' && !rejecting) setRejectDraft(null);
+                      }}
+                      rows={4}
+                      maxLength={4000}
+                      placeholder="Why is this being sent back? Be specific — this text is the brief the next agent run works from."
+                      style={{
+                        boxSizing: 'border-box',
+                        background: 'var(--bg)',
+                        border: `1px solid ${rejectErrorMsg ? 'var(--bad)' : 'var(--line2)'}`,
+                        borderRadius: 3,
+                        color: 'var(--tx)',
+                        padding: '8px 10px',
+                        fontSize: 12.5,
+                        lineHeight: 1.5,
+                        resize: 'vertical',
+                      }}
+                    />
+                    {rejectErrorMsg && <div style={{ ...mono(400, 9.5), color: 'var(--bad)' }}>{rejectErrorMsg}</div>}
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--tx2)', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={rejectForm.requeue}
+                        onChange={(e) => setRejectDraft({ ...rejectForm, requeue: e.target.checked })}
+                      />
+                      Queue it straight back for an agent run
+                    </label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        onClick={submitRejection}
+                        disabled={rejecting || !rejectForm.reason.trim()}
+                        title={rejectForm.reason.trim() ? 'Reject this review (Ctrl+Enter)' : 'Enter a reason first'}
+                        style={{
+                          border: 'none',
+                          background: 'var(--bad)',
+                          color: '#fff',
+                          borderRadius: 3,
+                          padding: '6px 14px',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: rejecting || !rejectForm.reason.trim() ? 'not-allowed' : 'pointer',
+                          opacity: rejecting || !rejectForm.reason.trim() ? 0.5 : 1,
+                        }}
+                      >
+                        {rejecting ? 'Rejecting…' : 'Reject'}
+                      </button>
+                      <button
+                        onClick={() => setRejectDraft(null)}
+                        disabled={rejecting}
+                        style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+          {(agentTask || canQueue) && (
+            <>
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>AGENT WORK</div>
+              <div style={{ border: `1px solid ${agentActive ? 'var(--agent)' : 'var(--line)'}`, borderRadius: 3, padding: '10px 12px', marginBottom: 18 }}>
                 {agentTask && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span
-                        style={{
-                          ...mono(500, 9),
-                          color: 'var(--agent)',
-                          border: '1px solid var(--agent)',
-                          borderRadius: 2,
-                          padding: '1px 5px',
-                          letterSpacing: '.06em',
-                        }}
-                      >
+                      <span style={{ ...mono(500, 9), color: 'var(--agent)', border: '1px solid var(--agent)', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
                         ◆ {AGENT_STATE_LABEL[agentTask.state]}
                       </span>
                       {agentTask.agent && (
                         <span
                           title={`${agentTask.agent} (${runnerBrand(agentTask.agent).label} runner)`}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 5,
-                            ...mono(400, 10),
-                            color: 'var(--tx2)',
-                          }}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 5, ...mono(400, 10), color: 'var(--tx2)' }}
                         >
                           {runnerBrand(agentTask.agent).mark(11)}
                           {agentTask.agent}
                         </span>
                       )}
-                      {agentActive && lead && (
+                      {agentActive && runnerAccess && (
                         <button
                           className="hv-bad"
                           onClick={onCancelAgent}
-                          style={{
-                            marginLeft: 'auto',
-                            border: 'none',
-                            background: 'none',
-                            color: 'var(--tx3)',
-                            ...mono(400, 9),
-                            cursor: 'pointer',
-                            letterSpacing: '.06em',
-                          }}
+                          style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 9), cursor: 'pointer', letterSpacing: '.06em' }}
                         >
                           CANCEL
                         </button>
@@ -1204,41 +1325,23 @@ export function TicketDrawer({
                       <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>{agentTask.instructions}</div>
                     )}
                     {agentTask.flag && ['claimed', 'working'].includes(agentTask.state) && (
-                      <div style={{ fontSize: 12, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.5 }}>
-                        ⚠ {agentTask.flag}
-                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.5 }}>⚠ {agentTask.flag}</div>
                     )}
                     {agentTask.result && (agentTask.state === 'done' || agentTask.state === 'failed') && (
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: agentTask.state === 'done' ? 'var(--tx2)' : 'var(--bad)',
-                          lineHeight: 1.5,
-                          whiteSpace: 'pre-wrap',
-                        }}
-                      >
+                      <div style={{ fontSize: 12, color: agentTask.state === 'done' ? 'var(--tx2)' : 'var(--bad)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
                         {agentTask.result}
                       </div>
                     )}
                     {agentTask.resultUrl && (
-                      <a
-                        href={agentTask.resultUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ fontSize: 12, color: 'var(--acc)', wordBreak: 'break-all' }}
-                      >
+                      <a href={agentTask.resultUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--acc)', wordBreak: 'break-all' }}>
                         {agentTask.resultUrl}
                       </a>
                     )}
                     {(agentRunning || toolCalls.length > 0) && (
                       <div>
-                        <div
-                          style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', margin: '3px 0 4px' }}
-                        >
+                        <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', margin: '3px 0 4px' }}>
                           TOOL ACTIVITY
-                          {toolCalls.length > 0
-                            ? ` · ${toolCalls.length}${toolFeed && toolFeed.calls.length > toolCalls.length ? ' LATEST' : ''}`
-                            : ''}
+                          {toolCalls.length > 0 ? ` · ${toolCalls.length}${toolFeed && toolFeed.calls.length > toolCalls.length ? ' LATEST' : ''}` : ''}
                           {agentRunning && (
                             <span style={{ color: 'var(--agent)', animation: 'eec-pulse 2.4s infinite' }}> · LIVE</span>
                           )}
@@ -1261,28 +1364,14 @@ export function TicketDrawer({
                             <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>WAITING FOR TOOL ACTIVITY…</span>
                           )}
                           {toolCalls.map((c) => (
-                            <div
-                              key={c.id}
-                              style={{
-                                display: 'flex',
-                                gap: 8,
-                                alignItems: 'baseline',
-                                ...mono(400, 10),
-                                lineHeight: 1.55,
-                              }}
-                            >
+                            <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline', ...mono(400, 10), lineHeight: 1.55 }}>
                               <span style={{ flex: 'none', color: 'var(--tx3)' }}>
                                 {new Date(c.calledAt).toLocaleTimeString('en', { hour12: false })}
                               </span>
                               <span style={{ flex: 'none', color: 'var(--agent)', fontWeight: 500 }}>{c.tool}</span>
                               <span
                                 title={c.detail}
-                                style={{
-                                  color: 'var(--tx2)',
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                }}
+                                style={{ color: 'var(--tx2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
                               >
                                 {c.detail}
                               </span>
@@ -1337,30 +1426,13 @@ export function TicketDrawer({
                           setQueueOpen(false);
                           setInstructions('');
                         }}
-                        style={{
-                          border: 'none',
-                          background: 'var(--agent)',
-                          color: '#fff',
-                          borderRadius: 3,
-                          padding: '6px 14px',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                        }}
+                        style={{ border: 'none', background: 'var(--agent)', color: '#fff', borderRadius: 3, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
                       >
                         Add to queue
                       </button>
                       <button
                         onClick={() => setQueueOpen(false)}
-                        style={{
-                          border: '1px solid var(--line2)',
-                          background: 'none',
-                          color: 'var(--tx2)',
-                          borderRadius: 3,
-                          padding: '6px 12px',
-                          fontSize: 12,
-                          cursor: 'pointer',
-                        }}
+                        style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
                       >
                         Cancel
                       </button>
@@ -1377,67 +1449,27 @@ export function TicketDrawer({
             {linksData === null && linked?.key === ticket.key && (
               <div style={{ fontSize: 12, color: 'var(--tx3)' }}>
                 Couldn’t load linked work.{' '}
-                <button
-                  onClick={loadLinks}
-                  style={{
-                    border: 'none',
-                    background: 'none',
-                    color: 'var(--acc)',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
-                >
+                <button onClick={loadLinks} style={{ border: 'none', background: 'none', color: 'var(--acc)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
                   Retry
                 </button>
               </div>
             )}
             {(linksData?.links ?? []).map((l) => {
               const badge = LINK_BADGE[l.type];
-              const statusColor =
-                l.status === 'done' ? 'var(--ok)' : l.status === 'review' ? 'var(--warn)' : 'var(--tx3)';
+              const statusColor = l.status === 'done' ? 'var(--ok)' : l.status === 'review' ? 'var(--warn)' : 'var(--tx3)';
               return (
                 <div
                   key={`${l.type}-${l.key}-${l.id ?? 'm'}`}
                   className="hv-agent"
                   onClick={() => onOpenTicket(l.key)}
                   title={`Open ${l.key}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 9,
-                    border: '1px solid var(--line)',
-                    borderRadius: 3,
-                    padding: '8px 11px',
-                    cursor: 'pointer',
-                  }}
+                  style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px', cursor: 'pointer' }}
                 >
-                  <span
-                    style={{
-                      ...mono(500, 9),
-                      color: badge.color,
-                      border: `1px solid ${badge.color}`,
-                      borderRadius: 2,
-                      padding: '1px 5px',
-                      letterSpacing: '.06em',
-                      flex: 'none',
-                    }}
-                  >
+                  <span style={{ ...mono(500, 9), color: badge.color, border: `1px solid ${badge.color}`, borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em', flex: 'none' }}>
                     {badge.label}
                   </span>
                   <span style={{ ...mono(500, 10), color: 'var(--tx3)', flex: 'none' }}>{l.key}</span>
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: 'var(--tx)',
-                      flex: 1,
-                      minWidth: 0,
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
+                  <span style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {l.title}
                   </span>
                   <span style={{ ...mono(400, 9), color: statusColor, flex: 'none', letterSpacing: '.06em' }}>
@@ -1451,16 +1483,7 @@ export function TicketDrawer({
                         removeLink(l.id as number);
                       }}
                       title="Remove link"
-                      style={{
-                        flex: 'none',
-                        border: 'none',
-                        background: 'none',
-                        color: 'var(--tx3)',
-                        fontSize: 13,
-                        cursor: 'pointer',
-                        padding: '0 2px',
-                        lineHeight: 1,
-                      }}
+                      style={{ flex: 'none', border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 13, cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}
                     >
                       ×
                     </button>
@@ -1479,35 +1502,10 @@ export function TicketDrawer({
                     rel="noreferrer"
                     title={`PR #${b.prNumber} — ${b.state}`}
                     className="hv-border"
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      border: '1px solid var(--line)',
-                      borderRadius: 3,
-                      padding: '3px 8px',
-                      textDecoration: 'none',
-                    }}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid var(--line)', borderRadius: 3, padding: '3px 8px', textDecoration: 'none' }}
                   >
-                    <span
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        background: PR_STATE_COLOR[b.state] ?? 'var(--tx3)',
-                        flex: 'none',
-                      }}
-                    />
-                    <span
-                      style={{
-                        ...mono(400, 10),
-                        color: 'var(--tx2)',
-                        maxWidth: 220,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: PR_STATE_COLOR[b.state] ?? 'var(--tx3)', flex: 'none' }} />
+                    <span style={{ ...mono(400, 10), color: 'var(--tx2)', maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {b.branch}
                     </span>
                   </a>
@@ -1520,15 +1518,7 @@ export function TicketDrawer({
                 <select
                   value={linkType}
                   onChange={(e) => setLinkType(e.target.value as typeof linkType)}
-                  style={{
-                    background: 'var(--bg)',
-                    border: '1px solid var(--line2)',
-                    color: 'var(--tx)',
-                    borderRadius: 3,
-                    padding: '3px 6px',
-                    fontSize: 11.5,
-                    cursor: 'pointer',
-                  }}
+                  style={{ background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
                 >
                   {LINK_TYPE_OPTIONS.map((o) => (
                     <option key={o.value} value={o.value}>
@@ -1539,17 +1529,7 @@ export function TicketDrawer({
                 <select
                   value={linkTarget}
                   onChange={(e) => setLinkTarget(e.target.value)}
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    background: 'var(--bg)',
-                    border: '1px solid var(--line2)',
-                    color: 'var(--tx)',
-                    borderRadius: 3,
-                    padding: '3px 6px',
-                    fontSize: 11.5,
-                    cursor: 'pointer',
-                  }}
+                  style={{ flex: 1, minWidth: 0, background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
                 >
                   <option value="">Select a ticket…</option>
                   {linkableTickets.map((t) => (
@@ -1579,141 +1559,153 @@ export function TicketDrawer({
               </div>
             )}
           </div>
+          {/* Review SLA (DAT-201): visible once the lead has been pinged at 24h.
+              Dismissing resets both timers and clears the board flag. */}
+          {esc && (esc.stage === 'pinged' || esc.stage === 'flagged') && (
+            <>
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>REVIEW SLA</div>
+              <div
+                style={{
+                  border: `1px solid ${esc.stage === 'flagged' ? 'var(--bad)' : 'var(--warn)'}`,
+                  borderRadius: 3,
+                  padding: '9px 11px',
+                  marginBottom: 18,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <span
+                  style={{
+                    ...mono(500, 9),
+                    color: esc.stage === 'flagged' ? 'var(--bad)' : 'var(--warn)',
+                    border: `1px solid ${esc.stage === 'flagged' ? 'var(--bad)' : 'var(--warn)'}`,
+                    borderRadius: 2,
+                    padding: '1px 5px',
+                    letterSpacing: '.06em',
+                    flex: 'none',
+                  }}
+                >
+                  {esc.stage === 'flagged' ? '⚠ 48H BREACH' : '⏰ 24H PING'}
+                </span>
+                <span style={{ fontSize: 11.5, color: 'var(--tx2)', flex: 1, minWidth: 180, lineHeight: 1.45 }}>
+                  {esc.stage === 'flagged'
+                    ? `PR #${esc.prNumber} has been unreviewed for ${esc.hoursUnreviewed}h — a summary was posted on the PR and this ticket is flagged on the board.`
+                    : `PR #${esc.prNumber} has been unreviewed for ${esc.hoursUnreviewed}h — ${esc.leadEmail ?? 'the engagement lead'} was pinged${
+                        esc.hoursUntilNextStage === null ? '' : `. ${esc.hoursUntilNextStage}h until the 48h escalation`
+                      }.`}
+                  {esc.dismissCount > 0 && ' (timers were reset by a previous dismissal)'}
+                </span>
+                {lead && (
+                  <button
+                    onClick={dismissEscalation}
+                    disabled={dismissing}
+                    title="Reset the 24h and 48h timers and clear the flag"
+                    style={{
+                      flex: 'none',
+                      border: '1px solid var(--line2)',
+                      background: 'none',
+                      color: 'var(--tx2)',
+                      borderRadius: 2,
+                      padding: '2px 9px',
+                      ...mono(500, 9),
+                      letterSpacing: '.06em',
+                      cursor: dismissing ? 'default' : 'pointer',
+                      opacity: dismissing ? 0.5 : 1,
+                    }}
+                  >
+                    {dismissing ? 'DISMISSING…' : 'DISMISS'}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
           {devData && (devData.prs.length > 0 || devData.commits.length > 0) && (
             <>
-              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
-                DEVELOPMENT
-              </div>
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>DEVELOPMENT</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
                 {devData.prs.map((pr) => {
                   const dep = pr.deployState ? DEPLOY_BADGE[pr.deployState] : null;
                   return (
-                    <div key={`pr${pr.number}`} style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                      <a
-                        href={pr.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="hv-agent"
-                        onMouseLeave={() => setMergeArm((cur) => (cur === pr.number ? null : cur))}
+                  <div key={`pr${pr.number}`} style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                    <a
+                      href={pr.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="hv-agent"
+                      onMouseLeave={() => setMergeArm((cur) => (cur === pr.number ? null : cur))}
+                      style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: dep ? '3px 3px 0 0' : 3, padding: '8px 11px', textDecoration: 'none', color: 'inherit' }}
+                    >
+                      <span style={{ ...mono(500, 9), color: PR_STATE_COLOR[pr.state], border: `1px solid ${PR_STATE_COLOR[pr.state]}`, borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
+                        PR {pr.state.toUpperCase()}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        #{pr.number} {pr.title}
+                      </span>
+                      {pr.branch && <span style={{ ...mono(400, 9), color: 'var(--tx3)', maxWidth: 110, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pr.branch}</span>}
+                      {lead && pr.state === 'open' && (
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (merging !== null) return;
+                            if (mergeArm === pr.number) mergePr(pr.number);
+                            else setMergeArm(pr.number);
+                          }}
+                          title={mergeArm === pr.number ? 'Click again to merge' : `Merge PR #${pr.number}`}
+                          style={{
+                            flex: 'none',
+                            border: `1px solid ${mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)'}`,
+                            background: 'none',
+                            color: mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)',
+                            borderRadius: 2,
+                            padding: '2px 8px',
+                            ...mono(500, 9),
+                            letterSpacing: '.06em',
+                            cursor: merging !== null ? 'default' : 'pointer',
+                            opacity: merging !== null && merging !== pr.number ? 0.5 : 1,
+                          }}
+                        >
+                          {merging === pr.number ? 'MERGING…' : mergeArm === pr.number ? 'CONFIRM MERGE?' : 'MERGE'}
+                        </button>
+                      )}
+                    </a>
+                    {dep && (
+                      <div
                         style={{
                           display: 'flex',
                           alignItems: 'center',
                           gap: 9,
                           border: '1px solid var(--line)',
-                          borderRadius: dep ? '3px 3px 0 0' : 3,
-                          padding: '8px 11px',
-                          textDecoration: 'none',
-                          color: 'inherit',
+                          borderTop: 'none',
+                          borderRadius: '0 0 3px 3px',
+                          padding: '6px 11px',
+                          background: 'var(--bg)',
                         }}
                       >
                         <span
                           style={{
                             ...mono(500, 9),
-                            color: PR_STATE_COLOR[pr.state],
-                            border: `1px solid ${PR_STATE_COLOR[pr.state]}`,
+                            color: dep.color,
+                            border: `1px solid ${dep.color}`,
                             borderRadius: 2,
                             padding: '1px 5px',
                             letterSpacing: '.06em',
+                            animation: dep.pulse ? 'eec-pulse 2.4s infinite' : 'none',
                           }}
                         >
-                          PR {pr.state.toUpperCase()}
+                          {dep.label}
                         </span>
-                        <span
-                          style={{
-                            fontSize: 12,
-                            color: 'var(--tx)',
-                            flex: 1,
-                            minWidth: 0,
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                        >
-                          #{pr.number} {pr.title}
-                        </span>
-                        {pr.branch && (
-                          <span
-                            style={{
-                              ...mono(400, 9),
-                              color: 'var(--tx3)',
-                              maxWidth: 110,
-                              whiteSpace: 'nowrap',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                            }}
-                          >
-                            {pr.branch}
-                          </span>
+                        <span style={{ fontSize: 11, color: 'var(--tx3)', flex: 1, minWidth: 0 }}>{DEPLOY_NOTE[pr.deployState ?? '']}</span>
+                        {pr.deployUrl && (
+                          <a href={pr.deployUrl} target="_blank" rel="noreferrer" style={{ ...mono(400, 9), color: 'var(--acc)', flex: 'none' }}>
+                            VIEW RUN ↗
+                          </a>
                         )}
-                        {lead && pr.state === 'open' && (
-                          <button
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              if (merging !== null) return;
-                              if (mergeArm === pr.number) mergePr(pr.number);
-                              else setMergeArm(pr.number);
-                            }}
-                            title={mergeArm === pr.number ? 'Click again to merge' : `Merge PR #${pr.number}`}
-                            style={{
-                              flex: 'none',
-                              border: `1px solid ${mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)'}`,
-                              background: 'none',
-                              color: mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)',
-                              borderRadius: 2,
-                              padding: '2px 8px',
-                              ...mono(500, 9),
-                              letterSpacing: '.06em',
-                              cursor: merging !== null ? 'default' : 'pointer',
-                              opacity: merging !== null && merging !== pr.number ? 0.5 : 1,
-                            }}
-                          >
-                            {merging === pr.number ? 'MERGING…' : mergeArm === pr.number ? 'CONFIRM MERGE?' : 'MERGE'}
-                          </button>
-                        )}
-                      </a>
-                      {dep && (
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 9,
-                            border: '1px solid var(--line)',
-                            borderTop: 'none',
-                            borderRadius: '0 0 3px 3px',
-                            padding: '6px 11px',
-                            background: 'var(--bg)',
-                          }}
-                        >
-                          <span
-                            style={{
-                              ...mono(500, 9),
-                              color: dep.color,
-                              border: `1px solid ${dep.color}`,
-                              borderRadius: 2,
-                              padding: '1px 5px',
-                              letterSpacing: '.06em',
-                              animation: dep.pulse ? 'eec-pulse 2.4s infinite' : 'none',
-                            }}
-                          >
-                            {dep.label}
-                          </span>
-                          <span style={{ fontSize: 11, color: 'var(--tx3)', flex: 1, minWidth: 0 }}>
-                            {DEPLOY_NOTE[pr.deployState ?? '']}
-                          </span>
-                          {pr.deployUrl && (
-                            <a
-                              href={pr.deployUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{ ...mono(400, 9), color: 'var(--acc)', flex: 'none' }}
-                            >
-                              VIEW RUN ↗
-                            </a>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                      </div>
+                    )}
+                  </div>
                   );
                 })}
                 {devData.commits.map((c) => (
@@ -1723,29 +1715,10 @@ export function TicketDrawer({
                     target="_blank"
                     rel="noreferrer"
                     className="hv-agent"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 9,
-                      border: '1px solid var(--line)',
-                      borderRadius: 3,
-                      padding: '7px 11px',
-                      textDecoration: 'none',
-                      color: 'inherit',
-                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '7px 11px', textDecoration: 'none', color: 'inherit' }}
                   >
                     <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{c.sha.slice(0, 7)}</span>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: 'var(--tx2)',
-                        flex: 1,
-                        minWidth: 0,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
+                    <span style={{ fontSize: 12, color: 'var(--tx2)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {c.message.split('\n')[0]}
                     </span>
                   </a>
@@ -1757,24 +1730,11 @@ export function TicketDrawer({
             COMMENTS{comments && comments.length > 0 ? ` · ${comments.length}` : ''}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
-            {comments === null && !commentsError && (
-              <div style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LOADING…</div>
-            )}
+            {comments === null && !commentsError && <div style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LOADING…</div>}
             {commentsError && (
               <div style={{ fontSize: 12, color: 'var(--tx3)' }}>
                 Couldn’t load comments.{' '}
-                <button
-                  onClick={loadComments}
-                  style={{
-                    border: 'none',
-                    background: 'none',
-                    color: 'var(--acc)',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
-                >
+                <button onClick={loadComments} style={{ border: 'none', background: 'none', color: 'var(--acc)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
                   Retry
                 </button>
               </div>
@@ -1784,62 +1744,63 @@ export function TicketDrawer({
             )}
             {(comments ?? []).map((c) => {
               const coord = parseCoordComment(c.body);
+              // Agent-authored either way — a mirrored coordination message or
+              // a planning-agent reply (DAT-218). Both get the agent card; only
+              // the coordination ones get the structured body renderer.
+              const planningAgent = isPlanningAgentAuthor(c.author);
+              const fromAgent = coord !== null || planningAgent;
               return (
-                <motion.div
-                  key={c.id}
-                  initial={{ opacity: 0, transform: 'translateY(4px)' }}
-                  animate={{ opacity: 1, transform: 'translateY(0px)' }}
-                  transition={{ duration: 0.2, ease: 'easeOut' }}
-                  style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}
+              <motion.div
+                key={c.id}
+                initial={{ opacity: 0, transform: 'translateY(4px)' }}
+                animate={{ opacity: 1, transform: 'translateY(0px)' }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}
+              >
+                <span
+                  style={{
+                    flex: 'none',
+                    width: 22,
+                    height: 22,
+                    borderRadius: '50%',
+                    background: fromAgent ? 'var(--agentsoft)' : 'var(--bg3)',
+                    border: `1px solid ${fromAgent ? 'var(--agent)' : 'var(--line2)'}`,
+                    display: 'grid',
+                    placeItems: 'center',
+                    ...mono(500, 9),
+                    color: fromAgent ? 'var(--agent)' : 'var(--tx2)',
+                  }}
+                  title={c.author}
                 >
-                  <span
-                    style={{
-                      flex: 'none',
-                      width: 22,
-                      height: 22,
-                      borderRadius: '50%',
-                      background: coord ? 'var(--agentsoft)' : 'var(--bg3)',
-                      border: `1px solid ${coord ? 'var(--agent)' : 'var(--line2)'}`,
-                      display: 'grid',
-                      placeItems: 'center',
-                      ...mono(500, 9),
-                      color: coord ? 'var(--agent)' : 'var(--tx2)',
-                    }}
-                    title={c.author}
-                  >
-                    {coord ? '◆' : initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
-                  </span>
-                  <div
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      border: `1px solid ${coord ? 'var(--agent)' : 'var(--line)'}`,
-                      borderLeft: coord ? '3px solid var(--agent)' : '1px solid var(--line)',
-                      borderRadius: 3,
-                      padding: '7px 10px',
-                      background: coord ? 'var(--agentsoft)' : 'var(--bg)',
-                    }}
-                  >
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: coord ? 5 : 3 }}>
-                      <span style={{ fontSize: 11.5, fontWeight: 600, color: coord ? 'var(--agent)' : 'var(--tx)' }}>
-                        {c.author}
+                  {fromAgent ? '◆' : initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
+                </span>
+                <div
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    border: `1px solid ${fromAgent ? 'var(--agent)' : 'var(--line)'}`,
+                    borderLeft: fromAgent ? '3px solid var(--agent)' : '1px solid var(--line)',
+                    borderRadius: 3,
+                    padding: '7px 10px',
+                    background: fromAgent ? 'var(--agentsoft)' : 'var(--bg)',
+                  }}
+                >
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: fromAgent ? 5 : 3 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: fromAgent ? 'var(--agent)' : 'var(--tx)' }}>{c.author}</span>
+                    {fromAgent && (
+                      <span style={{ ...mono(500, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>
+                        {coord ? <>AGENT&nbsp;COMMS</> : <>PLANNING&nbsp;AGENT</>}
                       </span>
-                      {coord && (
-                        <span style={{ ...mono(500, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>
-                          AGENT&nbsp;COMMS
-                        </span>
-                      )}
-                      <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 'auto' }}>
-                        {fmtTime(c.createdAt)}
-                      </span>
-                    </div>
-                    {coord ? (
-                      <CoordCommentBody meta={coord.meta} text={coord.text} onOpenTicket={onOpenTicket} />
-                    ) : (
-                      <Markdown text={c.body} />
                     )}
+                    <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 'auto' }}>{fmtTime(c.createdAt)}</span>
                   </div>
-                </motion.div>
+                  {coord ? (
+                    <CoordCommentBody meta={coord.meta} text={coord.text} onOpenTicket={onOpenTicket} />
+                  ) : (
+                    <Markdown text={c.body} />
+                  )}
+                </div>
+              </motion.div>
               );
             })}
             {(planningActive || (agentTask !== null && ['claimed', 'working'].includes(agentTask.state))) && (
@@ -1892,17 +1853,11 @@ export function TicketDrawer({
                         transform: ['translateY(0px)', 'translateY(-2.5px)', 'translateY(0px)'],
                       }}
                       transition={{ repeat: Infinity, duration: 1, delay: i * 0.16, ease: 'easeInOut' }}
-                      style={{
-                        width: 5,
-                        height: 5,
-                        borderRadius: '50%',
-                        background: 'var(--agent)',
-                        display: 'inline-block',
-                      }}
+                      style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--agent)', display: 'inline-block' }}
                     />
                   ))}
                   <span style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em', marginLeft: 5 }}>
-                    {planningActive ? 'PLANNING AGENT IS REWORKING THE PLAN…' : 'AGENT IS WORKING — REPLIES LAND HERE'}
+                    {planningActive ? planningReviewThreadLabel(ticket.planningReview) : 'AGENT IS WORKING — REPLIES LAND HERE'}
                   </span>
                 </div>
               </motion.div>
@@ -1949,63 +1904,27 @@ export function TicketDrawer({
             </button>
           </div>
           {lead && (
-            <div
-              style={{
-                marginTop: 22,
-                paddingTop: 12,
-                borderTop: '1px solid var(--line)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-              }}
-            >
+            <div style={{ marginTop: 22, paddingTop: 12, borderTop: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 10 }}>
               {!delConfirm && (
                 <button
                   onClick={() => setDelConfirm(true)}
-                  style={{
-                    border: 'none',
-                    background: 'none',
-                    color: 'var(--tx3)',
-                    ...mono(400, 10),
-                    letterSpacing: '.06em',
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
+                  style={{ border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), letterSpacing: '.06em', cursor: 'pointer', padding: 0 }}
                 >
                   DELETE TICKET
                 </button>
               )}
               {delConfirm && (
                 <>
-                  <span style={{ ...mono(400, 10), color: 'var(--bad)' }}>
-                    Delete {ticket.key} and its comments permanently?
-                  </span>
+                  <span style={{ ...mono(400, 10), color: 'var(--bad)' }}>Delete {ticket.key} and its comments permanently?</span>
                   <button
                     onClick={onDelete}
-                    style={{
-                      border: '1px solid var(--bad)',
-                      background: 'none',
-                      color: 'var(--bad)',
-                      borderRadius: 3,
-                      padding: '3px 10px',
-                      fontSize: 11,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
+                    style={{ border: '1px solid var(--bad)', background: 'none', color: 'var(--bad)', borderRadius: 3, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
                   >
                     Delete
                   </button>
                   <button
                     onClick={() => setDelConfirm(false)}
-                    style={{
-                      border: '1px solid var(--line2)',
-                      background: 'none',
-                      color: 'var(--tx2)',
-                      borderRadius: 3,
-                      padding: '3px 10px',
-                      fontSize: 11,
-                      cursor: 'pointer',
-                    }}
+                    style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}
                   >
                     Cancel
                   </button>
@@ -2015,60 +1934,23 @@ export function TicketDrawer({
           )}
         </div>
         {proposed && lead && (
-          <div
-            style={{
-              flex: 'none',
-              display: 'flex',
-              gap: 10,
-              padding: '14px 18px',
-              borderTop: '1px solid var(--line)',
-              background: 'var(--agentsoft)',
-            }}
-          >
+          <div style={{ flex: 'none', display: 'flex', gap: 10, padding: '14px 18px', borderTop: '1px solid var(--line)', background: 'var(--agentsoft)' }}>
             <button
               onClick={onAccept}
-              style={{
-                flex: 1,
-                border: 'none',
-                background: 'var(--ok)',
-                color: '#fff',
-                borderRadius: 3,
-                padding: 8,
-                fontSize: 12.5,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
+              style={{ flex: 1, border: 'none', background: 'var(--ok)', color: '#fff', borderRadius: 3, padding: 8, fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}
             >
               Accept onto board
             </button>
             <button
               onClick={onDismiss}
-              style={{
-                border: '1px solid var(--line2)',
-                background: 'none',
-                color: 'var(--tx2)',
-                borderRadius: 3,
-                padding: '8px 16px',
-                fontSize: 12.5,
-                cursor: 'pointer',
-              }}
+              style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '8px 16px', fontSize: 12.5, cursor: 'pointer' }}
             >
               Dismiss
             </button>
           </div>
         )}
         {proposed && !lead && (
-          <div
-            style={{
-              flex: 'none',
-              padding: '12px 18px',
-              borderTop: '1px solid var(--line)',
-              background: 'var(--agentsoft)',
-              ...mono(400, 10),
-              color: 'var(--agent)',
-              letterSpacing: '.06em',
-            }}
-          >
+          <div style={{ flex: 'none', padding: '12px 18px', borderTop: '1px solid var(--line)', background: 'var(--agentsoft)', ...mono(400, 10), color: 'var(--agent)', letterSpacing: '.06em' }}>
             ◆ AWAITING ENGAGEMENT LEAD REVIEW
           </div>
         )}

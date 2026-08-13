@@ -10,14 +10,14 @@ describe('file automation', () => {
 
   it('creates a review ticket when a create rule matches', async () => {
     const statements: string[] = [];
-    const q = vi.fn(async (sql: string) => {
+    const q = vi.fn((sql: string) => {
       statements.push(sql);
       if (sql.startsWith('SELECT * FROM app.file_rules')) {
-        return { rows: [{ id: 'rule-1', file_pattern: '*.txt', action_type: 'create_ticket', target_ticket: null }] };
+        return Promise.resolve({ rows: [{ id: 'rule-1', file_pattern: '*.txt', action_type: 'create_ticket', target_ticket: null }] });
       }
-      if (sql.startsWith('SELECT client')) return { rows: [{ client: 'Datavail' }] };
-      if (sql.startsWith('SELECT key')) return { rows: [{ key: 'DAT-201' }] };
-      return { rows: [] };
+      if (sql.startsWith('SELECT client')) return Promise.resolve({ rows: [{ client: 'Datavail' }] });
+      if (sql.startsWith('SELECT key')) return Promise.resolve({ rows: [{ key: 'DAT-201' }] });
+      return Promise.resolve({ rows: [] });
     });
 
     const fired = await runFileRules(q, 'eng-1', 'folder-1', 'file-1', 'planning.txt');
@@ -28,18 +28,20 @@ describe('file automation', () => {
   });
 
   it('does nothing when the uploaded filename does not match', async () => {
-    const q = vi.fn(async () => ({ rows: [{ id: 'rule-1', file_pattern: '*.txt', action_type: 'create_ticket' }] }));
+    const q = vi.fn(() => Promise.resolve({ rows: [{ id: 'rule-1', file_pattern: '*.txt', action_type: 'create_ticket' }] }));
     expect(await runFileRules(q, 'eng-1', 'folder-1', 'file-1', 'notes.pdf')).toEqual([]);
     expect(q).toHaveBeenCalledTimes(1);
   });
 
   it('reuses the ticket refinement flow for refine rules', async () => {
-    const q = vi.fn(async (sql: string) =>
-      sql.startsWith('SELECT * FROM app.file_rules')
-        ? { rows: [{ id: 'rule-2', file_pattern: '*.md', action_type: 'refine_ticket', target_ticket: 'DAT-199' }] }
-        : { rows: [] }
+    const q = vi.fn((sql: string) =>
+      Promise.resolve(
+        sql.startsWith('SELECT * FROM app.file_rules')
+          ? { rows: [{ id: 'rule-2', file_pattern: '*.md', action_type: 'refine_ticket', target_ticket: 'DAT-199' }] }
+          : { rows: [] },
+      ),
     );
-    const refine = vi.fn(async () => undefined);
+    const refine = vi.fn(() => Promise.resolve(undefined));
 
     const fired = await runFileRules(q, 'eng-1', 'folder-1', 'file-2', 'decisions.md', refine);
 

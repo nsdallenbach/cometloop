@@ -23,6 +23,7 @@ function ticket(key: string, status: TicketStatus, doneAt: string | null = null)
     tags: [],
     deployState: null,
     deployUrl: null,
+    doneBlockedReason: null,
     roadmapItem: null,
     branch: null,
     runner: null,
@@ -30,6 +31,9 @@ function ticket(key: string, status: TicketStatus, doneAt: string | null = null)
     updatedAt: null,
     waitingOn: 0,
     activePr: null,
+    escalationStage: null,
+    escalationPr: null,
+    planningReview: null,
   };
 }
 

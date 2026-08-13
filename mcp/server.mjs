@@ -75,6 +75,13 @@ const tool = (name, description, shape, fn) =>
     }
   });
 
+// DAT-204: every tool below that writes a ticket comment carries this, because
+// the drawer renders comment bodies as markdown and agents otherwise post one
+// dense paragraph. The full rules live in the runner prompt — see
+// server/routes/comment-style.ts.
+const MD_HINT =
+  ' Body renders as markdown — use short paragraphs, a `-` list once there are 3+ items, and **bold** / `code` for key terms rather than one dense block.';
+
 const trimTicket = (t) => ({
   key: t.key,
   title: t.title,
@@ -179,7 +186,7 @@ tool(
 
 tool(
   'create_ticket',
-  'Create a ticket in an engagement backlog. Both time estimates are mandatory (DAT-195). Returns the new key.',
+  'Create a ticket in an engagement backlog. Time estimates are optional — omit them and the ticket agent estimates the work (DAT-207); a ticket it cannot estimate comes back tagged needs-estimate-review. Returns the new key.',
   {
     engagement_id: z.string(),
     title: z.string().min(3),
@@ -187,14 +194,28 @@ tool(
     assignee: z.string().optional(),
     est: z.string().optional().describe('Estimate label, e.g. "3d"'),
     workstream: z.string().optional(),
-    est_hours: z.number().gt(0).max(400).describe('Agent (LLM) time estimate in hours — required'),
-    human_est_hours: z.number().gt(0).max(999).describe('Human developer time estimate in hours — required'),
+    est_hours: z
+      .number()
+      .gt(0)
+      .max(400)
+      .optional()
+      .describe('Agent (LLM) time estimate in hours — optional; the ticket agent estimates when omitted'),
+    human_est_hours: z
+      .number()
+      .gt(0)
+      .max(999)
+      .optional()
+      .describe('Human developer time estimate in hours — optional; supply it only together with est_hours'),
   },
   async ({ engagement_id, est_hours, human_est_hours, ...payload }) => {
+    // Pass through only what was supplied and let the API's both-or-neither
+    // rule be the single source of truth on a lone figure.
+    const estimates = {};
+    if (est_hours != null) estimates.estHours = est_hours;
+    if (human_est_hours != null) estimates.humanEstHours = human_est_hours;
     const t = await call('POST', `/api/engagements/${encodeURIComponent(engagement_id)}/tickets`, {
       ...payload,
-      estHours: est_hours,
-      humanEstHours: human_est_hours,
+      ...estimates,
     });
     return trimTicket(t);
   },
@@ -202,7 +223,7 @@ tool(
 
 tool(
   'move_ticket',
-  'Move a ticket to a board status.',
+  'Move a ticket to a board status. Done requires the ticket\'s linked PR to be merged and deployed — otherwise the move is rejected with the reason (tag the ticket "no-deploy" if it ships nothing deployable).',
   { key: z.string(), status: z.enum(['backlog', 'progress', 'review', 'done']) },
   async ({ key, status }) => trimTicket(await call('PATCH', `/api/tickets/${encodeURIComponent(key)}`, { status })),
 );
@@ -215,8 +236,26 @@ tool(
 );
 
 tool(
+  'reject_ticket_review',
+  'Reject a ticket that is in Review and send it back for rework (lead only). The reason is mandatory and is handed to the next runner that claims the ticket; repeated rejections accumulate rather than overwrite. The ticket returns to Backlog — never Done — and is re-queued for an agent unless requeue is false.',
+  {
+    key: z.string(),
+    reason: z.string().min(1).describe('What is wrong and what the next run must fix'),
+    requeue: z.boolean().optional().describe('Also queue a fresh agent run (default: yes when an agent worked the ticket)'),
+  },
+  async ({ key, ...body }) => call('POST', `/api/tickets/${encodeURIComponent(key)}/reject`, body),
+);
+
+tool(
+  'list_ticket_rejections',
+  'The review rejection history of a ticket (reason, who rejected it, when), oldest first.',
+  { key: z.string() },
+  async ({ key }) => call('GET', `/api/tickets/${encodeURIComponent(key)}/rejections`),
+);
+
+tool(
   'comment_on_ticket',
-  'Add a comment to a ticket.',
+  `Add a comment to a ticket.${MD_HINT}`,
   { key: z.string(), body: z.string().min(1) },
   async ({ key, body }) => call('POST', `/api/tickets/${encodeURIComponent(key)}/comments`, { body }),
 );
@@ -264,14 +303,14 @@ tool(
 
 tool(
   'report_agent_progress',
-  'Post a progress note for a claimed task — shows live on the board card and as a ticket comment.',
+  `Post a progress note for a claimed task — shows live on the board card and as a ticket comment.${MD_HINT}`,
   { task_id: z.number().int(), agent: z.string(), note: z.string().min(1) },
   async ({ task_id, agent, note }) => call('POST', `/api/agent/work/${task_id}/progress`, { agent, note }),
 );
 
 tool(
   'finish_agent_work',
-  'Complete a claimed task: done parks the ticket in Review, failed returns it to Backlog.',
+  `Complete a claimed task: done parks the ticket in Review, failed returns it to Backlog. The summary is posted as a ticket comment.${MD_HINT}`,
   { task_id: z.number().int(), agent: z.string(), outcome: z.enum(['done', 'failed']), summary: z.string().min(1), url: z.string().url().optional() },
   async ({ task_id, ...body }) => call('POST', `/api/agent/work/${task_id}/complete`, body),
 );

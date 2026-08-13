@@ -1,15 +1,48 @@
 import type { ReactNode } from 'react';
-import { CLAUDE_CODE, type RunnerBrand } from './RunnerLogo';
 
 /**
- * Harness and model-provider logo marks for the /agents architecture map.
+ * Harness and model-provider logo marks for the /agents architecture map and
+ * for runner avatars (RunnerLogo.tsx resolves a runner id against HARNESSES).
  * Resolution order per node: harness logo → model-provider logo → letter chip
  * (the chip is rendered by the caller when both lookups miss). All marks are
  * inline SVG approximations of the brands, sized by the caller, drawn to stay
  * legible at 20–40px on both themes.
+ *
+ * Every mark lives here so this module never imports from its consumers:
+ * RunnerLogo depends on AgentLogos, never the reverse.
  */
 
-export type AgentBrand = RunnerBrand;
+export interface AgentBrand {
+  /** Product name, for tooltips ("Claude Code"). */
+  label: string;
+  mark: (size: number) => ReactNode;
+}
+
+/**
+ * The Claude Code pixel mascot ("Clawd") in the brand terracotta — NOT the
+ * Claude starburst, which brands the Claude product rather than Claude Code.
+ * Drawn as one even-odd path on a 20×14 pixel grid: body with side arms, two
+ * eye cutouts (transparent, so the avatar background shows through), four
+ * legs. Scales crisply with the avatar.
+ */
+export const CLAUDE_CODE: AgentBrand = {
+  label: 'Claude Code',
+  mark: (size) => (
+    <svg width={size} height={size * 0.7} viewBox="0 0 20 14" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+      <path
+        fill="#D97757"
+        fillRule="evenodd"
+        d="M3,2 H17 V6 H20 V9 H17 V11 H3 V9 H0 V6 H3 Z
+           M6,4 H8 V7 H6 Z
+           M12,4 H14 V7 H12 Z
+           M4,11 H5.5 V14 H4 Z
+           M6.5,11 H8 V14 H6.5 Z
+           M12,11 H13.5 V14 H12 Z
+           M14.5,11 H16 V14 H14.5 Z"
+      />
+    </svg>
+  ),
+};
 
 /** Six rounded petals in a hexagonal rosette — the OpenAI-style knot. */
 const OPENAI_MARK = (size: number): ReactNode => (
@@ -93,6 +126,44 @@ const DATABRICKS_MARK = (size: number): ReactNode => (
   </svg>
 );
 
+/**
+ * Agent Bricks: bricks in the Databricks orange-red, stacked in a half-bond so
+ * the courses interlock. Databricks lozenge red (var(--acc)) ties it to the
+ * platform marks above; the offset course is what tells it apart from the
+ * plain Databricks logo at 20px.
+ */
+const AGENTBRICKS_MARK = (size: number): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    {/* top course */}
+    <rect x="3" y="3.6" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.55} />
+    <rect x="12.6" y="3.6" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.55} />
+    {/* middle course: offset half-bond */}
+    <rect x="3" y="9.4" width="4" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.8} />
+    <rect x="8.2" y="9.4" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.8} />
+    <rect x="17.8" y="9.4" width="3.2" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.8} />
+    {/* base course */}
+    <rect x="3" y="15.2" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" />
+    <rect x="12.6" y="15.2" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" />
+  </svg>
+);
+
+/**
+ * Omnigent: a hub with four orbiting nodes — the "omni" fan-out of one hosted
+ * service dispatching many agents. Drawn in the agent token so it reads as
+ * fleet software rather than a vendor logo, and stays legible at 20px because
+ * the nodes sit on the axes rather than clustering.
+ */
+const OMNIGENT_MARK = (size: number): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    <circle cx="12" cy="12" r="7.4" fill="none" stroke="var(--agent)" strokeWidth={1.5} opacity={0.55} />
+    <circle cx="12" cy="12" r="3" fill="var(--agent)" />
+    <circle cx="12" cy="2.9" r="2.1" fill="var(--agent)" />
+    <circle cx="21.1" cy="12" r="2.1" fill="var(--agent)" />
+    <circle cx="12" cy="21.1" r="2.1" fill="var(--agent)" />
+    <circle cx="2.9" cy="12" r="2.1" fill="var(--agent)" />
+  </svg>
+);
+
 /** Codex reuses the OpenAI knot; the harness has no distinct mark. */
 const HARNESSES: Record<string, AgentBrand> = {
   'claude-code': CLAUDE_CODE,
@@ -100,14 +171,41 @@ const HARNESSES: Record<string, AgentBrand> = {
   gemini: { label: 'Gemini CLI', mark: GEMINI_MARK },
   copilot: { label: 'GitHub Copilot', mark: COPILOT_MARK },
   cursor: { label: 'Cursor', mark: CURSOR_MARK },
+  omnigent: { label: 'Omnigent', mark: OMNIGENT_MARK },
 };
 
+/** Anysphere (Cursor's maker) reuses the Cursor cube; it ships no separate mark. */
 const PROVIDERS: Record<string, AgentBrand> = {
   anthropic: { label: 'Anthropic', mark: ANTHROPIC_MARK },
   openai: { label: 'OpenAI', mark: OPENAI_MARK },
   google: { label: 'Google', mark: GOOGLE_MARK },
   microsoft: { label: 'Microsoft', mark: MICROSOFT_MARK },
+  anysphere: { label: 'Anysphere', mark: CURSOR_MARK },
   databricks: { label: 'Databricks', mark: DATABRICKS_MARK },
+  // Omnigent is its own provider (hosted service, vendor-chosen model), so the
+  // harness and provider marks are the same — as with Cursor/Anysphere.
+  omnigent: { label: 'Omnigent', mark: OMNIGENT_MARK },
+};
+
+/** Node-kind marks: an Agent Bricks agent is branded by what it runs on. */
+const AGENT_TYPES: Record<string, AgentBrand> = {
+  agentbricks: { label: 'Agent Bricks', mark: AGENTBRICKS_MARK },
+  'serving-endpoint': { label: 'Model Serving', mark: DATABRICKS_MARK },
+};
+
+/**
+ * Harness → its default model provider, mirrored from the server's
+ * HARNESS_PROVIDER (server/routes/agents.ts) so a node's provider fallback and
+ * the deploy form agree with what the sync pass persists. One copy, here, next
+ * to the brand tables; tests/harness-abstraction.test.ts pins it to the server.
+ */
+export const HARNESS_DEFAULT_PROVIDER: Record<string, string> = {
+  'claude-code': 'anthropic',
+  codex: 'openai',
+  gemini: 'google',
+  copilot: 'microsoft',
+  cursor: 'anysphere',
+  omnigent: 'omnigent',
 };
 
 const norm = (v: string) => v.trim().toLowerCase().replace(/[\s_]+/g, '-');
@@ -120,9 +218,16 @@ export function providerBrand(provider: string | null): AgentBrand | null {
   return provider ? (PROVIDERS[norm(provider)] ?? null) : null;
 }
 
-/** Harness logo when available, else the model provider's; null → letter chip. */
-export function agentBrand(a: { harness: string | null; modelProvider: string | null }): AgentBrand | null {
-  return harnessBrand(a.harness) ?? providerBrand(a.modelProvider);
+export function agentTypeBrand(agentType: string | null): AgentBrand | null {
+  return agentType ? (AGENT_TYPES[norm(agentType)] ?? null) : null;
+}
+
+/**
+ * Node-kind logo first (an Agent Bricks agent is an Agent Bricks agent whatever
+ * model it serves), then harness, then model provider; null → letter chip.
+ */
+export function agentBrand(a: { agentType?: string | null; harness: string | null; modelProvider: string | null }): AgentBrand | null {
+  return agentTypeBrand(a.agentType ?? null) ?? harnessBrand(a.harness) ?? providerBrand(a.modelProvider);
 }
 
 /** Selectable harnesses for the deploy form, in display order. */

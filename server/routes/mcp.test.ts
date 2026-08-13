@@ -81,10 +81,16 @@ describe('handleMcpMessage', () => {
     expect(await handleMcpMessage(q, { jsonrpc: '2.0', method: 'notifications/initialized' }, 'tester')).toBeNull();
   });
 
-  it('lists the four board tools with JSON Schema inputs', async () => {
+  it('lists the board tools plus the review gate, with JSON Schema inputs', async () => {
     const response = await handleMcpMessage(q, rpc('tools/list'), 'tester');
     const tools = (response?.result as { tools: { name: string; inputSchema: { type: string } }[] }).tools;
-    expect(tools.map((t) => t.name)).toEqual(['search_tickets', 'get_ticket', 'link_tickets', 'consolidate_tickets']);
+    expect(tools.map((t) => t.name)).toEqual([
+      'search_tickets',
+      'get_ticket',
+      'link_tickets',
+      'consolidate_tickets',
+      'submit_pr_review',
+    ]);
     expect(tools.every((t) => t.inputSchema.type === 'object')).toBe(true);
   });
 
