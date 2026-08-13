@@ -18,6 +18,7 @@ import type {
   EscalationStage,
   FeedItem,
   Me,
+  Notification,
   ParsedPlan,
   Phase,
   PlanningReviewFlow,
@@ -138,7 +139,9 @@ function mapTicket(r: Row): Ticket {
         : {
             number: n(r.pr_number),
             title: s(r.pr_title),
-            state: (['open', 'merged', 'closed'].includes(s(r.pr_state)) ? s(r.pr_state) : 'closed') as ActivePr['state'],
+            state: (['open', 'merged', 'closed'].includes(s(r.pr_state))
+              ? s(r.pr_state)
+              : 'closed') as ActivePr['state'],
             branch: s(r.pr_branch),
             url: s(r.pr_url),
           },
@@ -259,15 +262,45 @@ const json = (body: unknown): RequestInit => ({
 });
 
 export const api = {
+  async notifications(): Promise<{ notifications: Notification[]; unread: number }> {
+    const data = await http<{ notifications: Row[]; unread: number }>('/api/notifications');
+    return {
+      unread: data.unread,
+      notifications: data.notifications.map((r) => ({
+        id: n(r.id),
+        type: s(r.type),
+        title: s(r.title),
+        message: s(r.message),
+        ticketKey: nz(r.ticket_key),
+        engagementId: nz(r.engagement_id),
+        read: b(r.read),
+        createdAt: s(r.created_at),
+      })),
+    };
+  },
+
+  markNotificationRead(id: number) {
+    return http(`/api/notifications/${id}/read`, { method: 'PATCH', ...json({}) });
+  },
+
+  markAllNotificationsRead() {
+    return http('/api/notifications/read-all', { method: 'POST', ...json({}) });
+  },
+
   async engagements(): Promise<Engagement[]> {
     const rows = await http<Row[]>('/api/engagements');
     return rows.map(mapEngagement);
   },
 
   async detail(engId: string): Promise<EngagementDetail> {
-    const d = await http<{ tickets: Row[]; sources: Row[]; feed: Row[]; team: Row[]; suggestions: Row[]; agentTasks?: Row[] }>(
-      `/api/engagements/${engId}/detail`,
-    );
+    const d = await http<{
+      tickets: Row[];
+      sources: Row[];
+      feed: Row[];
+      team: Row[];
+      suggestions: Row[];
+      agentTasks?: Row[];
+    }>(`/api/engagements/${engId}/detail`);
     return {
       tickets: d.tickets.map(mapTicket),
       sources: d.sources.map(mapSource),
@@ -313,14 +346,23 @@ export const api = {
       workstream?: string;
       estHours?: number;
       humanEstHours?: number;
-    },
+    }
   ): Promise<Ticket> {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
   },
 
   patchTicket(
     key: string,
-    patch: { status?: TicketStatus; assignee?: string; description?: string; roadmapItem?: string | null; estHours?: number | null; humanEstHours?: number | null; branch?: string; tags?: string[] },
+    patch: {
+      status?: TicketStatus;
+      assignee?: string;
+      description?: string;
+      roadmapItem?: string | null;
+      estHours?: number | null;
+      humanEstHours?: number | null;
+      branch?: string;
+      tags?: string[];
+    }
   ) {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },
@@ -375,7 +417,10 @@ export const api = {
   },
 
   async parsePlan(input: { path?: string; description?: string }, client: string, name: string): Promise<ParsedPlan> {
-    const plan = await http<Partial<ParsedPlan>>('/api/sow/parse', { method: 'POST', ...json({ ...input, client, name }) });
+    const plan = await http<Partial<ParsedPlan>>('/api/sow/parse', {
+      method: 'POST',
+      ...json({ ...input, client, name }),
+    });
     return {
       phases: plan.phases ?? [],
       milestones: plan.milestones ?? [],
@@ -479,7 +524,9 @@ export const api = {
     return http('/api/github-app/status');
   },
 
-  githubAppRepos(): Promise<{ repos: { installationId: number; fullName: string; defaultBranch: string; private: boolean }[] }> {
+  githubAppRepos(): Promise<{
+    repos: { installationId: number; fullName: string; defaultBranch: string; private: boolean }[];
+  }> {
     return http('/api/github-app/repos');
   },
 
@@ -659,7 +706,7 @@ export const api = {
       endpointName?: string;
       description?: string;
       notes?: string;
-    },
+    }
   ): Promise<unknown> {
     return http(`/api/projects/${encodeURIComponent(projectId)}/agents`, { method: 'POST', ...json(payload) });
   },
@@ -667,9 +714,12 @@ export const api = {
   updateAgent(
     projectId: string,
     agentId: number,
-    payload: { role?: ProjectAgentRole; description?: string; endpointName?: string },
+    payload: { role?: ProjectAgentRole; description?: string; endpointName?: string }
   ): Promise<unknown> {
-    return http(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}`, { method: 'PATCH', ...json(payload) });
+    return http(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}`, {
+      method: 'PATCH',
+      ...json(payload),
+    });
   },
 
   deleteAgent(projectId: string, agentId: number): Promise<unknown> {
@@ -680,13 +730,16 @@ export const api = {
 
   async prReview(ticketKey: string, prNumber: number): Promise<PrReview | null> {
     const d = await http<{ review: PrReview | null }>(
-      `/api/tickets/${encodeURIComponent(ticketKey)}/prs/${String(prNumber)}/review`,
+      `/api/tickets/${encodeURIComponent(ticketKey)}/prs/${String(prNumber)}/review`
     );
     return d.review;
   },
 
   runPrReview(ticketKey: string, prNumber: number): Promise<{ ok: boolean; verdict?: string }> {
-    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/prs/${String(prNumber)}/review`, { method: 'POST', ...json({}) });
+    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/prs/${String(prNumber)}/review`, {
+      method: 'POST',
+      ...json({}),
+    });
   },
 
   // ---- ticket review (DAT-217) ----
@@ -705,7 +758,9 @@ export const api = {
   // ---- ticket attachments ----
 
   async attachments(ticketKey: string): Promise<TicketAttachment[]> {
-    const d = await http<{ attachments: TicketAttachment[] }>(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments`);
+    const d = await http<{ attachments: TicketAttachment[] }>(
+      `/api/tickets/${encodeURIComponent(ticketKey)}/attachments`
+    );
     return d.attachments;
   },
 
@@ -721,9 +776,10 @@ export const api = {
   },
 
   deleteAttachment(ticketKey: string, id: string) {
-    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
   },
-
 
   /** Tool-call feed for the ticket's latest agent run; `after` makes the poll incremental. */
   async toolCalls(ticketKey: string, after?: number): Promise<{ taskId: number | null; calls: ToolCall[] }> {
@@ -731,7 +787,12 @@ export const api = {
     const d = await http<{ task_id: unknown; calls?: Row[] }>(`/api/tickets/${ticketKey}/tool-calls${qs}`);
     return {
       taskId: d.task_id == null ? null : n(d.task_id),
-      calls: (d.calls ?? []).map((r) => ({ id: n(r.id), tool: s(r.tool), detail: s(r.detail), calledAt: s(r.called_at) })),
+      calls: (d.calls ?? []).map((r) => ({
+        id: n(r.id),
+        tool: s(r.tool),
+        detail: s(r.detail),
+        calledAt: s(r.called_at),
+      })),
     };
   },
 
@@ -761,7 +822,9 @@ export const api = {
   },
 
   async saveStandards(engId: string, content: string): Promise<ProjectStandards> {
-    return mapStandards(await http<Row>(`/api/engagements/${engId}/standards`, { method: 'PUT', ...json({ content }) }));
+    return mapStandards(
+      await http<Row>(`/api/engagements/${engId}/standards`, { method: 'PUT', ...json({ content }) })
+    );
   },
 
   refineStandards(engId: string, content: string, instructions?: string): Promise<{ content: string }> {
