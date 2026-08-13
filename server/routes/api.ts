@@ -54,6 +54,7 @@ import {
   recordTicketEvent,
   computeBurndown,
 } from './ticket-events';
+import { TICKET_ACTIVITY_SCHEMA_SQL, clearTicketActivity, setTicketActivity } from './ticket-activity';
 import { FILE_LIBRARY_SCHEMA_SQL, setupFileLibraryRoutes } from './file-library';
 import { TICKET_REVIEW_SCHEMA_SQL, setupTicketReviewRoutes } from './ticket-review';
 import { createNotification, mentionedEmails, NOTIFICATION_SCHEMA_SQL, setupNotificationRoutes } from './notifications';
@@ -215,6 +216,7 @@ async function initSchema(appkit: AppKitServices) {
     ...COORDINATION_SCHEMA_SQL,
     ...STANDARDS_SCHEMA_SQL,
     ...TICKET_EVENTS_SCHEMA_SQL,
+    ...TICKET_ACTIVITY_SCHEMA_SQL,
     ...LINKS_SCHEMA_SQL,
     ...ESTIMATE_SCHEMA_SQL,
     ...ATTACHMENT_SCHEMA_SQL,
@@ -457,9 +459,17 @@ export async function applyCommentFeedback(
   // the "agent reviewing" flag (DAT-218) for the rest of the pass. Everything
   // below runs in the background after the comment 201, so the flag is the
   // only thing telling the board this ticket is about to change.
-  await withPlanningReview(q, { key, engagementId: String(t.engagement_id), flow: 'comment-rework' }, () =>
-    reworkFromComment(q, appkit, t, key, author, feedback),
-  );
+  // DAT-219 rides along with that flag: the activity says what the agent is
+  // doing, the flag says that it is doing something. Cleared in the `finally`
+  // so a model failure never leaves a card claiming work is in flight.
+  await setTicketActivity(q, key, 'planning_response_in_progress');
+  try {
+    await withPlanningReview(q, { key, engagementId: String(t.engagement_id), flow: 'comment-rework' }, () =>
+      reworkFromComment(q, appkit, t, key, author, feedback),
+    );
+  } finally {
+    await clearTicketActivity(q, key, 'planning_response_in_progress');
+  }
 }
 
 /** The model round-trip and write-back behind {@link applyCommentFeedback}. */
@@ -843,6 +853,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                     p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url,
                     ba.branch_name AS active_branch,
                     esc.stage AS escalation_stage, esc.pr_number AS escalation_pr,
+                    COALESCE(act.activities, '[]'::jsonb) AS activities,
                     ${PLANNING_REVIEW_COLUMNS_SQL},
                     (SELECT COUNT(*)::int FROM app.ticket_links l
                      JOIN app.tickets b ON b.key = l.ticket_key
@@ -871,6 +882,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                WHERE e.ticket_key = t.key AND e.stage IN ('pinged','flagged')
                ORDER BY (e.stage = 'flagged') DESC, e.id DESC LIMIT 1
              ) esc ON true
+             LEFT JOIN LATERAL (
+               SELECT jsonb_agg(a.activity_type ORDER BY a.started_at) AS activities
+               FROM app.ticket_activity a WHERE a.ticket_key = t.key
+             ) act ON true
              ${planningReviewJoin('t')}
              ${REPO_CONNECTED_JOIN}
              WHERE t.engagement_id = $1 ORDER BY t.seq DESC`,
@@ -949,6 +964,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       SELECT t.*, e.client, e.name AS engagement_name,
              p.branch AS pr_branch, ba.branch_name AS active_branch, ag.agent AS task_agent,
              esc.stage AS escalation_stage, esc.pr_number AS escalation_pr,
+             COALESCE(act.activities, '[]'::jsonb) AS activities
              ${PLANNING_REVIEW_COLUMNS_SQL}
       FROM app.tickets t
       JOIN app.engagements e ON e.id = t.engagement_id
@@ -972,6 +988,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         WHERE s.ticket_key = t.key AND s.stage IN ('pinged','flagged')
         ORDER BY (s.stage = 'flagged') DESC, s.id DESC LIMIT 1
       ) esc ON true
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(a.activity_type ORDER BY a.started_at) AS activities
+        FROM app.ticket_activity a WHERE a.ticket_key = t.key
+      ) act ON true
       ${planningReviewJoin('t')}`;
 
     app.get('/api/tickets', async (_req, res) => {
@@ -1198,6 +1218,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           res.status(409).json({ error: 'Refine is for active tickets' });
           return;
         }
+        await setTicketActivity(q, key, 'refinement_in_progress');
+        try {
         const asText = (v: unknown): string => (typeof v === 'string' ? v : '');
         const original = asText(t.description).trim() || asText(t.title);
         const content = [asText(t.title), asText(t.description).trim()].filter(Boolean).join('\n\n');
@@ -1284,6 +1306,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           [String(t.engagement_id), `Refined ${key} into a planned ticket.`]
         );
         res.json(updated.rows[0]);
+        } finally {
+          await clearTicketActivity(q, key, 'refinement_in_progress');
+        }
       } catch (err) {
         console.error('refine ticket failed:', err);
         res.status(500).json({ error: 'Failed to refine ticket' });

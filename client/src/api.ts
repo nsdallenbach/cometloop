@@ -119,6 +119,7 @@ function mapTicket(r: Row): Ticket {
     description: s(r.description),
     ac: j(r.ac, []),
     blocked: b(r.blocked),
+    activities: j(r.activities, []),
     tags: j(r.tags, []),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),

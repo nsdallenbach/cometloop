@@ -1,5 +1,6 @@
 export type Health = 'ok' | 'risk' | 'off';
 export type TicketStatus = 'backlog' | 'progress' | 'review' | 'done' | 'proposed' | 'dismissed';
+export type TicketActivity = 'refinement_in_progress' | 'planning_response_in_progress';
 
 export interface Phase {
   name: string;
@@ -87,6 +88,8 @@ export interface Ticket {
   description: string;
   ac: string[];
   blocked: boolean;
+  /** Background planning work currently touching this ticket. */
+  activities: TicketActivity[];
   tags: string[];
   deployState: DeployState | null;
   deployUrl: string | null;
