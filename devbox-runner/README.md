@@ -21,22 +21,39 @@ by the `HARNESS` env var. Built in:
 | `claude` (default) | Claude Code | `claude -p` stream-json, workdir `.mcp.json` |
 | `codex` | OpenAI Codex CLI | `codex exec --json`, prompt on stdin; MCP via Codex's global config |
 | `generic` | any prompt-taking CLI | set `AGENT_BIN`/`AGENT_ARGS`; raw output feed, no MCP |
-| `omnigent` | Omnigent (hosted) | **scaffolding only** — `mode: 'service'`, no process; see below |
+| `omnigent` | Omnigent (self-hosted server) | **scaffolding only** — `mode: 'service'`, no process; see below |
 
 Adapters come in two **modes**. The three above are `process` adapters: the
 runner spawns them and reads stdout. `omnigent` is the first `service` adapter —
-the agent is a hosted API, so instead of `bin`/`args`/`parseLine` it provides
-`submit` / `poll` / `fetchResult` / `cancel`, and `runner.mjs` drives a poll loop
-that emits into the same live-feed sink and writes `RESULT.md` itself. `mode` is
-absent on process adapters and defaults to `process`, so nothing existing moved.
+the agent runs behind an HTTP API, so instead of `bin`/`args`/`parseLine` it
+provides `submit` / `poll` / `fetchResult` / `cancel`, and `runner.mjs` drives a
+poll loop that emits into the same live-feed sink and writes `RESULT.md` itself.
+`mode` is absent on process adapters and defaults to `process`, so nothing
+existing moved.
 
-The Omnigent adapter is **deliberately non-functional**: its four vendor calls
-throw a pointer to
-[docs/omnigent-runner-architecture.md](../docs/omnigent-runner-architecture.md),
-because the vendor API was unconfirmed at design time (DAT-221). The console half
-— registry, branding, the service seam and the poll loop — is real. If Omnigent
-turns out to ship a plain CLI, skip the adapter entirely and use
-`HARNESS=generic AGENT_BIN=omnigent`.
+[Omnigent](https://github.com/omnigent-ai/omnigent) is an open-source
+**meta-harness** — it orchestrates Claude Code, Codex and Cursor rather than
+being a model itself — and you host it yourself (`omnigent server`, default
+`http://localhost:6767`). It is a `service` adapter because its CLI is a REPL
+with no stdout event stream: the typed events, status vocabulary, produced-file
+retrieval and spend caps all live on the server's REST + SSE API.
+
+The adapter is still **deliberately non-functional** — its four calls throw a
+pointer to
+[docs/omnigent-runner-architecture.md](../docs/omnigent-runner-architecture.md)
+rather than shipping untested HTTP against a server nobody has stood up. But the
+endpoints and states it carries are now **verified** against Omnigent's published
+OpenAPI, so finishing it is implementation, not design. The console half —
+registry, branding, the service seam and the poll loop — is real.
+
+For a zero-code trial today, `omnigent run` does take a prompt, at the cost of an
+unparsed activity feed:
+
+```bash
+HARNESS=generic AGENT_BIN=omnigent AGENT_LABEL=omnigent \
+  AGENT_ARGS='run --harness claude-sdk -p' AGENT_PROMPT_VIA=arg \
+  node devbox-runner/runner.mjs
+```
 
 Because nothing is shared or stateful between runs, a **mixed fleet just
 works**: point some boxes at `HARNESS=claude` and others at `HARNESS=codex`

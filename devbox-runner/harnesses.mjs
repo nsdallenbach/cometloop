@@ -18,10 +18,10 @@
 //   parseLine(line, emit),             // one stdout line → emit.print(text) / emit.tool(name, input)
 //   writeConfig(dir, mcpServerPath),   // wire MCP into the workdir (or no-op)
 //
-// mode: 'service' — the agent is a hosted API the runner bridges to. There is no
-// process to spawn, no stdout to parse and no exit code, so the four lifecycle
-// steps become explicit calls; runner.mjs drives them from a poll loop and emits
-// into the same sink parseLine writes to, so the live tool feed is unchanged:
+// mode: 'service' — the agent runs behind an HTTP API the runner bridges to
+// (self-hosted or vendor). There is no stdout to parse and no exit code, so the
+// four lifecycle steps become explicit calls; runner.mjs drives them from a poll
+// loop and emits into the same sink parseLine writes to, so the feed is unchanged:
 //   name,
 //   submit(task, ctx) → handle,        // task: { pkg, prompt, workdir, git }
 //   poll(handle, ctx) → { state, events },   // state: running|succeeded|failed|cancelled
@@ -153,102 +153,147 @@ function codexHarness(env) {
   };
 }
 
-// ---------- Omnigent (hosted service — DAT-221 scaffolding) ----------
+// ---------- Omnigent (self-hosted server — DAT-221 scaffolding) ----------
 
 /**
- * Omnigent runs tasks in its own sandbox behind an HTTP API, so it is the first
- * `mode: 'service'` adapter: runner.mjs submits, polls, and writes RESULT.md from
- * the fetched result rather than spawning anything.
+ * Omnigent (github.com/omnigent-ai/omnigent, Apache-2.0) is an open-source
+ * META-HARNESS: it orchestrates Claude Code, Codex, Cursor and friends rather
+ * than being a model itself. It is NOT a vendor SaaS — you host the server, and
+ * it exposes a REST + SSE API (`/v1/...`, default http://localhost:6767).
  *
- * DELIBERATELY NON-FUNCTIONAL. The vendor API was not available when this was
- * designed (DAT-221), so the four calls throw a pointer to the write-up instead
- * of guessing endpoint shapes — a stub that silently no-ops would fail a real
- * ticket in a much more confusing way. Everything that does NOT depend on the
- * vendor (config resolution, state normalization, the runner-side poll loop and
- * the console's harness registry) is real and exercised by
- * tests/harness-abstraction.test.ts.
+ * It is still a `mode: 'service'` adapter, and for a sharper reason than the
+ * first design assumed: `omnigent run` exists and takes a prompt, but it is a
+ * REPL with no stdout event stream (--log / --debug-events write to files under
+ * ~/.omnigent/logs). Everything the console needs from a runner — typed events,
+ * a status vocabulary, produced-file retrieval, cancellation, spend caps — lives
+ * on the server API. So runner.mjs bridges to it rather than parsing stdout.
  *
- * To finish it: fill in submit/poll/fetchResult/cancel and correct the *_PATH
- * defaults. See docs/omnigent-runner-architecture.md §7.1.
+ * STILL NON-FUNCTIONAL: the four calls throw a pointer to the write-up rather
+ * than shipping untested HTTP against a server nobody has stood up yet — a stub
+ * that silently no-ops would fail a real ticket far more confusingly. What
+ * changed is that the endpoints and states below are now VERIFIED against the
+ * published OpenAPI (3.2.0, "Omnigent Server", 99 operations), so finishing this
+ * is implementation, not design.
+ *
+ * See docs/omnigent-runner-architecture.md §3.1 (call mapping), §7.1 (checklist).
  */
 
 const OMNIGENT_DOC = 'docs/omnigent-runner-architecture.md';
 
 /**
- * Vendor status word → the four states runner.mjs understands. Returns null for
- * anything unrecognized, which the poll loop treats as "keep waiting" and logs:
- * guessing 'failed' would bin completed work, and guessing 'succeeded' would
- * deliver an empty ticket. An unknown state that never resolves is caught by the
- * MAX_RUN_MINUTES watchdog, which is the safe direction to be wrong in.
+ * Omnigent status word → the four states runner.mjs understands.
+ *
+ * The session `status` enum is `idle | running | waiting | failed`, and it does
+ * NOT map one-to-one:
+ *
+ *   - `idle` is ambiguous — it means both "not started" and "finished the turn",
+ *     so it is NEVER a success signal on its own. It returns null here; success
+ *     is resolved from the response lifecycle (`ResponseCompleted`) plus a
+ *     retrievable RESULT.md. Treating bare `idle` as done would complete real
+ *     tickets as empty successes.
+ *   - `waiting` means the agent is blocked asking a human something
+ *     (ElicitationRequest). Nobody is there to answer it on an autonomous run,
+ *     so it maps to 'running' and the poll loop should raise a flag; the
+ *     watchdog ends it. See the write-up §5.2.
+ *
+ * Response-lifecycle words are accepted too, since that is what actually decides
+ * a terminal state. Unknown input returns null, which the poll loop treats as
+ * "keep waiting": guessing 'failed' would bin completed work and guessing
+ * 'succeeded' would deliver an empty ticket, and MAX_RUN_MINUTES is the backstop.
  */
 export function normalizeState(raw) {
   const s = String(raw ?? '')
     .trim()
     .toLowerCase();
-  if (['running', 'in_progress', 'pending', 'queued', 'started'].includes(s)) return 'running';
-  if (['succeeded', 'success', 'completed', 'complete', 'done'].includes(s)) return 'succeeded';
-  if (['failed', 'failure', 'error', 'errored', 'timed_out'].includes(s)) return 'failed';
-  if (['cancelled', 'canceled', 'aborted', 'stopped'].includes(s)) return 'cancelled';
+  // `waiting` is blocked-but-live; the caller flags it rather than ending the run.
+  if (['running', 'in_progress', 'pending', 'queued', 'started', 'waiting'].includes(s)) return 'running';
+  if (['succeeded', 'success', 'completed', 'complete', 'done', 'response_completed'].includes(s)) return 'succeeded';
+  // `incomplete` = stopped early (truncation / limit hit). That is not a delivery.
+  if (['failed', 'failure', 'error', 'errored', 'timed_out', 'response_failed', 'incomplete', 'response_incomplete'].includes(s))
+    return 'failed';
+  if (['cancelled', 'canceled', 'aborted', 'stopped', 'response_cancelled'].includes(s)) return 'cancelled';
   return null;
 }
 
+/** True when the session is alive but blocked on human input — flag, don't wait silently. */
+export function isBlockedState(raw) {
+  return String(raw ?? '').trim().toLowerCase() === 'waiting';
+}
+
 function omnigentHarness(env) {
-  const base = (env.OMNIGENT_BASE_URL ?? 'https://api.omnigent.ai').replace(/\/+$/, '');
+  const base = (env.OMNIGENT_BASE_URL ?? 'http://localhost:6767').replace(/\/+$/, '');
   const notImplemented = (call) => {
     throw new Error(
-      `Omnigent adapter is scaffolding only: ${call}() is not implemented — the vendor API is unconfirmed. See ${OMNIGENT_DOC} (§7.1 implementation checklist, §8 open questions).`,
+      `Omnigent adapter is scaffolding only: ${call}() is not implemented — no Omnigent server has been stood up yet. See ${OMNIGENT_DOC} (§3.1 call mapping, §7.1 implementation checklist).`,
     );
   };
   return {
     name: 'omnigent',
     mode: 'service',
     /**
-     * Vendor-specific configuration, all env-driven so confirming the real API is
-     * a config change rather than a code change. `apiKey` here is the local
-     * emulation fallback ONLY — in the fleet the credential is vended per task by
-     * the console (POST /api/agent/work/:id/omnigent-credential), so a long-lived
-     * vendor key never lands on a runner box. See the write-up §6.
+     * All env-driven so pointing at a real server is a config change, not a code
+     * change. There is deliberately NO apiKey: Omnigent is self-hosted, so auth
+     * is either a server account token (`omnigent login`) or — when the server
+     * runs as a Databricks App, the recommended posture — the Databricks identity
+     * the runner already holds. The first design's per-task vendor-key vending
+     * endpoint solves a problem that does not exist. See the write-up §6.1.
      */
     config: {
       baseUrl: base,
-      apiKey: env.OMNIGENT_API_KEY ?? null,
-      project: env.OMNIGENT_PROJECT ?? null,
-      submitPath: env.OMNIGENT_SUBMIT_PATH ?? '/v1/runs',
-      statusPath: env.OMNIGENT_STATUS_PATH ?? '/v1/runs/{id}',
-      resultPath: env.OMNIGENT_RESULT_PATH ?? '/v1/runs/{id}/result',
-      cancelPath: env.OMNIGENT_CANCEL_PATH ?? '/v1/runs/{id}/cancel',
-      pollMs: Number(env.OMNIGENT_POLL_MS ?? 5000),
+      token: env.OMNIGENT_TOKEN ?? null,
+      hostId: env.OMNIGENT_HOST_ID ?? null,
+      harness: env.OMNIGENT_HARNESS ?? 'claude-sdk',
+      workspace: env.OMNIGENT_WORKSPACE ?? null,
+      maxCostUsd: env.OMNIGENT_MAX_COST_USD ? Number(env.OMNIGENT_MAX_COST_USD) : null,
+      // Verified paths (OpenAPI 3.2.0, "Omnigent Server").
+      sessionsPath: env.OMNIGENT_SESSIONS_PATH ?? '/v1/sessions',
+      sessionPath: env.OMNIGENT_SESSION_PATH ?? '/v1/sessions/{id}',
+      streamPath: env.OMNIGENT_STREAM_PATH ?? '/v1/sessions/{id}/stream',
+      itemsPath: env.OMNIGENT_ITEMS_PATH ?? '/v1/sessions/{id}/items',
+      launchRunnerPath: env.OMNIGENT_LAUNCH_PATH ?? '/v1/hosts/{hostId}/runners',
+      pollMs: Number(env.OMNIGENT_POLL_MS ?? 15000),
     },
 
     /**
-     * task: { pkg, prompt, workdir, git } → an opaque handle carrying whatever
-     * poll/fetchResult/cancel need (at minimum the vendor run id, plus the event
-     * cursor once we know whether the status endpoint is cursorable).
+     * task: { pkg, prompt, workdir, git } → an opaque handle (session id, host id,
+     * environment id, stream position).
      *
-     * The prompt is passed through VERBATIM: it is rendered server-side and owned
-     * by the console repo, and it already carries the branch/PR/RESULT.md contract.
+     * Two calls: POST /v1/sessions uploads an agent bundle whose `prompt` is
+     * pkg.prompt VERBATIM (it is rendered server-side, owned by the console repo,
+     * and already carries the branch/PR/RESULT.md contract), then
+     * POST /v1/hosts/{hostId}/runners launches it with { session_id, workspace,
+     * git: { base_branch, branch_name } } — git branching is a native parameter.
      */
     submit() {
       return notImplemented('submit');
     },
 
-    /** One status check → { state, events } with only events new since the cursor. */
+    /**
+     * GET /v1/sessions/{id} for authoritative status, with events consumed from
+     * the SSE stream (GET /v1/sessions/{id}/stream) and replayed from
+     * GET /v1/sessions/{id}/items after a dropped connection.
+     */
     poll() {
       return notImplemented('poll');
     },
 
-    /** Terminal only → { summary, prUrl? }; the bridge writes summary to RESULT.md. */
+    /**
+     * Terminal only → { summary, prUrl? }. RESULT.md is read back out of the
+     * session environment over the filesystem API, then written into the runner
+     * workdir by the bridge, so the "no RESULT.md means failed" rule still holds.
+     */
     fetchResult() {
       return notImplemented('fetchResult');
     },
 
-    /** Best-effort abort for the watchdog and lead-side cancellation. */
+    /** Best-effort abort (DELETE /v1/sessions/{id}) for the watchdog and lead recall. */
     cancel() {
       return notImplemented('cancel');
     },
 
-    // Nothing executes locally, so there is no workdir to wire MCP into. If
-    // Omnigent supports MCP it is registered vendor-side (write-up §8, item 7).
+    // Nothing executes in the local workdir. Omnigent supports MCP first-class,
+    // so the delivery-console server is registered on the session instead:
+    // POST /v1/sessions/{id}/agent/mcp-servers (write-up §7.1 step 7).
     writeConfig() {},
   };
 }
