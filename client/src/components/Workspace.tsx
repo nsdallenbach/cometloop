@@ -267,6 +267,16 @@ export function Workspace({
             return <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ AGENT FAILED</span>;
           return null;
         })()}
+        {t.activities.includes('refinement_in_progress') && (
+          <span title="A scheduled backlog refinement pass is processing this ticket" style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
+            ◇ REFINING
+          </span>
+        )}
+        {t.activities.includes('planning_response_in_progress') && (
+          <span title="The planning agent is composing a response on this ticket" style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
+            ◆ PLANNING REPLY
+          </span>
+        )}
         {isDone && (
           <span style={{ ...mono(500, 9), color: 'var(--ok)', border: '1px solid var(--ok)', borderRadius: 2, padding: '1px 4px' }}>✓ DONE</span>
         )}

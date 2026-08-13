@@ -37,6 +37,7 @@ import { setupTicketOrderRoutes } from './ticket-order';
 import { clipText, installUtf8BodyRecovery } from './utf8-body';
 import { setupVelocityRoutes } from './velocity';
 import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
+import { TICKET_ACTIVITY_SCHEMA_SQL, clearTicketActivity, setTicketActivity } from './ticket-activity';
 import {
   SEED_ENGAGEMENTS,
   SEED_TICKETS,
@@ -188,7 +189,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL, ...PR_REVIEW_SCHEMA_SQL, ...PR_REQUEUE_SCHEMA_SQL, ...PR_ESCALATION_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...TICKET_ACTIVITY_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL, ...PR_REVIEW_SCHEMA_SQL, ...PR_REQUEUE_SCHEMA_SQL, ...PR_ESCALATION_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -362,6 +363,9 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
   ).rows;
   if (picked.length > 0) return;
 
+  await setTicketActivity(q, key, 'planning_response_in_progress');
+  try {
+
   const existingAc = (() => {
     try {
       const raw: unknown = typeof t.ac === 'string' ? JSON.parse(t.ac) : (t.ac ?? []);
@@ -420,6 +424,9 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
      VALUES ($1, 'AGENT', $2, 'JUST NOW', false)`,
     [String(t.engagement_id), `Planning agent reworked ${key} from ${author}'s feedback.`],
   );
+  } finally {
+    await clearTicketActivity(q, key, 'planning_response_in_progress');
+  }
 }
 
 function parseJsonBlock(text: string): unknown {
@@ -709,6 +716,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                     p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url,
                     ba.branch_name AS active_branch,
                     esc.stage AS escalation_stage, esc.pr_number AS escalation_pr,
+                    COALESCE(act.activities, '[]'::jsonb) AS activities,
                     (SELECT COUNT(*)::int FROM app.ticket_links l
                      JOIN app.tickets b ON b.key = l.ticket_key
                      WHERE l.linked_key = t.key AND l.type = 'blocks'
@@ -736,6 +744,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                WHERE e.ticket_key = t.key AND e.stage IN ('pinged','flagged')
                ORDER BY (e.stage = 'flagged') DESC, e.id DESC LIMIT 1
              ) esc ON true
+             LEFT JOIN LATERAL (
+               SELECT jsonb_agg(a.activity_type ORDER BY a.started_at) AS activities
+               FROM app.ticket_activity a WHERE a.ticket_key = t.key
+             ) act ON true
              ${REPO_CONNECTED_JOIN}
              WHERE t.engagement_id = $1 ORDER BY t.seq DESC`,
             [id],
@@ -801,7 +813,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     const crossTicketSelect = `
       SELECT t.*, e.client, e.name AS engagement_name,
              p.branch AS pr_branch, ba.branch_name AS active_branch, ag.agent AS task_agent,
-             esc.stage AS escalation_stage, esc.pr_number AS escalation_pr
+             esc.stage AS escalation_stage, esc.pr_number AS escalation_pr,
+             COALESCE(act.activities, '[]'::jsonb) AS activities
       FROM app.tickets t
       JOIN app.engagements e ON e.id = t.engagement_id
       LEFT JOIN LATERAL (
@@ -823,7 +836,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         SELECT s.stage, s.pr_number FROM app.pr_review_escalations s
         WHERE s.ticket_key = t.key AND s.stage IN ('pinged','flagged')
         ORDER BY (s.stage = 'flagged') DESC, s.id DESC LIMIT 1
-      ) esc ON true`;
+      ) esc ON true
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(a.activity_type ORDER BY a.started_at) AS activities
+        FROM app.ticket_activity a WHERE a.ticket_key = t.key
+      ) act ON true`;
 
     app.get('/api/tickets', async (_req, res) => {
       try {
@@ -1019,6 +1036,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           res.status(409).json({ error: 'Refine is for active tickets' });
           return;
         }
+        await setTicketActivity(q, key, 'refinement_in_progress');
+        try {
         const asText = (v: unknown): string => (typeof v === 'string' ? v : '');
         const original = asText(t.description).trim() || asText(t.title);
         const content = [asText(t.title), asText(t.description).trim()].filter(Boolean).join('\n\n');
@@ -1092,6 +1111,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           [String(t.engagement_id), `Refined ${key} into a planned ticket.`],
         );
         res.json(updated.rows[0]);
+        } finally {
+          await clearTicketActivity(q, key, 'refinement_in_progress');
+        }
       } catch (err) {
         console.error('refine ticket failed:', err);
         res.status(500).json({ error: 'Failed to refine ticket' });
