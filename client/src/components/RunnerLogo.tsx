@@ -22,6 +22,7 @@ export function inferHarness(runner: string): string {
   if (n.includes('gemini')) return 'gemini';
   if (n.includes('copilot')) return 'copilot';
   if (n.includes('cursor')) return 'cursor';
+  if (n.includes('omnigent')) return 'omnigent';
   return 'claude-code';
 }
 

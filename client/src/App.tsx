@@ -15,6 +15,7 @@ import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
 import { prefetchMermaid } from './components/Markdown';
 import { Palette, type PaletteItem } from './components/Palette';
+import { NotificationCenter } from './components/NotificationCenter';
 
 export type { Tab } from './routes';
 
@@ -78,7 +79,7 @@ export default function App() {
       })
       .catch(() => {
         // Least privilege until the lookup succeeds; the top bar surfaces a retry.
-        setMe({ email: 'unknown', role: 'developer', leadOf: [] });
+        setMe({ email: 'unknown', role: 'developer', leadOf: [], memberOf: [] });
         setMeError(true);
       });
   }, []);
@@ -227,6 +228,10 @@ export default function App() {
   const canCreate = isAdmin || me?.role === 'lead';
   const canLead = useCallback(
     (id: string) => isAdmin || (me?.role === 'lead' && me.leadOf.includes(id)),
+    [isAdmin, me],
+  );
+  const canUseRunners = useCallback(
+    (id: string) => isAdmin || Boolean(me?.leadOf.includes(id) || me?.memberOf.includes(id)),
     [isAdmin, me],
   );
 
@@ -556,6 +561,7 @@ export default function App() {
           ADMIN
         </button>
         )}
+        <NotificationCenter onOpenTicket={openTicket} />
         <button
           onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
           title="Toggle theme"
@@ -696,6 +702,7 @@ export default function App() {
           ticket={detailTicket}
           team={curDetail?.team.map((t) => t.name) ?? []}
           lead={eng ? canLead(eng.id) : false}
+          runnerAccess={eng ? canUseRunners(eng.id) : false}
           agentTask={detailAgentTask}
           allTickets={detail?.tickets ?? []}
           onOpenTicket={openTicket}

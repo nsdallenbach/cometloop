@@ -183,7 +183,7 @@ function LiveTicket() {
       whileInView={{ opacity: 1, scale: 1, rotateX: 0 }}
       viewport={{ once: true, root: root ?? undefined }}
       transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-      style={{ ...glass, width: 300, padding: 16, border: `1px solid ${border}`, boxShadow: `0 20px 60px -20px ${border}`, transition: 'border-color .5s, box-shadow .5s' }}
+      style={{ ...glass, width: 300, maxWidth: '100%', padding: 16, border: `1px solid ${border}`, boxShadow: `0 20px 60px -20px ${border}`, transition: 'border-color .5s, box-shadow .5s' }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>NAC-104</span>
@@ -304,6 +304,243 @@ function CoordShowcase() {
   );
 }
 
+/** Shared scroll-in trigger for the anime.js visuals: fires once, inside the page's own scroller. */
+function useEnterOnce(ref: RefObject<Element | null>, run: (el: Element) => void, threshold = 0.35) {
+  const root = useContext(ScrollRoot);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (e) => {
+        if (e[0].isIntersecting) {
+          run(el);
+          io.disconnect();
+        }
+      },
+      { threshold, root: root?.current ?? null },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run is a stable inline callback; re-observing on identity change would replay the animation
+  }, [ref, root, threshold]);
+}
+
+const VELOCITY_WEEKS = [34, 41, 38, 55, 49, 68, 62, 84];
+
+/** Weekly delivery bars — the Analytics velocity headline, in miniature. */
+function VelocityBars() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEnterOnce(ref, (el) => {
+    animate(el.querySelectorAll('.vbar'), { scaleY: [0, 1], delay: stagger(80, { start: 120 }), duration: 700, ease: 'out(3)' });
+  });
+  return (
+    <div ref={ref} style={{ ...glass, padding: 18, borderRadius: 12, width: '100%', maxWidth: 400 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>DELIVERED · TICKETS PER WEEK</span>
+        <span style={{ ...chip('transparent', 'var(--ok)'), marginLeft: 'auto', border: '1px solid var(--ok)' }}>▲ WEEK OVER WEEK</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 5, height: 104, marginTop: 14 }}>
+        {VELOCITY_WEEKS.map((h, i) => {
+          const last = i === VELOCITY_WEEKS.length - 1;
+          return (
+            <div
+              key={i}
+              className="vbar"
+              style={{
+                flex: 1,
+                height: `${h}%`,
+                borderRadius: '3px 3px 0 0',
+                background: last ? 'var(--acc)' : 'var(--agentsoft)',
+                border: `1px solid ${last ? 'var(--acc)' : 'var(--agent)'}`,
+                transform: 'scaleY(0)',
+                transformOrigin: 'bottom',
+              }}
+            />
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 18, marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+        {[
+          { label: 'IDEA → DONE', v: 31, s: 'h' },
+          { label: 'IN REVIEW', v: 6, s: 'h' },
+        ].map((k) => (
+          <div key={k.label}>
+            <div style={{ ...mono(700, 18), color: 'var(--tx)' }}>
+              <CountUp value={k.v} suffix={k.s} />
+            </div>
+            <div style={{ ...mono(500, 9.5), color: 'var(--tx3)', letterSpacing: '.08em', marginTop: 2 }}>{k.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Widths are the hours to scale (6h = full track), so the gap between what a
+// developer would have spent and what the run actually cost is the picture.
+const ESTIMATE_ROWS = [
+  { label: 'HUMAN EST', w: 100, c: 'var(--tx3)', v: '6h' },
+  { label: 'AGENT EST', w: 7, c: 'var(--agent)', v: '0.4h' },
+  { label: 'ACTUAL', w: 9, c: 'var(--ok)', v: '0.5h' },
+];
+
+/** Estimate vs actual, drawn as tracks that fill on scroll-in. */
+function EstimateTracks() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEnterOnce(ref, (el) => {
+    animate(el.querySelectorAll('.etrack'), { scaleX: [0, 1], delay: stagger(130, { start: 150 }), duration: 800, ease: 'out(3)' });
+  });
+  return (
+    <div ref={ref} style={{ ...glass, padding: 18, borderRadius: 12, width: '100%', maxWidth: 400 }}>
+      <div style={{ ...mono(400, 10), color: 'var(--tx3)', marginBottom: 14 }}>NAC-104 · HOURS</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {ESTIMATE_ROWS.map((r) => (
+          <div key={r.label}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 5 }}>
+              <span style={{ ...mono(500, 9.5), color: 'var(--tx3)', letterSpacing: '.08em' }}>{r.label}</span>
+              <span style={{ ...mono(600, 11), color: r.c, marginLeft: 'auto' }}>{r.v}</span>
+            </div>
+            <div style={{ height: 6, borderRadius: 3, background: 'var(--line)', overflow: 'hidden' }}>
+              <div className="etrack" style={{ width: `${r.w}%`, height: '100%', borderRadius: 3, background: r.c, transform: 'scaleX(0)', transformOrigin: 'left' }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--tx3)', marginTop: 14, lineHeight: 1.45 }}>
+        Calibrated per engagement from the tickets that already closed.
+      </div>
+    </div>
+  );
+}
+
+const REVIEW_STEPS = [
+  { when: 'PR OPENED', color: 'var(--agent)', text: 'The reviewer agent reads the diff and posts its findings on the PR.' },
+  { when: '+24H', color: 'var(--warn)', text: 'Still unreviewed — the engagement lead gets pinged in the notification centre.' },
+  { when: '+48H', color: 'var(--bad)', text: 'The console comments on the PR and flags the ticket on the board.' },
+];
+
+/** The review SLA, as a vertical clock — same reveal cadence as the coordination feed. */
+function ReviewClock() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', maxWidth: 400 }}>
+      {REVIEW_STEPS.map((s, i) => (
+        <Reveal key={s.when} delay={i * 0.18}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', ...glass, borderLeft: `3px solid ${s.color}`, padding: '10px 12px', borderRadius: 8 }}>
+            <span style={{ ...chip('transparent', s.color), border: `1px solid ${s.color}`, flex: 'none', marginTop: 1 }}>{s.when}</span>
+            <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.45, minWidth: 0 }}>{s.text}</div>
+          </div>
+        </Reveal>
+      ))}
+      <Reveal delay={0.54}>
+        <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.06em', paddingLeft: 2 }}>
+          REVIEW · MERGE · DISMISS — ANY OF THEM STOPS THE CLOCK
+        </div>
+      </Reveal>
+    </div>
+  );
+}
+
+const HARNESSES = [
+  { env: 'claude', label: 'Claude Code', cmd: 'claude -p --output-format stream-json', c: 'var(--acc)' },
+  { env: 'codex', label: 'OpenAI Codex', cmd: 'codex exec --json', c: 'var(--agent)' },
+  { env: 'generic', label: 'Any CLI agent', cmd: '$AGENT_BIN $AGENT_ARGS < prompt', c: 'var(--ok)' },
+];
+
+/** The runner swapping coding agents — one env var, same delivery loop. */
+function HarnessSwitch() {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setI((v) => (v + 1) % HARNESSES.length), 2400);
+    return () => clearInterval(t);
+  }, []);
+  const h = HARNESSES[i];
+  return (
+    <div style={{ ...glass, padding: 18, borderRadius: 12, width: '100%', maxWidth: 400, fontFamily: "'DM Mono', monospace", fontSize: 11.5 }}>
+      <div style={{ color: 'var(--tx3)' }}>
+        $ HARNESS=
+        <motion.span key={h.env} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }} style={{ color: h.c, fontWeight: 600 }}>
+          {h.env}
+        </motion.span>{' '}
+        node runner.mjs
+      </div>
+      <motion.div key={`${h.env}-cmd`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }} style={{ color: 'var(--tx2)', marginTop: 8, minHeight: 32 }}>
+        <div style={{ color: 'var(--ok)' }}>✓ {h.label} attached</div>
+        <div style={{ marginTop: 4 }}>&gt; {h.cmd}</div>
+      </motion.div>
+      <div style={{ borderTop: '1px solid var(--line)', marginTop: 12, paddingTop: 10, color: 'var(--tx3)' }}>
+        wait → claim → work → PR → complete
+      </div>
+      <div style={{ display: 'flex', gap: 4, marginTop: 10 }}>
+        {HARNESSES.map((x, j) => (
+          <div key={x.env} style={{ flex: 1, height: 3, borderRadius: 2, background: j === i ? h.c : 'var(--line)', transition: 'background .4s' }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The agent map: runners and serving endpoints wired to the console. */
+function FleetMap() {
+  const ref = useRef<SVGSVGElement>(null);
+  useEnterOnce(
+    ref,
+    (el) => {
+      animate(el.querySelectorAll('.fm-link'), { strokeDashoffset: [220, 0], duration: 1400, ease: 'inOut(3)' });
+      animate(el.querySelectorAll('.fm-node'), { opacity: [0, 1], scale: [0.5, 1], delay: stagger(120, { start: 300 }), duration: 600, ease: 'out(3)' });
+    },
+    0.3,
+  );
+  const left = [
+    { y: 34, label: 'devbox-1', c: 'var(--agent)' },
+    { y: 100, label: 'devbox-2', c: 'var(--agent)' },
+    { y: 166, label: 'codex-1', c: 'var(--agent)' },
+  ];
+  const right = [
+    { y: 60, label: 'claude-sonnet-5', c: 'var(--acc)' },
+    { y: 140, label: 'pr-reviewer', c: 'var(--warn)' },
+  ];
+  return (
+    <svg ref={ref} viewBox="0 0 420 210" style={{ width: '100%', maxWidth: 420 }}>
+      {[...left.map((n) => ({ from: [96, n.y], to: [188, 100] })), ...right.map((n) => ({ from: [232, 100], to: [312, n.y] }))].map((l, i) => (
+        <path
+          key={i}
+          className="fm-link"
+          d={`M${l.from[0]},${l.from[1]} C${(l.from[0] + l.to[0]) / 2},${l.from[1]} ${(l.from[0] + l.to[0]) / 2},${l.to[1]} ${l.to[0]},${l.to[1]}`}
+          fill="none"
+          stroke="var(--line2)"
+          strokeWidth={1}
+          strokeDasharray={220}
+          strokeDashoffset={220}
+        />
+      ))}
+      <g className="fm-node" style={{ opacity: 0 }}>
+        <rect x={188} y={82} width={44} height={36} rx={6} fill="var(--bg2)" stroke="var(--acc)" strokeWidth={1} />
+        <text x={210} y={104} textAnchor="middle" style={{ ...mono(600, 9), fill: 'var(--acc)', letterSpacing: '.06em' }}>
+          CONSOLE
+        </text>
+      </g>
+      {left.map((n) => (
+        <g key={n.label} className="fm-node" style={{ opacity: 0 }}>
+          <circle cx={78} cy={n.y} r={6} fill={n.c} />
+          <circle cx={78} cy={n.y} r={12} fill="none" stroke={n.c} strokeWidth={1} opacity={0.4} />
+          <text x={62} y={n.y + 3.5} textAnchor="end" style={{ ...mono(500, 9.5), fill: 'var(--tx2)' }}>
+            {n.label}
+          </text>
+        </g>
+      ))}
+      {right.map((n) => (
+        <g key={n.label} className="fm-node" style={{ opacity: 0 }}>
+          <rect x={312} y={n.y - 9} width={18} height={18} rx={4} fill="none" stroke={n.c} strokeWidth={1.2} />
+          <circle cx={321} cy={n.y} r={3.5} fill={n.c} />
+          <text x={338} y={n.y + 3.5} style={{ ...mono(500, 9.5), fill: 'var(--tx2)' }}>
+            {n.label}
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
 /* ------------------------------------------------------------------ feature data */
 
 interface Feature {
@@ -327,7 +564,12 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       kicker: 'PLAN',
       title: 'One sentence in. A delivery plan out.',
       body: 'Type a request into the chatbox and the planning model on Databricks turns it into a real ticket — Context, Approach, Dependencies, and testable acceptance criteria — with your words kept verbatim underneath.',
-      points: ['Databricks model serving', 'Markdown descriptions & comments', 'Retro-refine any existing ticket', 'Comments re-plan the ticket before an agent starts'],
+      points: [
+        'Databricks model serving',
+        'Markdown descriptions & comments',
+        'Mermaid diagrams drawn into the plan, in console colors',
+        'Comments re-plan the ticket before an agent starts',
+      ],
       accent: 'var(--acc)',
       visual: (
         <div style={{ ...glass, padding: 18, borderRadius: 12, width: '100%', maxWidth: 400 }}>
@@ -343,12 +585,28 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       ),
     },
     {
+      kicker: 'ESTIMATES',
+      title: 'Two clocks on every ticket.',
+      body: 'Nothing reaches the board without an estimate. The planning agent sizes the work twice — the hours an agent will take, and the hours it would have cost a developer — and the console keeps score against what actually happened, calibrating the next estimate from this engagement’s own closed tickets.',
+      points: ['Agent and human hours, required on every create path', 'Calibration learned per engagement from actuals', 'Human dev time saved, measured not claimed', 'Content-based backfill for tickets written before the rule'],
+      accent: 'var(--ok)',
+      visual: <EstimateTracks />,
+    },
+    {
       kicker: 'DEPLOY TO AGENT',
       title: 'Drag a ticket. Walk away.',
       body: 'The board has a Deploy-to-Agent lane. Drop a ticket in and an autonomous runner claims it, works it with Claude Code, and reports back live — while you watch the card move through every state on its own.',
       points: ['Atomic claiming across a runner fleet', 'Live progress, tool calls & heartbeats on the card', 'Drag to reprioritize · drag out to recall', 'Spring-animated board (Motion layout)'],
       accent: 'var(--agent)',
       visual: <LiveTicket />,
+    },
+    {
+      kicker: 'BRING YOUR OWN AGENT',
+      title: 'Claude Code today. Whatever ships next, tomorrow.',
+      body: 'The runner core — wait, claim, work, PR, complete — is harness-agnostic. A harness adapter is one entry describing how to launch a coding agent, how to read its output into the live feed, and how to wire the MCP server into its workdir. Claude Code and Codex ship in the box; a generic adapter takes anything else.',
+      points: ['One env var swaps the coding agent', 'Streaming output normalised into one tool-call feed', 'MCP wired per harness, or not at all', 'Adding a harness changes no runner logic'],
+      accent: 'var(--acc)',
+      visual: <HarnessSwitch />,
     },
     {
       kicker: 'AUTONOMOUS DELIVERY',
@@ -363,12 +621,40 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       ),
     },
     {
+      kicker: 'REVIEW ON A CLOCK',
+      title: 'A PR nobody reads is a PR nobody ships.',
+      body: 'Agents stop at the pull request — humans merge, always. So the console guards the gap: a reviewer agent registered in Agent Bricks reads the diff and comments first, and an SLA watch escalates anything left sitting. Merge conflicts get the same treatment — trivial ones auto-resolve, anything overlapping another ticket’s open PR is escalated to the people who own it.',
+      points: ['Agent Bricks PR reviewer on the gate', '24h lead ping · 48h PR comment and board flag', 'Escalates exactly once, and a dismissal resets the clock', 'Conflict reports name the overlapping PRs and tickets'],
+      accent: 'var(--warn)',
+      visual: <ReviewClock />,
+    },
+    {
       kicker: 'AGENTS THAT TALK',
       title: 'A fleet that coordinates itself.',
       body: 'Multiple runners share a Lakebase-backed channel. They announce branches, warn about conflicts, ask each other questions and hand work off — and every message is mirrored onto the tickets and the status feed, styled so you can follow along.',
       points: ['Identity-verified — no spoofing', 'Branch-takeover protection', 'Mirrored to tickets & the feed', 'Six message types with SLAs'],
       accent: 'var(--agent)',
       visual: <CoordShowcase />,
+    },
+    {
+      kicker: 'THE FLEET, MAPPED',
+      title: 'Every agent on one architecture diagram.',
+      body: 'The Agents page draws the whole delivery estate — runners observed from real task history, model-serving endpoints and Agent Bricks agents registered against the project, and the console in the middle. Click any node for what it is, what it has worked, and when it was last seen.',
+      points: ['Runners derived from actual claims, not a config file', 'Serving endpoints and Agent Bricks agents as first-class nodes', 'Spacing that scales with the size of the fleet', 'Click-through detail on every node'],
+      accent: 'var(--agent)',
+      visual: (
+        <div style={{ display: 'grid', placeItems: 'center', width: '100%' }}>
+          <FleetMap />
+        </div>
+      ),
+    },
+    {
+      kicker: 'MEASURED DELIVERY',
+      title: 'Velocity, in hours you can defend.',
+      body: 'Analytics leads with org velocity: idea → done, cycle time, how long work waits in review, and the human dev time the agents gave back. Underneath sit the delivered chart, backlog trajectory, and a commit-activity graph over the last 26 weeks — all built from the event trail, not from anyone’s memory.',
+      points: ['Lead, cycle and decision time with week-over-week movement', 'Where work waits, stage by stage', 'Agent hours derived from real activity', '26-week commit activity graph'],
+      accent: 'var(--ok)',
+      visual: <VelocityBars />,
     },
     {
       kicker: 'SECURE BY DESIGN',
@@ -390,12 +676,12 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       kicker: 'OPEN SURFACE',
       title: 'Any AI tool can drive it.',
       body: 'An MCP server exposes the whole console — boards, tickets, comments, the agent lifecycle, git credentials, coordination — to Claude Code and any MCP client. Your devbox VMs run the same loop with zero glue code.',
-      points: ['17 MCP tools', 'Devbox runner reference + systemd unit', 'Local-emulation mode for testing', 'Permissions stay server-side'],
+      points: ['34 MCP tools', 'Devbox runner reference + systemd unit', 'Local-emulation mode for testing', 'Permissions stay server-side'],
       accent: 'var(--agent)',
       visual: (
         <div style={{ ...glass, padding: 18, borderRadius: 12, width: '100%', maxWidth: 400, fontFamily: "'DM Mono', monospace", fontSize: 11.5 }}>
           <div style={{ color: 'var(--tx3)' }}>$ claude mcp add delivery-console</div>
-          <div style={{ color: 'var(--ok)', marginTop: 6 }}>✓ 17 tools registered</div>
+          <div style={{ color: 'var(--ok)', marginTop: 6 }}>✓ 34 tools registered</div>
           <div style={{ color: 'var(--tx2)', marginTop: 8 }}>&gt; claim_agent_work → get_git_credential</div>
           <div style={{ color: 'var(--tx2)' }}>&gt; report_agent_progress → finish_agent_work</div>
           <motion.div animate={{ opacity: [1, 0.2, 1] }} transition={{ duration: 1.1, repeat: Infinity }} style={{ color: 'var(--agent)', marginTop: 8 }}>
@@ -407,10 +693,12 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
   ];
 
   const stats = [
-    { v: 17, s: '', label: 'MCP tools' },
+    { v: 34, s: '', label: 'MCP tools' },
     { v: 2, s: 's', label: 'pickup latency' },
     { v: 0, s: '', label: 'tokens stored' },
+    { v: 3, s: '', label: 'coding harnesses' },
     { v: 6, s: '', label: 'agent message types' },
+    { v: 24, s: 'h', label: 'review SLA' },
   ];
 
   return (
@@ -419,7 +707,7 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       {/* HERO */}
       <section style={{ position: 'relative', minHeight: 'min(92vh, 760px)', display: 'flex', alignItems: 'center', padding: '0 8vw', overflow: 'hidden' }}>
         <HeroBackdrop y={heroY} />
-        <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: 'minmax(0,1.2fr) minmax(0,0.8fr)', gap: 40, alignItems: 'center', width: '100%', maxWidth: 1200, margin: '0 auto' }}>
+        <div className="lp-hero" style={{ position: 'relative', width: '100%', maxWidth: 1200, margin: '0 auto' }}>
           <div>
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, ...glass, borderRadius: 999, padding: '5px 12px', marginBottom: 22 }}>
               <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok)', animation: 'eec-pulse 2.4s infinite' }} />
@@ -449,9 +737,27 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
 
       {/* CAPABILITY MARQUEE */}
       <div style={{ borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', padding: '14px 0', overflow: 'hidden', background: 'var(--bg2)' }}>
-        <motion.div animate={{ x: ['0%', '-50%'] }} transition={{ duration: 26, repeat: Infinity, ease: 'linear' }} style={{ display: 'flex', gap: 30, whiteSpace: 'nowrap', width: 'max-content' }}>
+        {/* duration tracks the item count so the marquee keeps its original glide speed */}
+        <motion.div animate={{ x: ['0%', '-50%'] }} transition={{ duration: 42, repeat: Infinity, ease: 'linear' }} style={{ display: 'flex', gap: 30, whiteSpace: 'nowrap', width: 'max-content' }}>
           {[0, 1].flatMap((k) =>
-            ['AI-planned tickets', 'Deploy to Agent', 'Autonomous PRs', 'Inter-agent coordination', 'GitHub App auth', 'MCP server', 'Live tool-call telemetry', 'Roadmap & burndown', 'Estimate calibration', 'CI on merge'].map((t, i) => (
+            [
+              'AI-planned tickets',
+              'Plan diagrams',
+              'Deploy to Agent',
+              'Any coding harness',
+              'Autonomous PRs',
+              'AI PR review gate',
+              'Review SLA escalation',
+              'Merge-conflict triage',
+              'Inter-agent coordination',
+              'Agent map',
+              'GitHub App auth',
+              'MCP server',
+              'Live tool-call telemetry',
+              'Org velocity analytics',
+              'Estimate calibration',
+              'CI on merge',
+            ].map((t, i) => (
               <span key={`${k}-${i}`} style={{ ...mono(500, 11), color: 'var(--tx3)', letterSpacing: '.08em' }}>
                 <span style={{ color: 'var(--acc)', marginRight: 30 }}>◆</span>
                 {t}
@@ -464,7 +770,7 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       {/* FEATURES */}
       <div id="features" style={{ maxWidth: 1120, margin: '0 auto', padding: '90px 6vw 40px' }}>
         {features.map((f, i) => (
-          <section key={f.kicker} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'clamp(28px, 5vw, 72px)', alignItems: 'center', padding: '54px 0', direction: i % 2 ? 'rtl' : 'ltr' }}>
+          <section key={f.kicker} className="lp-feature" style={{ direction: i % 2 ? 'rtl' : 'ltr' }}>
             <Reveal style={{ direction: 'ltr' }}>
               <div style={{ ...chip('transparent', f.accent), border: `1px solid ${f.accent}`, display: 'inline-block', marginBottom: 16 }}>{f.kicker}</div>
               <h2 style={{ margin: '0 0 14px', fontSize: 'clamp(24px, 3vw, 34px)', fontWeight: 700, lineHeight: 1.12, letterSpacing: '-0.02em' }}>{f.title}</h2>
@@ -487,7 +793,8 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
 
       {/* STAT BAND */}
       <div style={{ borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', background: 'var(--bg2)', padding: '54px 6vw' }}>
-        <div style={{ maxWidth: 980, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 24, textAlign: 'center' }}>
+        {/* 140px min keeps all six stats on one row at desktop and reflows to 3 / 2 as it narrows */}
+        <div style={{ maxWidth: 1120, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 24, textAlign: 'center' }}>
           {stats.map((st) => (
             <Reveal key={st.label}>
               <div style={{ ...mono(700, 44), letterSpacing: '-0.02em', background: 'linear-gradient(120deg, var(--agent), var(--acc))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
