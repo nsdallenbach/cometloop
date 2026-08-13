@@ -90,6 +90,8 @@ with a Lakebase credential.
 - `coordination.ts` — inter-agent messages (announce, request/response, SLAs), mirrored to tickets
 - `repos.ts` — GitHub/ADO providers: PR & commit sync, ticket auto-linking, merge-from-drawer, deploy watch
 - `pr-conflicts.ts` — conflict reports, auto-resolve vs escalate assessment
+- `pr-review.ts` — the PR review gate: case assembly, reviewer prompt, verdict parsing, PR + ticket publication
+- `pr-requeue.ts` — merge-conflict requeue: classify the review outcome, put the ticket back at the top of the runner queue, cap the retries
 - `pr-escalation.ts` — review-SLA watch: 24h lead ping, 48h PR comment + board flag, lead dismissal resets the timers
 - `estimates.ts` — agent + human hour estimates, per-engagement calibration from actuals
 - `ticket-events / -links / -tags / -order / -attachments` — the event trail, dependencies, tags, board ordering, file attachments
@@ -158,6 +160,19 @@ warning on red. Merging is possible from the ticket drawer itself
 (lead-only, click-to-confirm). Conflict tooling gives agents a safe path:
 report conflicts, auto-resolve only trivial ones, escalate anything that
 overlaps another ticket's open PR.
+
+A merge conflict is the one review outcome that jumps the queue. When the
+review gate publishes a verdict, `pr-requeue.ts` asks the provider whether the
+PR still merges; if it does not — or the reviewer names a conflict while
+mergeability is not yet computed — the ticket goes back into
+`app.agent_tasks` at a priority above anything the board can assign, carrying
+instructions to resolve that conflict and nothing else. Claiming already
+sorted `priority DESC, id`, so the conflict is the next pickup and several
+conflicts stay FIFO among themselves. Every other review failure (tests,
+lint, unmet criteria) keeps the human path. The loop is bounded: three
+automatic attempts on the same PR, then the conflict is flagged for a
+developer instead of requeued, and each decision is recorded in
+`app.pr_requeues` with the PR number, reason and timestamp.
 
 Reviews get a clock too: an open PR that no one has reviewed 24h after the
 runner opened it pings the engagement lead in the notification centre, and at
