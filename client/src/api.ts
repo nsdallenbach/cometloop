@@ -7,6 +7,9 @@ import type {
   BurndownDay,
   CommitDay,
   ContextFile,
+  FileLibrary,
+  FileFolder,
+  FileRule,
   ContextSource,
   DeployState,
   Engagement,
@@ -118,7 +121,9 @@ function mapTicket(r: Row): Ticket {
         : {
             number: n(r.pr_number),
             title: s(r.pr_title),
-            state: (['open', 'merged', 'closed'].includes(s(r.pr_state)) ? s(r.pr_state) : 'closed') as ActivePr['state'],
+            state: (['open', 'merged', 'closed'].includes(s(r.pr_state))
+              ? s(r.pr_state)
+              : 'closed') as ActivePr['state'],
             branch: s(r.pr_branch),
             url: s(r.pr_url),
           },
@@ -222,9 +227,14 @@ export const api = {
   },
 
   async detail(engId: string): Promise<EngagementDetail> {
-    const d = await http<{ tickets: Row[]; sources: Row[]; feed: Row[]; team: Row[]; suggestions: Row[]; agentTasks?: Row[] }>(
-      `/api/engagements/${engId}/detail`,
-    );
+    const d = await http<{
+      tickets: Row[];
+      sources: Row[];
+      feed: Row[];
+      team: Row[];
+      suggestions: Row[];
+      agentTasks?: Row[];
+    }>(`/api/engagements/${engId}/detail`);
     return {
       tickets: d.tickets.map(mapTicket),
       sources: d.sources.map(mapSource),
@@ -269,14 +279,23 @@ export const api = {
       workstream?: string;
       estHours: number;
       humanEstHours: number;
-    },
+    }
   ): Promise<Ticket> {
     return mapTicket(await http<Row>(`/api/engagements/${engId}/tickets`, { method: 'POST', ...json(payload) }));
   },
 
   patchTicket(
     key: string,
-    patch: { status?: TicketStatus; assignee?: string; description?: string; roadmapItem?: string | null; estHours?: number | null; humanEstHours?: number | null; branch?: string; tags?: string[] },
+    patch: {
+      status?: TicketStatus;
+      assignee?: string;
+      description?: string;
+      roadmapItem?: string | null;
+      estHours?: number | null;
+      humanEstHours?: number | null;
+      branch?: string;
+      tags?: string[];
+    }
   ) {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },
@@ -331,7 +350,10 @@ export const api = {
   },
 
   async parsePlan(input: { path?: string; description?: string }, client: string, name: string): Promise<ParsedPlan> {
-    const plan = await http<Partial<ParsedPlan>>('/api/sow/parse', { method: 'POST', ...json({ ...input, client, name }) });
+    const plan = await http<Partial<ParsedPlan>>('/api/sow/parse', {
+      method: 'POST',
+      ...json({ ...input, client, name }),
+    });
     return {
       phases: plan.phases ?? [],
       milestones: plan.milestones ?? [],
@@ -430,7 +452,9 @@ export const api = {
     return http('/api/github-app/status');
   },
 
-  githubAppRepos(): Promise<{ repos: { installationId: number; fullName: string; defaultBranch: string; private: boolean }[] }> {
+  githubAppRepos(): Promise<{
+    repos: { installationId: number; fullName: string; defaultBranch: string; private: boolean }[];
+  }> {
     return http('/api/github-app/repos');
   },
 
@@ -534,7 +558,14 @@ export const api = {
    *  Returns the raw stored row — callers refetch the overview for mapped data. */
   deployAgent(
     projectId: string,
-    payload: { name: string; agentType?: ProjectAgentType; harness?: string; modelProvider?: string; model?: string; notes?: string },
+    payload: {
+      name: string;
+      agentType?: ProjectAgentType;
+      harness?: string;
+      modelProvider?: string;
+      model?: string;
+      notes?: string;
+    }
   ): Promise<unknown> {
     return http(`/api/projects/${encodeURIComponent(projectId)}/agents`, { method: 'POST', ...json(payload) });
   },
@@ -542,25 +573,31 @@ export const api = {
   // ---- ticket attachments ----
 
   async attachments(ticketKey: string): Promise<TicketAttachment[]> {
-    const d = await http<{ attachments: TicketAttachment[] }>(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments`);
+    const d = await http<{ attachments: TicketAttachment[] }>(
+      `/api/tickets/${encodeURIComponent(ticketKey)}/attachments`
+    );
     return d.attachments;
   },
 
-  uploadAttachment(ticketKey: string, file: File): Promise<TicketAttachment> {
-    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments?filename=${encodeURIComponent(file.name)}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        ...(file.type ? { 'X-Attachment-Content-Type': file.type } : {}),
-      },
-      body: file,
-    });
+  uploadAttachment(ticketKey: string, file: File, folderId?: string): Promise<TicketAttachment> {
+    return http(
+      `/api/tickets/${encodeURIComponent(ticketKey)}/attachments?filename=${encodeURIComponent(file.name)}${folderId ? `&folderId=${encodeURIComponent(folderId)}` : ''}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          ...(file.type ? { 'X-Attachment-Content-Type': file.type } : {}),
+        },
+        body: file,
+      }
+    );
   },
 
   deleteAttachment(ticketKey: string, id: string) {
-    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
   },
-
 
   /** Tool-call feed for the ticket's latest agent run; `after` makes the poll incremental. */
   async toolCalls(ticketKey: string, after?: number): Promise<{ taskId: number | null; calls: ToolCall[] }> {
@@ -568,7 +605,12 @@ export const api = {
     const d = await http<{ task_id: unknown; calls?: Row[] }>(`/api/tickets/${ticketKey}/tool-calls${qs}`);
     return {
       taskId: d.task_id == null ? null : n(d.task_id),
-      calls: (d.calls ?? []).map((r) => ({ id: n(r.id), tool: s(r.tool), detail: s(r.detail), calledAt: s(r.called_at) })),
+      calls: (d.calls ?? []).map((r) => ({
+        id: n(r.id),
+        tool: s(r.tool),
+        detail: s(r.detail),
+        calledAt: s(r.called_at),
+      })),
     };
   },
 
@@ -591,6 +633,40 @@ export const api = {
     return http(`/api/engagements/${engId}/context-files/${encodeURIComponent(name)}`, { method: 'DELETE' });
   },
 
+  fileLibrary(engId: string): Promise<FileLibrary> {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/files`);
+  },
+  createFolder(engId: string, name: string, parentId: string | null): Promise<FileFolder> {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/folders`, {
+      method: 'POST',
+      ...json({ name, parentId }),
+    });
+  },
+  renameFolder(engId: string, folderId: string, name: string): Promise<FileFolder> {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/folders/${folderId}`, {
+      method: 'PATCH',
+      ...json({ name }),
+    });
+  },
+  deleteFolder(engId: string, folderId: string) {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/folders/${folderId}`, { method: 'DELETE' });
+  },
+  uploadLibraryFile(engId: string, folderId: string, file: File): Promise<{ fired: { ticketKey: string }[] }> {
+    return http(
+      `/api/engagements/${encodeURIComponent(engId)}/files?folderId=${encodeURIComponent(folderId)}&filename=${encodeURIComponent(file.name)}`,
+      { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file }
+    );
+  },
+  deleteLibraryFile(engId: string, fileId: string) {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/files/${fileId}`, { method: 'DELETE' });
+  },
+  createFileRule(engId: string, rule: Omit<FileRule, 'id'>): Promise<FileRule> {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/file-rules`, { method: 'POST', ...json(rule) });
+  },
+  deleteFileRule(engId: string, ruleId: string) {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/file-rules/${ruleId}`, { method: 'DELETE' });
+  },
+
   // ---- project standards ----
 
   async standards(engId: string): Promise<ProjectStandards> {
@@ -598,7 +674,9 @@ export const api = {
   },
 
   async saveStandards(engId: string, content: string): Promise<ProjectStandards> {
-    return mapStandards(await http<Row>(`/api/engagements/${engId}/standards`, { method: 'PUT', ...json({ content }) }));
+    return mapStandards(
+      await http<Row>(`/api/engagements/${engId}/standards`, { method: 'PUT', ...json({ content }) })
+    );
   },
 
   refineStandards(engId: string, content: string, instructions?: string): Promise<{ content: string }> {

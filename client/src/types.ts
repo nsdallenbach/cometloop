@@ -223,6 +223,35 @@ export interface ContextFile {
   url: string;
 }
 
+export interface FileFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+export interface LibraryFile {
+  id: string;
+  filename: string;
+  size: number;
+  folderId: string;
+  ticketKey: string | null;
+  createdAt: string | null;
+  url: string;
+}
+export interface FileRule {
+  id: string;
+  name: string;
+  folderId: string;
+  filePattern: string;
+  actionType: 'create_ticket' | 'refine_ticket';
+  targetTicket: string | null;
+  enabled: boolean;
+}
+export interface FileLibrary {
+  folders: FileFolder[];
+  files: LibraryFile[];
+  rules: FileRule[];
+}
+
 export interface TicketAttachment {
   id: string;
   filename: string;
@@ -253,7 +282,13 @@ export interface VelocityReport {
   stages: { key: 'queue' | 'build' | 'review'; label: string; medianHrs: number | null; samples: number }[];
   backlog: { date: string; open: number }[];
   backlogDelta: number | null;
-  weekly: { week: string; doneCount: number; leadTimeHrs: number | null; cycleTimeHrs: number | null; humanHoursSaved: number }[];
+  weekly: {
+    week: string;
+    doneCount: number;
+    leadTimeHrs: number | null;
+    cycleTimeHrs: number | null;
+    humanHoursSaved: number;
+  }[];
   humanHoursSaved: { window: number; total: number; agentHoursSpent: number };
   thenVsNow: {
     spanDays: number;

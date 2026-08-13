@@ -1,8 +1,17 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/react';
 import { Plus, Rocket } from 'lucide-react';
 import { api } from '../api';
-import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
+import type {
+  AgentTask,
+  ContextFile,
+  Engagement,
+  EngagementDetail,
+  FileLibrary,
+  RepoDetail,
+  Ticket,
+  TicketStatus,
+} from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { dropBoardTicket, laneOf } from '../lib/board-order';
@@ -89,6 +98,7 @@ export function Workspace({
   const [composer, setComposer] = useState<string | null>(null);
   const [pushed, setPushed] = useState<boolean | null>(null);
   const [drafting, setDrafting] = useState(false);
+  const [sourcesTab, setSourcesTab] = useState<'git' | 'files'>('git');
   const [pushing, setPushing] = useState(false);
   const [pushConfirm, setPushConfirm] = useState(false);
   const [revertConfirm, setRevertConfirm] = useState<number | null>(null);
@@ -163,7 +173,7 @@ export function Workspace({
   }, [detail?.agentTasks]);
   const agentLaneKeys = useMemo(
     () => new Set([...laneTasks.running, ...laneTasks.queued].map((a) => a.ticketKey)),
-    [laneTasks],
+    [laneTasks]
   );
   /**
    * A lane's cards in render order — shared by the kanban render and the
@@ -175,7 +185,7 @@ export function Workspace({
    */
   const laneTickets = (k: TicketStatus): Ticket[] => {
     let col = (detail?.tickets ?? []).filter(
-      (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key),
+      (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key)
     );
     if (k === 'done') {
       const cutoff = now - 24 * 60 * 60 * 1000;
@@ -229,185 +239,315 @@ export function Workspace({
     const agentFailed = at?.state === 'failed' && t.status === 'backlog';
     const isDone = t.status === 'done';
     return (
-    <div
-      {...(!clone && {
-        onPointerDown: (e: React.PointerEvent) => beginPress(e, { kind: 'ticket', key: t.key, w: 0, h: 0 }),
-        onClick: () => {
-          if (!suppressClick.current) openTicket(t.key);
-        },
-        className: 'hv-border',
-      })}
-      style={{
-        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : t.status === 'review' ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
-        background: 'var(--bg2)',
-        borderRadius: 3,
-        padding: '9px 11px',
-        cursor: clone ? 'grabbing' : 'pointer',
-      }}
-    >
-      <div style={{ display: 'flex', gap: 7, alignItems: 'center', marginBottom: 4 }}>
-        <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>{t.key}</span>
-        {t.agent && (
-          <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◆ AGENT</span>
-        )}
-        {(() => {
-          if (!at) return null;
-          if (at.state === 'queued')
-            return <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◇ QUEUED</span>;
-          if (at.state === 'claimed' || at.state === 'working')
-            return (
-              <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
-                ◆ {(at.agent ?? 'AGENT').toUpperCase()} ON IT
-              </span>
-            );
-          if (agentDone)
-            return <span style={{ ...mono(500, 9), color: 'var(--warn)', border: '1px solid var(--warn)', borderRadius: 2, padding: '1px 4px' }}>◆ READY FOR REVIEW</span>;
-          if (agentFailed)
-            return <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ AGENT FAILED</span>;
-          return null;
-        })()}
-        {isDone && (
-          <span style={{ ...mono(500, 9), color: 'var(--ok)', border: '1px solid var(--ok)', borderRadius: 2, padding: '1px 4px' }}>✓ DONE</span>
-        )}
-        {!isDone && (t.deployState === 'pending' || t.deployState === 'running') && (
-          <span style={{ ...mono(500, 9), color: 'var(--acc)', border: '1px solid var(--acc)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
-            ◌ DEPLOYING
-          </span>
-        )}
-        {!isDone && t.deployState === 'failed' && (
-          <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ DEPLOY FAILED</span>
-        )}
-        {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
-        {!isDone && t.waitingOn > 0 && (
-          <span
-            title={`Waiting on ${t.waitingOn} linked ticket${t.waitingOn === 1 ? '' : 's'} — see Linked work in the ticket`}
-            style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}
-          >
-            ⧗ WAITING ON {t.waitingOn}
-          </span>
-        )}
-      </div>
-      <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
-      {t.branch && !t.activePr && (
-        <div
-          title={t.branch}
-          style={{ ...mono(400, 9.5), color: 'var(--tx3)', marginBottom: 7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-        >
-          ⎇ {t.branch}
-        </div>
-      )}
-      {t.tags.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 7 }}>
-          {t.tags.slice(0, 4).map((tag) => (
-            <span key={tag} style={{ ...mono(500, 9), color: 'var(--tx3)', border: '1px solid var(--line2)', borderRadius: 2, padding: '1px 5px' }}>
-              {tag}
+      <div
+        {...(!clone && {
+          onPointerDown: (e: React.PointerEvent) => beginPress(e, { kind: 'ticket', key: t.key, w: 0, h: 0 }),
+          onClick: () => {
+            if (!suppressClick.current) openTicket(t.key);
+          },
+          className: 'hv-border',
+        })}
+        style={{
+          border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : t.status === 'review' ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
+          background: 'var(--bg2)',
+          borderRadius: 3,
+          padding: '9px 11px',
+          cursor: clone ? 'grabbing' : 'pointer',
+        }}
+      >
+        <div style={{ display: 'flex', gap: 7, alignItems: 'center', marginBottom: 4 }}>
+          <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>{t.key}</span>
+          {t.agent && (
+            <span
+              style={{
+                ...mono(500, 9),
+                background: 'var(--agentsoft)',
+                color: 'var(--agent)',
+                borderRadius: 2,
+                padding: '1px 4px',
+              }}
+            >
+              ◆ AGENT
             </span>
-          ))}
-          {t.tags.length > 4 && (
-            <span title={t.tags.slice(4).join(', ')} style={{ ...mono(400, 9), color: 'var(--tx3)', padding: '1px 0' }}>
-              +{t.tags.length - 4}
+          )}
+          {(() => {
+            if (!at) return null;
+            if (at.state === 'queued')
+              return (
+                <span
+                  style={{
+                    ...mono(500, 9),
+                    border: '1px dashed var(--agent)',
+                    color: 'var(--agent)',
+                    borderRadius: 2,
+                    padding: '1px 4px',
+                  }}
+                >
+                  ◇ QUEUED
+                </span>
+              );
+            if (at.state === 'claimed' || at.state === 'working')
+              return (
+                <span
+                  style={{
+                    ...mono(500, 9),
+                    background: 'var(--agentsoft)',
+                    color: 'var(--agent)',
+                    borderRadius: 2,
+                    padding: '1px 4px',
+                    animation: 'eec-pulse 2.4s infinite',
+                  }}
+                >
+                  ◆ {(at.agent ?? 'AGENT').toUpperCase()} ON IT
+                </span>
+              );
+            if (agentDone)
+              return (
+                <span
+                  style={{
+                    ...mono(500, 9),
+                    color: 'var(--warn)',
+                    border: '1px solid var(--warn)',
+                    borderRadius: 2,
+                    padding: '1px 4px',
+                  }}
+                >
+                  ◆ READY FOR REVIEW
+                </span>
+              );
+            if (agentFailed)
+              return (
+                <span
+                  style={{
+                    ...mono(500, 9),
+                    color: 'var(--bad)',
+                    border: '1px solid var(--bad)',
+                    borderRadius: 2,
+                    padding: '1px 4px',
+                  }}
+                >
+                  ✕ AGENT FAILED
+                </span>
+              );
+            return null;
+          })()}
+          {isDone && (
+            <span
+              style={{
+                ...mono(500, 9),
+                color: 'var(--ok)',
+                border: '1px solid var(--ok)',
+                borderRadius: 2,
+                padding: '1px 4px',
+              }}
+            >
+              ✓ DONE
+            </span>
+          )}
+          {!isDone && (t.deployState === 'pending' || t.deployState === 'running') && (
+            <span
+              style={{
+                ...mono(500, 9),
+                color: 'var(--acc)',
+                border: '1px solid var(--acc)',
+                borderRadius: 2,
+                padding: '1px 4px',
+                animation: 'eec-pulse 2.4s infinite',
+              }}
+            >
+              ◌ DEPLOYING
+            </span>
+          )}
+          {!isDone && t.deployState === 'failed' && (
+            <span
+              style={{
+                ...mono(500, 9),
+                color: 'var(--bad)',
+                border: '1px solid var(--bad)',
+                borderRadius: 2,
+                padding: '1px 4px',
+              }}
+            >
+              ✕ DEPLOY FAILED
+            </span>
+          )}
+          {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
+          {!isDone && t.waitingOn > 0 && (
+            <span
+              title={`Waiting on ${t.waitingOn} linked ticket${t.waitingOn === 1 ? '' : 's'} — see Linked work in the ticket`}
+              style={{
+                ...mono(500, 9),
+                color: 'var(--bad)',
+                border: '1px solid var(--bad)',
+                borderRadius: 2,
+                padding: '1px 4px',
+              }}
+            >
+              ⧗ WAITING ON {t.waitingOn}
             </span>
           )}
         </div>
-      )}
-      {t.activePr && (
-        <a
-          href={t.activePr.url}
-          target="_blank"
-          rel="noreferrer"
-          title={`PR #${t.activePr.number}: ${t.activePr.title} — ${t.activePr.state}`}
-          className="hv-border"
-          // Keep the link from starting a card drag or opening the drawer.
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            marginBottom: 7,
-            border: '1px solid var(--line)',
-            borderRadius: 2,
-            padding: '3px 7px',
-            background: 'var(--bg)',
-            textDecoration: 'none',
-          }}
-        >
-          <span
+        <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35, marginBottom: 7 }}>{t.title}</div>
+        {t.branch && !t.activePr && (
+          <div
+            title={t.branch}
             style={{
-              ...mono(500, 8.5),
-              flex: 'none',
-              color: PR_STATE_COLOR[t.activePr.state],
-              border: `1px solid ${PR_STATE_COLOR[t.activePr.state]}`,
-              borderRadius: 2,
-              padding: '0 4px',
-              letterSpacing: '.06em',
+              ...mono(400, 9.5),
+              color: 'var(--tx3)',
+              marginBottom: 7,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
             }}
           >
-            PR {t.activePr.state.toUpperCase()}
-          </span>
-          <span style={{ ...mono(400, 9.5), color: 'var(--tx2)', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            ⎇ {t.activePr.branch || `#${t.activePr.number}`}
-          </span>
-        </a>
-      )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-        <span
-          className="hv-border"
-          title={
-            t.assignee === '—'
-              ? 'Unassigned — click to assign'
-              : runner !== null
-                ? `${t.assignee} (${runnerBrand(runner).label} runner) — click to reassign`
-                : `${t.assignee} — click to reassign`
-          }
-          onClick={(e) => {
-            e.stopPropagation();
-            const r = e.currentTarget.getBoundingClientRect();
-            setAssignPop({ key: t.key, x: r.left, y: r.bottom + 4 });
-          }}
-          style={{
-            width: 20,
-            height: 20,
-            borderRadius: '50%',
-            background: 'var(--bg3)',
-            border: '1px solid var(--line2)',
-            display: 'grid',
-            placeItems: 'center',
-            ...mono(500, 9),
-            color: 'var(--tx2)',
-            cursor: 'pointer',
-          }}
-        >
-          {runner !== null ? runnerBrand(runner).mark(12) : initials(t.assignee)}
-        </span>
-        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{t.estHours != null ? fmtDuration(t.estHours) : t.est}</span>
-        <span style={{ ...mono(400, 10), color: 'var(--tx3)', marginLeft: 'auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>
-          {t.sources[0]?.type ?? ''}
-        </span>
-        {lead && t.status === 'backlog' && (
-          <button
+            ⎇ {t.branch}
+          </div>
+        )}
+        {t.tags.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 7 }}>
+            {t.tags.slice(0, 4).map((tag) => (
+              <span
+                key={tag}
+                style={{
+                  ...mono(500, 9),
+                  color: 'var(--tx3)',
+                  border: '1px solid var(--line2)',
+                  borderRadius: 2,
+                  padding: '1px 5px',
+                }}
+              >
+                {tag}
+              </span>
+            ))}
+            {t.tags.length > 4 && (
+              <span
+                title={t.tags.slice(4).join(', ')}
+                style={{ ...mono(400, 9), color: 'var(--tx3)', padding: '1px 0' }}
+              >
+                +{t.tags.length - 4}
+              </span>
+            )}
+          </div>
+        )}
+        {t.activePr && (
+          <a
+            href={t.activePr.url}
+            target="_blank"
+            rel="noreferrer"
+            title={`PR #${t.activePr.number}: ${t.activePr.title} — ${t.activePr.state}`}
             className="hv-border"
-            title="Deploy to agent queue"
+            // Keep the link from starting a card drag or opening the drawer.
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              marginBottom: 7,
+              border: '1px solid var(--line)',
+              borderRadius: 2,
+              padding: '3px 7px',
+              background: 'var(--bg)',
+              textDecoration: 'none',
+            }}
+          >
+            <span
+              style={{
+                ...mono(500, 8.5),
+                flex: 'none',
+                color: PR_STATE_COLOR[t.activePr.state],
+                border: `1px solid ${PR_STATE_COLOR[t.activePr.state]}`,
+                borderRadius: 2,
+                padding: '0 4px',
+                letterSpacing: '.06em',
+              }}
+            >
+              PR {t.activePr.state.toUpperCase()}
+            </span>
+            <span
+              style={{
+                ...mono(400, 9.5),
+                color: 'var(--tx2)',
+                minWidth: 0,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              ⎇ {t.activePr.branch || `#${t.activePr.number}`}
+            </span>
+          </a>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <span
+            className="hv-border"
+            title={
+              t.assignee === '—'
+                ? 'Unassigned — click to assign'
+                : runner !== null
+                  ? `${t.assignee} (${runnerBrand(runner).label} runner) — click to reassign`
+                  : `${t.assignee} — click to reassign`
+            }
             onClick={(e) => {
               e.stopPropagation();
-              deployTicket(t.key);
+              const r = e.currentTarget.getBoundingClientRect();
+              setAssignPop({ key: t.key, x: r.left, y: r.bottom + 4 });
             }}
             style={{
+              width: 20,
+              height: 20,
+              borderRadius: '50%',
+              background: 'var(--bg3)',
+              border: '1px solid var(--line2)',
+              display: 'grid',
+              placeItems: 'center',
               ...mono(500, 9),
-              flex: 'none',
-              border: '1px dashed var(--agent)',
-              background: 'none',
-              color: 'var(--agent)',
-              borderRadius: 2,
-              padding: '1px 5px',
+              color: 'var(--tx2)',
               cursor: 'pointer',
             }}
           >
-            ◇ DEPLOY TO QUEUE
-          </button>
-        )}
+            {runner !== null ? runnerBrand(runner).mark(12) : initials(t.assignee)}
+          </span>
+          <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
+            {t.estHours != null ? fmtDuration(t.estHours) : t.est}
+          </span>
+          <span
+            style={{
+              ...mono(400, 10),
+              color: 'var(--tx3)',
+              marginLeft: 'auto',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: 120,
+            }}
+          >
+            {t.sources[0]?.type ?? ''}
+          </span>
+          {lead && t.status === 'backlog' && (
+            <button
+              className="hv-border"
+              title="Deploy to agent queue"
+              onClick={(e) => {
+                e.stopPropagation();
+                deployTicket(t.key);
+              }}
+              style={{
+                ...mono(500, 9),
+                flex: 'none',
+                border: '1px dashed var(--agent)',
+                background: 'none',
+                color: 'var(--agent)',
+                borderRadius: 2,
+                padding: '1px 5px',
+                cursor: 'pointer',
+              }}
+            >
+              ◇ DEPLOY TO QUEUE
+            </button>
+          )}
+        </div>
       </div>
-    </div>
     );
   };
 
@@ -432,7 +572,8 @@ export function Workspace({
 
   // Lane accents (drag highlight, drop slot): Review yellow, Done green,
   // Backlog blue.
-  const laneAccent = (k: TicketStatus | 'agent') => (k === 'review' ? 'var(--warn)' : k === 'done' ? 'var(--ok)' : 'var(--acc)');
+  const laneAccent = (k: TicketStatus | 'agent') =>
+    k === 'review' ? 'var(--warn)' : k === 'done' ? 'var(--ok)' : 'var(--acc)';
 
   /** The gap a dragged ticket will drop into; lane cards shift around it. */
   const dropSlotGap = (k: DropSlot['lane'], h: number) => (
@@ -517,7 +658,7 @@ export function Workspace({
               return i >= 0 ? { ...a, priority: ids.length - i } : a;
             }),
           }
-        : d,
+        : d
     );
     api.reorderAgentQueue(eng.id, ids).catch(() => {
       refreshDetail();
@@ -573,7 +714,13 @@ export function Workspace({
           const t = tickets.find((x) => x.key === payload.key);
           if (t) {
             const lane = laneOf(t);
-            origin = { lane, idx: Math.max(0, laneTickets(lane).findIndex((x) => x.key === payload.key)) };
+            origin = {
+              lane,
+              idx: Math.max(
+                0,
+                laneTickets(lane).findIndex((x) => x.key === payload.key)
+              ),
+            };
           }
           setSlot(origin);
         }
@@ -642,7 +789,12 @@ export function Workspace({
     window.addEventListener('pointercancel', cancel);
   };
 
-  const dropCard = (payload: DragPayload, lane: TicketStatus | 'agent' | null, overQcard: number | null, slot: DropSlot | null) => {
+  const dropCard = (
+    payload: DragPayload,
+    lane: TicketStatus | 'agent' | null,
+    overQcard: number | null,
+    slot: DropSlot | null
+  ) => {
     markDropped(payload.key);
     if (payload.kind === 'task') {
       if (!lead) return;
@@ -686,7 +838,13 @@ export function Workspace({
     setDetail((d) => (d ? { ...d, tickets: result.tickets } : d));
     const saves: Promise<unknown>[] = [];
     if (result.statusChanged) saves.push(api.patchTicket(payload.key, { status: lane }));
-    if (result.orderChanged) saves.push(api.reorderTickets(eng.id, result.tickets.map((x) => x.key)));
+    if (result.orderChanged)
+      saves.push(
+        api.reorderTickets(
+          eng.id,
+          result.tickets.map((x) => x.key)
+        )
+      );
     Promise.all(saves).catch((e: Error) => {
       refreshDetail();
       toast(`Move failed — ${e.message}`);
@@ -698,26 +856,34 @@ export function Workspace({
     const running = at.state !== 'queued';
     // Warning states: an explicit runner-raised flag, or a silent heartbeat.
     const flagged = running && at.flag != null && at.flag !== '';
-    // eslint-disable-next-line react-hooks/purity -- staleness re-evaluates with the board poll by design
-    const stale = running && !flagged && at.lastHeartbeat != null && Date.now() - new Date(at.lastHeartbeat).getTime() > 3 * 60_000;
+    /* eslint-disable react-hooks/purity -- staleness re-evaluates with the board poll by design */
+    const stale =
+      running && !flagged && at.lastHeartbeat != null && Date.now() - new Date(at.lastHeartbeat).getTime() > 3 * 60_000;
+    /* eslint-enable react-hooks/purity */
     // Status dot: grey ring queued → green spinner running → yellow ⚠ warning.
-    const statusDot = flagged || stale ? (
-      <span title={flagged ? at.flag ?? '' : 'No heartbeat for over 3 minutes'} style={{ ...mono(600, 11), color: 'var(--warn)', flex: 'none', lineHeight: 1 }}>⚠</span>
-    ) : (
-      <span
-        title={running ? 'Runner active' : 'Waiting for a runner'}
-        style={{
-          width: 9,
-          height: 9,
-          flex: 'none',
-          display: 'inline-block',
-          borderRadius: '50%',
-          border: `2px solid ${running ? 'var(--ok)' : 'var(--tx3)'}`,
-          borderTopColor: running ? 'transparent' : 'var(--tx3)',
-          animation: running ? 'eec-spin .8s linear infinite' : 'none',
-        }}
-      />
-    );
+    const statusDot =
+      flagged || stale ? (
+        <span
+          title={flagged ? (at.flag ?? '') : 'No heartbeat for over 3 minutes'}
+          style={{ ...mono(600, 11), color: 'var(--warn)', flex: 'none', lineHeight: 1 }}
+        >
+          ⚠
+        </span>
+      ) : (
+        <span
+          title={running ? 'Runner active' : 'Waiting for a runner'}
+          style={{
+            width: 9,
+            height: 9,
+            flex: 'none',
+            display: 'inline-block',
+            borderRadius: '50%',
+            border: `2px solid ${running ? 'var(--ok)' : 'var(--tx3)'}`,
+            borderTopColor: running ? 'transparent' : 'var(--tx3)',
+            animation: running ? 'eec-spin .8s linear infinite' : 'none',
+          }}
+        />
+      );
     return (
       <div
         {...(!clone && {
@@ -757,7 +923,17 @@ export function Workspace({
               {flagged ? 'NEEDS ATTENTION' : stale ? 'STALLED' : at.state === 'working' ? 'WORKING' : 'CLAIMED'}
             </span>
           ) : (
-            <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '1px 5px' }}>◇ #{qPos} IN QUEUE</span>
+            <span
+              style={{
+                ...mono(500, 9),
+                border: '1px dashed var(--agent)',
+                color: 'var(--agent)',
+                borderRadius: 2,
+                padding: '1px 5px',
+              }}
+            >
+              ◇ #{qPos} IN QUEUE
+            </span>
           )}
           {lead && !running && (
             <button
@@ -767,7 +943,15 @@ export function Workspace({
                 e.stopPropagation();
                 recallTask(at.ticketKey);
               }}
-              style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), cursor: 'pointer', padding: 0 }}
+              style={{
+                marginLeft: 'auto',
+                border: 'none',
+                background: 'none',
+                color: 'var(--tx3)',
+                ...mono(400, 10),
+                cursor: 'pointer',
+                padding: 0,
+              }}
             >
               ✕
             </button>
@@ -780,17 +964,51 @@ export function Workspace({
         </div>
         <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.35 }}>{t?.title ?? at.ticketKey}</div>
         {!running && at.instructions && (
-          <div style={{ marginTop: 5, fontSize: 11, color: 'var(--tx3)', lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <div
+            style={{
+              marginTop: 5,
+              fontSize: 11,
+              color: 'var(--tx3)',
+              lineHeight: 1.4,
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
             {at.instructions}
           </div>
         )}
         {flagged && (
-          <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 11.5,
+              color: 'var(--warn)',
+              fontWeight: 600,
+              lineHeight: 1.4,
+              display: '-webkit-box',
+              WebkitLineClamp: 3,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
             ⚠ {at.flag}
           </div>
         )}
         {running && (
-          <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--tx2)', lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 11.5,
+              color: 'var(--tx2)',
+              lineHeight: 1.4,
+              display: '-webkit-box',
+              WebkitLineClamp: 3,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
             {at.lastNote ?? 'Claimed — waiting for the first progress note…'}
           </div>
         )}
@@ -816,7 +1034,14 @@ export function Workspace({
             {t?.branch && (
               <span
                 title={t.branch}
-                style={{ ...mono(400, 9.5), color: 'var(--tx3)', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                style={{
+                  ...mono(400, 9.5),
+                  color: 'var(--tx3)',
+                  minWidth: 0,
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
               >
                 ⎇ {t.branch}
               </span>
@@ -855,15 +1080,28 @@ export function Workspace({
         borderRadius: 4,
       }}
     >
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderBottom: '1px solid var(--line)' }}>
+      <div
+        style={{
+          flex: 'none',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '9px 12px',
+          borderBottom: '1px solid var(--line)',
+        }}
+      >
         <span style={{ ...mono(500, 10), letterSpacing: '.1em', color: 'var(--agent)' }}>◆ DEPLOY TO AGENT</span>
-        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{laneTasks.running.length + laneTasks.queued.length}</span>
+        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
+          {laneTasks.running.length + laneTasks.queued.length}
+        </span>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
         {laneTasks.running.map((a) => agentCard(a, null))}
         {laneTasks.queued.map((a, i) => agentCard(a, i + 1))}
         {!hasActiveAgentWork && (
-          <div style={{ padding: '18px 10px', fontSize: 11.5, color: 'var(--tx3)', textAlign: 'center', lineHeight: 1.5 }}>
+          <div
+            style={{ padding: '18px 10px', fontSize: 11.5, color: 'var(--tx3)', textAlign: 'center', lineHeight: 1.5 }}
+          >
             Drag a ticket here to deploy it to an agent.
             <br />
             Agents pull from the top of the queue.
@@ -876,12 +1114,26 @@ export function Workspace({
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* engagement header */}
-      <div style={{ flex: 'none', padding: '14px 22px 0', borderBottom: '1px solid var(--line)', background: 'var(--bg2)' }}>
+      <div
+        style={{
+          flex: 'none',
+          padding: '14px 22px 0',
+          borderBottom: '1px solid var(--line)',
+          background: 'var(--bg2)',
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button
             className="hv-tx2"
             onClick={goPortfolio}
-            style={{ background: 'none', border: 'none', color: 'var(--tx3)', ...mono(400, 11), cursor: 'pointer', padding: 0 }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--tx3)',
+              ...mono(400, 11),
+              cursor: 'pointer',
+              padding: 0,
+            }}
           >
             ← PORTFOLIO
           </button>
@@ -928,7 +1180,16 @@ export function Workspace({
             >
               {t.label}
               {t.key === 'board' && proposedTickets.length > 0 && (
-                <span style={{ marginLeft: 6, ...mono(500, 10), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 5px' }}>
+                <span
+                  style={{
+                    marginLeft: 6,
+                    ...mono(500, 10),
+                    background: 'var(--agentsoft)',
+                    color: 'var(--agent)',
+                    borderRadius: 2,
+                    padding: '1px 5px',
+                  }}
+                >
                   ◆ {proposedTickets.length}
                 </span>
               )}
@@ -945,15 +1206,28 @@ export function Workspace({
       </div>
 
       {!detail && !detailError && (
-        <div style={{ padding: 40, textAlign: 'center', color: 'var(--tx3)', ...mono(400, 11) }}>LOADING ENGAGEMENT…</div>
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--tx3)', ...mono(400, 11) }}>
+          LOADING ENGAGEMENT…
+        </div>
       )}
       {!detail && detailError && (
         <div style={{ padding: 40, textAlign: 'center' }}>
-          <div style={{ ...mono(500, 11), color: 'var(--bad)', letterSpacing: '.06em', marginBottom: 8 }}>COULDN’T LOAD THIS ENGAGEMENT</div>
+          <div style={{ ...mono(500, 11), color: 'var(--bad)', letterSpacing: '.06em', marginBottom: 8 }}>
+            COULDN’T LOAD THIS ENGAGEMENT
+          </div>
           <div style={{ fontSize: 12.5, color: 'var(--tx2)', marginBottom: 14 }}>{detailError}</div>
           <button
             onClick={refreshDetail}
-            style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx)', borderRadius: 3, padding: '6px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+            style={{
+              border: '1px solid var(--line2)',
+              background: 'none',
+              color: 'var(--tx)',
+              borderRadius: 3,
+              padding: '6px 16px',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
           >
             Retry
           </button>
@@ -1022,7 +1296,9 @@ export function Workspace({
                     const who = e.target.value;
                     if (!who) return;
                     const prev = detail;
-                    setDetail((d) => (d ? { ...d, tickets: d.tickets.map((t) => (bulk[t.key] ? { ...t, assignee: who } : t)) } : d));
+                    setDetail((d) =>
+                      d ? { ...d, tickets: d.tickets.map((t) => (bulk[t.key] ? { ...t, assignee: who } : t)) } : d
+                    );
                     api.bulkTickets(bulkKeys, { assignee: who }).catch(() => {
                       setDetail(prev);
                       toast('Bulk save failed — changes rolled back');
@@ -1030,7 +1306,16 @@ export function Workspace({
                     setBulk({});
                     toast(`${bulkKeys.length} tickets assigned to ${who}`);
                   }}
-                  style={{ border: '1px solid var(--line2)', background: 'var(--bg)', color: 'var(--tx)', borderRadius: 3, padding: '4px 8px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+                  style={{
+                    border: '1px solid var(--line2)',
+                    background: 'var(--bg)',
+                    color: 'var(--tx)',
+                    borderRadius: 3,
+                    padding: '4px 8px',
+                    fontSize: 11,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
                 >
                   <option value="">Assign to…</option>
                   {(detail?.team ?? []).map((m) => (
@@ -1039,7 +1324,10 @@ export function Workspace({
                     </option>
                   ))}
                 </select>
-                <button onClick={() => setBulk({})} style={{ border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 11, cursor: 'pointer' }}>
+                <button
+                  onClick={() => setBulk({})}
+                  style={{ border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 11, cursor: 'pointer' }}
+                >
                   Clear
                 </button>
               </>
@@ -1047,14 +1335,35 @@ export function Workspace({
           </div>
 
           {proposedTickets.length > 0 && (
-            <div style={{ flex: 'none', margin: '0 22px 10px', border: '1px dashed var(--agent)', borderRadius: 4, background: 'var(--agentsoft)', padding: '9px 12px' }}>
+            <div
+              style={{
+                flex: 'none',
+                margin: '0 22px 10px',
+                border: '1px dashed var(--agent)',
+                borderRadius: 4,
+                background: 'var(--agentsoft)',
+                padding: '9px 12px',
+              }}
+            >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <span style={{ ...mono(500, 10), color: 'var(--agent)', letterSpacing: '.08em' }}>◆ AGENT PROPOSED — REVIEW BEFORE BOARD ENTRY</span>
+                <span style={{ ...mono(500, 10), color: 'var(--agent)', letterSpacing: '.08em' }}>
+                  ◆ AGENT PROPOSED — REVIEW BEFORE BOARD ENTRY
+                </span>
                 <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{proposedTickets.length} pending</span>
               </div>
               <div style={{ display: 'flex', gap: 10, overflowX: 'auto' }}>
                 {proposedTickets.map((t) => (
-                  <div key={t.key} style={{ flex: 'none', width: 290, border: '1px dashed var(--agent)', borderRadius: 3, background: 'var(--bg2)', padding: '10px 12px' }}>
+                  <div
+                    key={t.key}
+                    style={{
+                      flex: 'none',
+                      width: 290,
+                      border: '1px dashed var(--agent)',
+                      borderRadius: 3,
+                      background: 'var(--bg2)',
+                      padding: '10px 12px',
+                    }}
+                  >
                     <div onClick={() => openTicket(t.key)} style={{ cursor: 'pointer' }}>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
                         <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>{t.key}</span>
@@ -1067,16 +1376,36 @@ export function Workspace({
                         <>
                           <button
                             onClick={() => acceptTicket(t)}
-                            style={{ border: '1px solid var(--ok)', background: 'none', color: 'var(--ok)', borderRadius: 3, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+                            style={{
+                              border: '1px solid var(--ok)',
+                              background: 'none',
+                              color: 'var(--ok)',
+                              borderRadius: 3,
+                              padding: '3px 10px',
+                              fontSize: 11,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                            }}
                           >
                             Accept
                           </button>
-                          <button onClick={() => dismissTicket(t)} style={{ border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 11, cursor: 'pointer' }}>
+                          <button
+                            onClick={() => dismissTicket(t)}
+                            style={{
+                              border: 'none',
+                              background: 'none',
+                              color: 'var(--tx3)',
+                              fontSize: 11,
+                              cursor: 'pointer',
+                            }}
+                          >
                             Dismiss
                           </button>
                         </>
                       ) : (
-                        <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.06em' }}>LEAD REVIEW REQUIRED</span>
+                        <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.06em' }}>
+                          LEAD REVIEW REQUIRED
+                        </span>
                       )}
                     </div>
                   </div>
@@ -1088,58 +1417,104 @@ export function Workspace({
           {boardMode === 'kanban' && (
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 22px 20px' }}>
               {tickets.filter((t) => t.status !== 'proposed' && t.status !== 'dismissed').length === 0 && (
-                <div style={{ border: '1px dashed var(--line2)', borderRadius: 4, background: 'var(--bg2)', padding: '16px 18px', marginBottom: 12, fontSize: 12.5, color: 'var(--tx2)' }}>
-                  No tickets on the board yet{proposedTickets.length > 0 ? ' — accept proposed tickets above to seed it.' : '.'}
+                <div
+                  style={{
+                    border: '1px dashed var(--line2)',
+                    borderRadius: 4,
+                    background: 'var(--bg2)',
+                    padding: '16px 18px',
+                    marginBottom: 12,
+                    fontSize: 12.5,
+                    color: 'var(--tx2)',
+                  }}
+                >
+                  No tickets on the board yet
+                  {proposedTickets.length > 0 ? ' — accept proposed tickets above to seed it.' : '.'}
                 </div>
               )}
               <LayoutGroup>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(250px,1fr))', gap: 12, minWidth: 1040, height: '100%' }}>
-                {COLS.map(([k, label]) => {
-                  const colTickets = laneTickets(k);
-                  // While a ticket is dragged its card leaves the lane; the
-                  // slot gap marks where it will land and the other cards
-                  // shift around it, previewing the drop before release.
-                  let cards: React.ReactNode[] = (
-                    pDrag?.kind === 'ticket' ? colTickets.filter((t) => t.key !== pDrag.key) : colTickets
-                  ).map(ticketCard);
-                  if (pDrag?.kind === 'ticket' && dropSlot?.lane === k) {
-                    const at = Math.min(dropSlot.idx, cards.length);
-                    cards = [...cards.slice(0, at), dropSlotGap(dropSlot.lane, pDrag.h), ...cards.slice(at)];
-                  }
-                  return (
-                    <Fragment key={k}>
-                    {k === 'review' && agentLane}
-                    <div
-                      data-lane={k}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        minHeight: 0,
-                        background: 'var(--bg)',
-                        // Drag-over highlight matches the lane's card accent.
-                        border: `1px solid ${dragOverCol === k ? laneAccent(k) : 'var(--line)'}`,
-                        borderRadius: 4,
-                      }}
-                    >
-                      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderBottom: '1px solid var(--line)' }}>
-                        <span style={{ ...mono(500, 10), letterSpacing: '.1em', color: 'var(--tx2)' }}>{label}</span>
-                        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{colTickets.length}</span>
-                      </div>
-                      <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
-                        {cards}
-                      </div>
-                    </div>
-                    </Fragment>
-                  );
-                })}
-              </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(4,minmax(250px,1fr))',
+                    gap: 12,
+                    minWidth: 1040,
+                    height: '100%',
+                  }}
+                >
+                  {COLS.map(([k, label]) => {
+                    const colTickets = laneTickets(k);
+                    // While a ticket is dragged its card leaves the lane; the
+                    // slot gap marks where it will land and the other cards
+                    // shift around it, previewing the drop before release.
+                    let cards: React.ReactNode[] = (
+                      pDrag?.kind === 'ticket' ? colTickets.filter((t) => t.key !== pDrag.key) : colTickets
+                    ).map(ticketCard);
+                    if (pDrag?.kind === 'ticket' && dropSlot?.lane === k) {
+                      const at = Math.min(dropSlot.idx, cards.length);
+                      cards = [...cards.slice(0, at), dropSlotGap(dropSlot.lane, pDrag.h), ...cards.slice(at)];
+                    }
+                    return (
+                      <Fragment key={k}>
+                        {k === 'review' && agentLane}
+                        <div
+                          data-lane={k}
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            minHeight: 0,
+                            background: 'var(--bg)',
+                            // Drag-over highlight matches the lane's card accent.
+                            border: `1px solid ${dragOverCol === k ? laneAccent(k) : 'var(--line)'}`,
+                            borderRadius: 4,
+                          }}
+                        >
+                          <div
+                            style={{
+                              flex: 'none',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              padding: '9px 12px',
+                              borderBottom: '1px solid var(--line)',
+                            }}
+                          >
+                            <span style={{ ...mono(500, 10), letterSpacing: '.1em', color: 'var(--tx2)' }}>
+                              {label}
+                            </span>
+                            <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{colTickets.length}</span>
+                          </div>
+                          <div
+                            style={{
+                              flex: 1,
+                              overflowY: 'auto',
+                              padding: 8,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 7,
+                            }}
+                          >
+                            {cards}
+                          </div>
+                        </div>
+                      </Fragment>
+                    );
+                  })}
+                </div>
               </LayoutGroup>
             </div>
           )}
 
           {boardMode === 'table' && (
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 22px 20px' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid var(--line)', background: 'var(--bg2)' }}>
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  border: '1px solid var(--line)',
+                  background: 'var(--bg2)',
+                }}
+              >
                 <thead>
                   <tr>
                     <th style={{ ...thStyle, width: 34 }}></th>
@@ -1159,94 +1534,142 @@ export function Workspace({
                     .map((t) => {
                       const runner = runnerFor(t);
                       return (
-                      <tr key={t.key} style={{ background: bulk[t.key] ? 'var(--accsoft)' : 'transparent' }}>
-                        <td style={{ ...tdBase, textAlign: 'center' }}>
-                          <input
-                            type="checkbox"
-                            checked={!!bulk[t.key]}
-                            onChange={() => setBulk((b) => ({ ...b, [t.key]: !b[t.key] }))}
-                            style={{ accentColor: 'var(--acc)', cursor: 'pointer' }}
-                          />
-                        </td>
-                        <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx3)', whiteSpace: 'nowrap' }}>{t.key}</td>
-                        <td onClick={() => openTicket(t.key)} style={{ ...tdBase, fontSize: 12.5, fontWeight: 500, cursor: 'pointer' }}>
-                          {t.title}
-                          {t.agent && (
-                            <span style={{ marginLeft: 7, ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◆</span>
-                          )}
-                        </td>
-                        <td style={tdBase}>
-                          <select
-                            value={t.status}
-                            onChange={(e) => setTicket(t.key, { status: e.target.value as TicketStatus })}
-                            style={{ background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
+                        <tr key={t.key} style={{ background: bulk[t.key] ? 'var(--accsoft)' : 'transparent' }}>
+                          <td style={{ ...tdBase, textAlign: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={!!bulk[t.key]}
+                              onChange={() => setBulk((b) => ({ ...b, [t.key]: !b[t.key] }))}
+                              style={{ accentColor: 'var(--acc)', cursor: 'pointer' }}
+                            />
+                          </td>
+                          <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx3)', whiteSpace: 'nowrap' }}>
+                            {t.key}
+                          </td>
+                          <td
+                            onClick={() => openTicket(t.key)}
+                            style={{ ...tdBase, fontSize: 12.5, fontWeight: 500, cursor: 'pointer' }}
                           >
-                            <option value="backlog">Backlog</option>
-                            <option value="progress">In Progress</option>
-                            <option value="review">In Review</option>
-                            <option value="done">Done</option>
-                          </select>
-                        </td>
-                        <td style={{ ...tdBase, whiteSpace: 'nowrap' }}>
-                          <button
-                            className="hv-border"
-                            title={
-                              t.assignee === '—'
-                                ? 'Unassigned — click to assign'
-                                : runner !== null
-                                  ? `${t.assignee} (${runnerBrand(runner).label} runner) — click to reassign`
-                                  : `${t.assignee} — click to reassign`
-                            }
-                            onClick={(e) => {
-                              const r = e.currentTarget.getBoundingClientRect();
-                              setAssignPop({ key: t.key, x: r.left, y: r.bottom + 4 });
-                            }}
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 7,
-                              border: '1px solid transparent',
-                              background: 'none',
-                              borderRadius: 3,
-                              padding: '2px 6px 2px 2px',
-                              cursor: 'pointer',
-                              maxWidth: 150,
-                            }}
-                          >
-                            <span
+                            {t.title}
+                            {t.agent && (
+                              <span
+                                style={{
+                                  marginLeft: 7,
+                                  ...mono(500, 9),
+                                  background: 'var(--agentsoft)',
+                                  color: 'var(--agent)',
+                                  borderRadius: 2,
+                                  padding: '1px 4px',
+                                }}
+                              >
+                                ◆
+                              </span>
+                            )}
+                          </td>
+                          <td style={tdBase}>
+                            <select
+                              value={t.status}
+                              onChange={(e) => setTicket(t.key, { status: e.target.value as TicketStatus })}
                               style={{
-                                flex: 'none',
-                                width: 20,
-                                height: 20,
-                                borderRadius: '50%',
-                                background: 'var(--bg3)',
+                                background: 'var(--bg)',
                                 border: '1px solid var(--line2)',
-                                display: 'grid',
-                                placeItems: 'center',
-                                ...mono(500, 9),
-                                color: 'var(--tx2)',
+                                color: 'var(--tx)',
+                                borderRadius: 3,
+                                padding: '3px 6px',
+                                fontSize: 11.5,
+                                cursor: 'pointer',
                               }}
                             >
-                              {runner !== null ? runnerBrand(runner).mark(12) : initials(t.assignee)}
-                            </span>
-                            <span style={{ fontSize: 11.5, color: 'var(--tx2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {t.assignee}
-                            </span>
-                          </button>
-                        </td>
-                        <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>{t.estHours != null ? fmtDuration(t.estHours) : t.est}</td>
-                        <td style={{ ...tdBase, fontSize: 12, color: 'var(--tx2)', whiteSpace: 'nowrap' }}>{t.workstream}</td>
-                        <td style={tdBase}>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 200 }}>
-                            {t.tags.map((tag) => (
-                              <span key={tag} style={{ ...mono(500, 9), color: 'var(--tx3)', border: '1px solid var(--line2)', borderRadius: 2, padding: '1px 5px', whiteSpace: 'nowrap' }}>
-                                {tag}
+                              <option value="backlog">Backlog</option>
+                              <option value="progress">In Progress</option>
+                              <option value="review">In Review</option>
+                              <option value="done">Done</option>
+                            </select>
+                          </td>
+                          <td style={{ ...tdBase, whiteSpace: 'nowrap' }}>
+                            <button
+                              className="hv-border"
+                              title={
+                                t.assignee === '—'
+                                  ? 'Unassigned — click to assign'
+                                  : runner !== null
+                                    ? `${t.assignee} (${runnerBrand(runner).label} runner) — click to reassign`
+                                    : `${t.assignee} — click to reassign`
+                              }
+                              onClick={(e) => {
+                                const r = e.currentTarget.getBoundingClientRect();
+                                setAssignPop({ key: t.key, x: r.left, y: r.bottom + 4 });
+                              }}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 7,
+                                border: '1px solid transparent',
+                                background: 'none',
+                                borderRadius: 3,
+                                padding: '2px 6px 2px 2px',
+                                cursor: 'pointer',
+                                maxWidth: 150,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  flex: 'none',
+                                  width: 20,
+                                  height: 20,
+                                  borderRadius: '50%',
+                                  background: 'var(--bg3)',
+                                  border: '1px solid var(--line2)',
+                                  display: 'grid',
+                                  placeItems: 'center',
+                                  ...mono(500, 9),
+                                  color: 'var(--tx2)',
+                                }}
+                              >
+                                {runner !== null ? runnerBrand(runner).mark(12) : initials(t.assignee)}
                               </span>
-                            ))}
-                          </div>
-                        </td>
-                        <td style={{ ...tdBase, ...mono(400, 10.5), color: 'var(--agent)', whiteSpace: 'nowrap' }}>{t.sources[0]?.type ?? ''}</td>
-                      </tr>
+                              <span
+                                style={{
+                                  fontSize: 11.5,
+                                  color: 'var(--tx2)',
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {t.assignee}
+                              </span>
+                            </button>
+                          </td>
+                          <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>
+                            {t.estHours != null ? fmtDuration(t.estHours) : t.est}
+                          </td>
+                          <td style={{ ...tdBase, fontSize: 12, color: 'var(--tx2)', whiteSpace: 'nowrap' }}>
+                            {t.workstream}
+                          </td>
+                          <td style={tdBase}>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 200 }}>
+                              {t.tags.map((tag) => (
+                                <span
+                                  key={tag}
+                                  style={{
+                                    ...mono(500, 9),
+                                    color: 'var(--tx3)',
+                                    border: '1px solid var(--line2)',
+                                    borderRadius: 2,
+                                    padding: '1px 5px',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td style={{ ...tdBase, ...mono(400, 10.5), color: 'var(--agent)', whiteSpace: 'nowrap' }}>
+                            {t.sources[0]?.type ?? ''}
+                          </td>
+                        </tr>
                       );
                     })}
                 </tbody>
@@ -1258,7 +1681,14 @@ export function Workspace({
 
       {/* ===== ROADMAP ===== */}
       {detail && tab === 'roadmap' && (
-        <Roadmap eng={eng} detail={detail} lead={lead} openTicket={openTicket} toast={toast} onEngagementChanged={onEngagementChanged} />
+        <Roadmap
+          eng={eng}
+          detail={detail}
+          lead={lead}
+          openTicket={openTicket}
+          toast={toast}
+          onEngagementChanged={onEngagementChanged}
+        />
       )}
 
       {/* ===== SOURCES ===== */}
@@ -1267,39 +1697,81 @@ export function Workspace({
 
       {detail && tab === 'sources' && (
         <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
-          <RepoCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
-          <ContextFilesCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
-          <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid var(--line)', background: 'var(--bg2)' }}>
-            <thead>
-              <tr>
-                <th style={thStyle}>SOURCE</th>
-                <th style={thStyle}>TYPE</th>
-                <th style={thStyle}>STATUS</th>
-                <th style={thStyle}>LAST SYNC</th>
-                <th style={{ ...thStyle, textAlign: 'right' }}>LINKED TICKETS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.sources.length === 0 && (
-                <tr>
-                  <td colSpan={5} style={tdBase}>
-                    <Empty label="No document sources yet — engagements created from a SOW list the document here." />
-                  </td>
-                </tr>
-              )}
-              {detail.sources.map((sr) => (
-                <tr key={sr.id} className="hv-row">
-                  <td style={{ ...tdBase, fontSize: 12.5, fontWeight: 500 }}>{sr.name}</td>
-                  <td style={{ ...tdBase, ...mono(400, 10.5), color: 'var(--tx2)' }}>{sr.type}</td>
-                  <td style={tdBase}>
-                    <span style={{ ...mono(500, 10), color: `var(--${sr.statusColor})`, letterSpacing: '.06em' }}>{sr.status}</span>
-                  </td>
-                  <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>{sr.lastSync}</td>
-                  <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--agent)', textAlign: 'right' }}>{sr.linked}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ display: 'flex', gap: 3, borderBottom: '1px solid var(--line)', marginBottom: 14 }}>
+            {(['git', 'files'] as const).map((key) => (
+              <button
+                key={key}
+                onClick={() => setSourcesTab(key)}
+                style={{
+                  border: 'none',
+                  borderBottom: sourcesTab === key ? '2px solid var(--acc)' : '2px solid transparent',
+                  background: 'none',
+                  color: sourcesTab === key ? 'var(--tx)' : 'var(--tx3)',
+                  padding: '8px 18px',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                {key === 'git' ? 'Git' : 'Files'}
+              </button>
+            ))}
+          </div>
+          {sourcesTab === 'git' && <RepoCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />}
+          {sourcesTab === 'files' && (
+            <>
+              <FileLibraryCard
+                engId={eng.id}
+                lead={lead}
+                tickets={detail.tickets}
+                toast={toast}
+                refreshDetail={refreshDetail}
+              />
+              <ContextFilesCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  border: '1px solid var(--line)',
+                  background: 'var(--bg2)',
+                }}
+              >
+                <thead>
+                  <tr>
+                    <th style={thStyle}>SOURCE</th>
+                    <th style={thStyle}>TYPE</th>
+                    <th style={thStyle}>STATUS</th>
+                    <th style={thStyle}>LAST SYNC</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>LINKED TICKETS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.sources.length === 0 && (
+                    <tr>
+                      <td colSpan={5} style={tdBase}>
+                        <Empty label="No document sources yet — engagements created from a SOW list the document here." />
+                      </td>
+                    </tr>
+                  )}
+                  {detail.sources.map((sr) => (
+                    <tr key={sr.id} className="hv-row">
+                      <td style={{ ...tdBase, fontSize: 12.5, fontWeight: 500 }}>{sr.name}</td>
+                      <td style={{ ...tdBase, ...mono(400, 10.5), color: 'var(--tx2)' }}>{sr.type}</td>
+                      <td style={tdBase}>
+                        <span style={{ ...mono(500, 10), color: `var(--${sr.statusColor})`, letterSpacing: '.06em' }}>
+                          {sr.status}
+                        </span>
+                      </td>
+                      <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--tx2)' }}>{sr.lastSync}</td>
+                      <td style={{ ...tdBase, ...mono(400, 11), color: 'var(--agent)', textAlign: 'right' }}>
+                        {sr.linked}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </div>
       )}
 
@@ -1308,9 +1780,30 @@ export function Workspace({
 
       {/* ===== TEAM ===== */}
       {detail && tab === 'team' && (
-        <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px', display: 'grid', gridTemplateColumns: '1fr 360px', gap: 14, alignItems: 'start' }}>
-          <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', overflow: 'hidden' }}>
-            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line)', ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
+        <div
+          className="tab-pane"
+          style={{
+            flex: 1,
+            overflow: 'auto',
+            padding: '18px 22px',
+            display: 'grid',
+            gridTemplateColumns: '1fr 360px',
+            gap: 14,
+            alignItems: 'start',
+          }}
+        >
+          <div
+            style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', overflow: 'hidden' }}
+          >
+            <div
+              style={{
+                padding: '10px 14px',
+                borderBottom: '1px solid var(--line)',
+                ...mono(500, 10),
+                color: 'var(--tx3)',
+                letterSpacing: '.08em',
+              }}
+            >
               SKILL MATRIX × CURRENT LOAD
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1345,15 +1838,34 @@ export function Workspace({
                         <td key={SKILL_COLS[i] ?? `s${i}`} style={{ ...tdBase, textAlign: 'center' }}>
                           <div style={{ display: 'inline-flex', gap: 2 }}>
                             {[0, 1, 2].map((b) => (
-                              <span key={b} style={{ width: 5, height: 12, borderRadius: 1, background: lvl > b ? 'var(--tx2)' : 'var(--bg3)' }} />
+                              <span
+                                key={b}
+                                style={{
+                                  width: 5,
+                                  height: 12,
+                                  borderRadius: 1,
+                                  background: lvl > b ? 'var(--tx2)' : 'var(--bg3)',
+                                }}
+                              />
                             ))}
                           </div>
                         </td>
                       ))}
                       <td style={tdBase}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div style={{ flex: 1, height: 5, background: 'var(--bg3)', borderRadius: 2, overflow: 'hidden' }}>
-                            <div className="bar-anim" style={{ height: '100%', width: `${p.load}%`, background: loadColor }} />
+                          <div
+                            style={{
+                              flex: 1,
+                              height: 5,
+                              background: 'var(--bg3)',
+                              borderRadius: 2,
+                              overflow: 'hidden',
+                            }}
+                          >
+                            <div
+                              className="bar-anim"
+                              style={{ height: '100%', width: `${p.load}%`, background: loadColor }}
+                            />
                           </div>
                           <span style={{ ...mono(400, 10), color: loadColor }}>{p.load}%</span>
                         </div>
@@ -1365,18 +1877,30 @@ export function Workspace({
             </table>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ ...mono(500, 10), color: 'var(--agent)', letterSpacing: '.08em' }}>◆ SUGGESTED ASSIGNMENTS</div>
+            <div style={{ ...mono(500, 10), color: 'var(--agent)', letterSpacing: '.08em' }}>
+              ◆ SUGGESTED ASSIGNMENTS
+            </div>
             {detail.suggestions.length === 0 && (
               <div style={{ border: '1px dashed var(--line2)', borderRadius: 4, background: 'var(--bg2)' }}>
                 <Empty label="No assignment suggestions right now." />
               </div>
             )}
             {detail.suggestions.map((sg) => (
-              <div key={sg.id} style={{ border: '1px dashed var(--agent)', borderRadius: 4, background: 'var(--bg2)', padding: '12px 14px' }}>
+              <div
+                key={sg.id}
+                style={{
+                  border: '1px dashed var(--agent)',
+                  borderRadius: 4,
+                  background: 'var(--bg2)',
+                  padding: '12px 14px',
+                }}
+              >
                 <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 3 }}>
                   {sg.ticket} → {sg.person}
                 </div>
-                <div style={{ fontSize: 11.5, color: 'var(--tx2)', lineHeight: 1.45, marginBottom: 9 }}>{sg.rationale}</div>
+                <div style={{ fontSize: 11.5, color: 'var(--tx2)', lineHeight: 1.45, marginBottom: 9 }}>
+                  {sg.rationale}
+                </div>
                 {!sg.decision && !lead && (
                   <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.06em' }}>LEAD DECISION</span>
                 )}
@@ -1390,9 +1914,11 @@ export function Workspace({
                             ? {
                                 ...d,
                                 suggestions: d.suggestions.map((x) => (x.id === sg.id ? { ...x, decision: 'acc' } : x)),
-                                tickets: d.tickets.map((t) => (t.key === sg.ticket ? { ...t, assignee: sg.person } : t)),
+                                tickets: d.tickets.map((t) =>
+                                  t.key === sg.ticket ? { ...t, assignee: sg.person } : t
+                                ),
                               }
-                            : d,
+                            : d
                         );
                         api
                           .decideSuggestion(sg.id, 'acc')
@@ -1403,14 +1929,30 @@ export function Workspace({
                           });
                         toast(`${sg.ticket} assigned to ${sg.person}`);
                       }}
-                      style={{ border: '1px solid var(--ok)', background: 'none', color: 'var(--ok)', borderRadius: 3, padding: '4px 12px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+                      style={{
+                        border: '1px solid var(--ok)',
+                        background: 'none',
+                        color: 'var(--ok)',
+                        borderRadius: 3,
+                        padding: '4px 12px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
                     >
                       Accept
                     </button>
                     <button
                       onClick={() => {
                         const prev = detail;
-                        setDetail((d) => (d ? { ...d, suggestions: d.suggestions.map((x) => (x.id === sg.id ? { ...x, decision: 'ovr' } : x)) } : d));
+                        setDetail((d) =>
+                          d
+                            ? {
+                                ...d,
+                                suggestions: d.suggestions.map((x) => (x.id === sg.id ? { ...x, decision: 'ovr' } : x)),
+                              }
+                            : d
+                        );
                         api
                           .decideSuggestion(sg.id, 'ovr')
                           .then(refreshDetail)
@@ -1419,14 +1961,24 @@ export function Workspace({
                             toast('Save failed — decision rolled back');
                           });
                       }}
-                      style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '4px 12px', fontSize: 11, cursor: 'pointer' }}
+                      style={{
+                        border: '1px solid var(--line2)',
+                        background: 'none',
+                        color: 'var(--tx2)',
+                        borderRadius: 3,
+                        padding: '4px 12px',
+                        fontSize: 11,
+                        cursor: 'pointer',
+                      }}
                     >
                       Override
                     </button>
                   </div>
                 )}
                 {sg.decision === 'acc' && <span style={{ ...mono(500, 10), color: 'var(--ok)' }}>✓ ASSIGNED</span>}
-                {sg.decision === 'ovr' && <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>OVERRIDDEN — PICK IN BOARD</span>}
+                {sg.decision === 'ovr' && (
+                  <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>OVERRIDDEN — PICK IN BOARD</span>
+                )}
               </div>
             ))}
           </div>
@@ -1435,14 +1987,45 @@ export function Workspace({
 
       {/* ===== STATUS FEED ===== */}
       {detail && tab === 'feed' && (
-        <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px', display: 'grid', gridTemplateColumns: '1fr 400px', gap: 14, alignItems: 'start' }}>
-          <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', overflow: 'hidden' }}>
-            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line)', ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
+        <div
+          className="tab-pane"
+          style={{
+            flex: 1,
+            overflow: 'auto',
+            padding: '18px 22px',
+            display: 'grid',
+            gridTemplateColumns: '1fr 400px',
+            gap: 14,
+            alignItems: 'start',
+          }}
+        >
+          <div
+            style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', overflow: 'hidden' }}
+          >
+            <div
+              style={{
+                padding: '10px 14px',
+                borderBottom: '1px solid var(--line)',
+                ...mono(500, 10),
+                color: 'var(--tx3)',
+                letterSpacing: '.08em',
+              }}
+            >
               ACTIVITY — EVERY AGENT ACTION IS ATTRIBUTABLE AND REVERSIBLE
             </div>
             {detail.feed.length === 0 && <Empty label="No activity yet — agent actions and status pushes land here." />}
             {detail.feed.map((f) => (
-              <div key={f.id} className="hv-bg" style={{ display: 'flex', gap: 12, padding: 'var(--rowpad)', borderBottom: '1px solid var(--line)', alignItems: 'flex-start' }}>
+              <div
+                key={f.id}
+                className="hv-bg"
+                style={{
+                  display: 'flex',
+                  gap: 12,
+                  padding: 'var(--rowpad)',
+                  borderBottom: '1px solid var(--line)',
+                  alignItems: 'flex-start',
+                }}
+              >
                 <span
                   style={{
                     flex: 'none',
@@ -1470,7 +2053,14 @@ export function Workspace({
                   <button
                     className="hv-bad"
                     onClick={() => setRevertConfirm(f.id)}
-                    style={{ border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), cursor: 'pointer', padding: '2px 4px' }}
+                    style={{
+                      border: 'none',
+                      background: 'none',
+                      color: 'var(--tx3)',
+                      ...mono(400, 10),
+                      cursor: 'pointer',
+                      padding: '2px 4px',
+                    }}
                   >
                     REVERT
                   </button>
@@ -1493,13 +2083,27 @@ export function Workspace({
                             toast('Revert failed');
                           });
                       }}
-                      style={{ border: '1px solid var(--bad)', background: 'none', color: 'var(--bad)', borderRadius: 3, padding: '2px 8px', ...mono(500, 10), cursor: 'pointer' }}
+                      style={{
+                        border: '1px solid var(--bad)',
+                        background: 'none',
+                        color: 'var(--bad)',
+                        borderRadius: 3,
+                        padding: '2px 8px',
+                        ...mono(500, 10),
+                        cursor: 'pointer',
+                      }}
                     >
                       CONFIRM
                     </button>
                     <button
                       onClick={() => setRevertConfirm(null)}
-                      style={{ border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), cursor: 'pointer' }}
+                      style={{
+                        border: 'none',
+                        background: 'none',
+                        color: 'var(--tx3)',
+                        ...mono(400, 10),
+                        cursor: 'pointer',
+                      }}
                     >
                       CANCEL
                     </button>
@@ -1508,9 +2112,22 @@ export function Workspace({
               </div>
             ))}
           </div>
-          <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', padding: '14px 16px' }}>
+          <div
+            style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', padding: '14px 16px' }}
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <span style={{ ...mono(500, 10), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '2px 7px', letterSpacing: '.06em' }}>◆ AGENT DRAFT</span>
+              <span
+                style={{
+                  ...mono(500, 10),
+                  background: 'var(--agentsoft)',
+                  color: 'var(--agent)',
+                  borderRadius: 2,
+                  padding: '2px 7px',
+                  letterSpacing: '.06em',
+                }}
+              >
+                ◆ AGENT DRAFT
+              </span>
               <span style={{ fontSize: 12.5, fontWeight: 600 }}>Weekly status update</span>
             </div>
             <textarea
@@ -1527,7 +2144,9 @@ export function Workspace({
                   api
                     .saveComposer(eng.id, composer)
                     .then(() => {
-                      setSavedAt(new Date().toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false }));
+                      setSavedAt(
+                        new Date().toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false })
+                      );
                       onEngagementChanged();
                     })
                     .catch(() => toast('Draft save failed'));
@@ -1551,70 +2170,108 @@ export function Workspace({
               <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>→ Teams delivery channel</span>
               {savedAt && <span style={{ ...mono(400, 10), color: 'var(--ok)' }}>SAVED {savedAt}</span>}
               <div style={{ flex: 1 }} />
-              {!lead && <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.06em' }}>LEAD SENDS THIS</span>}
+              {!lead && (
+                <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.06em' }}>LEAD SENDS THIS</span>
+              )}
               {lead && (
-              <>
-              <button
-                className="hv-bg"
-                disabled={drafting}
-                onClick={() => {
-                  setDrafting(true);
-                  api
-                    .generateDraft(eng.id)
-                    .then(({ text }) => {
-                      setComposer(text);
-                      setPushed(false);
-                      toast('Draft regenerated from latest board state');
-                    })
-                    .catch(() => toast('Draft generation failed — model endpoint unavailable'))
-                    .finally(() => setDrafting(false));
-                }}
-                style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '5px 12px', fontSize: 11.5, cursor: 'pointer', opacity: drafting ? 0.5 : 1 }}
-              >
-                {drafting ? 'Drafting…' : 'Regenerate'}
-              </button>
-              {!isPushed && !pushConfirm && (
-                <button
-                  className="hv-bright"
-                  onClick={() => setPushConfirm(true)}
-                  style={{ background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 3, padding: '6px 14px', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}
-                >
-                  Push to Teams
-                </button>
-              )}
-              {!isPushed && pushConfirm && (
-                <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ ...mono(400, 10), color: 'var(--tx2)' }}>Send to the client channel?</span>
+                <>
                   <button
-                    disabled={pushing}
+                    className="hv-bg"
+                    disabled={drafting}
                     onClick={() => {
-                      setPushing(true);
+                      setDrafting(true);
                       api
-                        .pushComposer(eng.id)
-                        .then(() => {
-                          setPushed(true);
-                          setPushConfirm(false);
-                          toast('Posted to Teams delivery channel');
-                          onEngagementChanged();
-                          refreshDetail();
+                        .generateDraft(eng.id)
+                        .then(({ text }) => {
+                          setComposer(text);
+                          setPushed(false);
+                          toast('Draft regenerated from latest board state');
                         })
-                        .catch(() => toast('Push failed — draft not sent'))
-                        .finally(() => setPushing(false));
+                        .catch(() => toast('Draft generation failed — model endpoint unavailable'))
+                        .finally(() => setDrafting(false));
                     }}
-                    style={{ background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 3, padding: '6px 14px', fontSize: 11.5, fontWeight: 600, cursor: 'pointer', opacity: pushing ? 0.6 : 1 }}
+                    style={{
+                      border: '1px solid var(--line2)',
+                      background: 'none',
+                      color: 'var(--tx2)',
+                      borderRadius: 3,
+                      padding: '5px 12px',
+                      fontSize: 11.5,
+                      cursor: 'pointer',
+                      opacity: drafting ? 0.5 : 1,
+                    }}
                   >
-                    {pushing ? 'Sending…' : 'Confirm push'}
+                    {drafting ? 'Drafting…' : 'Regenerate'}
                   </button>
-                  <button
-                    disabled={pushing}
-                    onClick={() => setPushConfirm(false)}
-                    style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '5px 10px', fontSize: 11.5, cursor: 'pointer' }}
-                  >
-                    Cancel
-                  </button>
-                </span>
-              )}
-              </>
+                  {!isPushed && !pushConfirm && (
+                    <button
+                      className="hv-bright"
+                      onClick={() => setPushConfirm(true)}
+                      style={{
+                        background: 'var(--acc)',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 3,
+                        padding: '6px 14px',
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Push to Teams
+                    </button>
+                  )}
+                  {!isPushed && pushConfirm && (
+                    <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ ...mono(400, 10), color: 'var(--tx2)' }}>Send to the client channel?</span>
+                      <button
+                        disabled={pushing}
+                        onClick={() => {
+                          setPushing(true);
+                          api
+                            .pushComposer(eng.id)
+                            .then(() => {
+                              setPushed(true);
+                              setPushConfirm(false);
+                              toast('Posted to Teams delivery channel');
+                              onEngagementChanged();
+                              refreshDetail();
+                            })
+                            .catch(() => toast('Push failed — draft not sent'))
+                            .finally(() => setPushing(false));
+                        }}
+                        style={{
+                          background: 'var(--acc)',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 3,
+                          padding: '6px 14px',
+                          fontSize: 11.5,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          opacity: pushing ? 0.6 : 1,
+                        }}
+                      >
+                        {pushing ? 'Sending…' : 'Confirm push'}
+                      </button>
+                      <button
+                        disabled={pushing}
+                        onClick={() => setPushConfirm(false)}
+                        style={{
+                          border: '1px solid var(--line2)',
+                          background: 'none',
+                          color: 'var(--tx2)',
+                          borderRadius: 3,
+                          padding: '5px 10px',
+                          fontSize: 11.5,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  )}
+                </>
               )}
               {isPushed && <span style={{ ...mono(500, 10), color: 'var(--ok)' }}>✓ PUSHED</span>}
             </div>
@@ -1651,7 +2308,9 @@ export function Workspace({
                   padding: 4,
                 }}
               >
-                <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', padding: '5px 8px 4px' }}>ASSIGN {t.key}</div>
+                <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', padding: '5px 8px 4px' }}>
+                  ASSIGN {t.key}
+                </div>
                 {names.map((name) => (
                   <button
                     key={name}
@@ -1693,8 +2352,16 @@ export function Workspace({
                       {name !== '—' && name === runner ? runnerBrand(name).mark(12) : initials(name)}
                     </span>
                     <span
-                      title={name !== '—' && name === runner ? `${name} (${runnerBrand(name).label} runner)` : undefined}
-                      style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      title={
+                        name !== '—' && name === runner ? `${name} (${runnerBrand(name).label} runner)` : undefined
+                      }
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
                     >
                       {name === '—' ? 'Unassigned' : name}
                     </span>
@@ -1854,8 +2521,12 @@ function NewTicketModal({
 
   useEffect(() => {
     if (!lead) return;
-    const down = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(true); };
-    const up = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(false); };
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setShiftHeld(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setShiftHeld(false);
+    };
     const reset = () => setShiftHeld(false);
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
@@ -1923,12 +2594,22 @@ function NewTicketModal({
           boxShadow: '0 12px 40px rgba(0,0,0,.45)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', padding: '13px 18px', borderBottom: '1px solid var(--line)' }}>
+        <div
+          style={{ display: 'flex', alignItems: 'center', padding: '13px 18px', borderBottom: '1px solid var(--line)' }}
+        >
           <span style={{ ...mono(500, 11), letterSpacing: '.1em', color: 'var(--tx2)' }}>NEW TICKET</span>
           <button
             className="hv-tx"
             onClick={onClose}
-            style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 16, cursor: 'pointer', padding: '2px 6px' }}
+            style={{
+              marginLeft: 'auto',
+              border: 'none',
+              background: 'none',
+              color: 'var(--tx3)',
+              fontSize: 16,
+              cursor: 'pointer',
+              padding: '2px 6px',
+            }}
           >
             ×
           </button>
@@ -1955,16 +2636,37 @@ function NewTicketModal({
             }}
           />
           <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-            {(
-              [
-                { id: 'agent' as const, label: '◆ AGENT EST (HOURS)', value: estHours, set: setEstHours, ok: estVal != null, max: 400, hint: 'Expected Claude Code agent time, e.g. 0.5' },
-                { id: 'human' as const, label: 'HUMAN DEV EST (HOURS)', value: humanEstHours, set: setHumanEstHours, ok: humanVal != null, max: 999, hint: 'Time a human developer would need, e.g. 4' },
-              ]
-            ).map((f) => {
+            {[
+              {
+                id: 'agent' as const,
+                label: '◆ AGENT EST (HOURS)',
+                value: estHours,
+                set: setEstHours,
+                ok: estVal != null,
+                max: 400,
+                hint: 'Expected Claude Code agent time, e.g. 0.5',
+              },
+              {
+                id: 'human' as const,
+                label: 'HUMAN DEV EST (HOURS)',
+                value: humanEstHours,
+                set: setHumanEstHours,
+                ok: humanVal != null,
+                max: 999,
+                hint: 'Time a human developer would need, e.g. 4',
+              },
+            ].map((f) => {
               const showError = !f.ok && (estTouched[f.id] || f.value.trim() !== '');
               return (
                 <div key={f.id} style={{ flex: 1 }}>
-                  <div style={{ ...mono(400, 9), color: f.id === 'agent' ? 'var(--agent)' : 'var(--tx3)', letterSpacing: '.08em', marginBottom: 5 }}>
+                  <div
+                    style={{
+                      ...mono(400, 9),
+                      color: f.id === 'agent' ? 'var(--agent)' : 'var(--tx3)',
+                      letterSpacing: '.08em',
+                      marginBottom: 5,
+                    }}
+                  >
                     {f.label} <span style={{ color: 'var(--bad)' }}>*</span>
                   </div>
                   <input
@@ -1990,7 +2692,9 @@ function NewTicketModal({
                     }}
                   />
                   {showError && (
-                    <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 4 }}>Required — enter hours between 0 and {f.max}</div>
+                    <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 4 }}>
+                      Required — enter hours between 0 and {f.max}
+                    </div>
                   )}
                 </div>
               );
@@ -2019,7 +2723,15 @@ function NewTicketModal({
             <div style={{ flex: 1 }} />
             <button
               onClick={onClose}
-              style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '7px 14px', fontSize: 12, cursor: 'pointer' }}
+              style={{
+                border: '1px solid var(--line2)',
+                background: 'none',
+                color: 'var(--tx2)',
+                borderRadius: 3,
+                padding: '7px 14px',
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
             >
               Cancel
             </button>
@@ -2172,7 +2884,9 @@ function RepoCard({
     api
       .syncRepo(engId)
       .then((r) => {
-        toast(`Synced — ${r.commits} new commit${r.commits === 1 ? '' : 's'}, ${r.prs} PR update${r.prs === 1 ? '' : 's'}`);
+        toast(
+          `Synced — ${r.commits} new commit${r.commits === 1 ? '' : 's'}, ${r.prs} PR update${r.prs === 1 ? '' : 's'}`
+        );
         load();
         refreshDetail();
       })
@@ -2194,11 +2908,36 @@ function RepoCard({
   };
 
   return (
-    <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', marginBottom: 14, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--line)' }}>
+    <div
+      style={{
+        border: '1px solid var(--line)',
+        borderRadius: 4,
+        background: 'var(--bg2)',
+        marginBottom: 14,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '10px 14px',
+          borderBottom: '1px solid var(--line)',
+        }}
+      >
         <span style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>REPOSITORY</span>
         {conn && (
-          <span style={{ ...mono(500, 9), border: '1px solid var(--line2)', color: 'var(--tx2)', borderRadius: 2, padding: '1px 6px', letterSpacing: '.06em' }}>
+          <span
+            style={{
+              ...mono(500, 9),
+              border: '1px solid var(--line2)',
+              color: 'var(--tx2)',
+              borderRadius: 2,
+              padding: '1px 6px',
+              letterSpacing: '.06em',
+            }}
+          >
             {conn.provider === 'github' ? 'GITHUB' : 'AZURE DEVOPS'}
           </span>
         )}
@@ -2207,7 +2946,17 @@ function RepoCard({
           <button
             onClick={syncNow}
             disabled={syncing}
-            style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx)', borderRadius: 3, padding: '4px 12px', fontSize: 11, fontWeight: 600, cursor: 'pointer', opacity: syncing ? 0.5 : 1 }}
+            style={{
+              border: '1px solid var(--line2)',
+              background: 'none',
+              color: 'var(--tx)',
+              borderRadius: 3,
+              padding: '4px 12px',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+              opacity: syncing ? 0.5 : 1,
+            }}
           >
             {syncing ? 'Syncing…' : 'Sync now'}
           </button>
@@ -2216,7 +2965,14 @@ function RepoCard({
           <button
             className="hv-bad"
             onClick={() => setDisconnectConfirm(true)}
-            style={{ border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), cursor: 'pointer', letterSpacing: '.06em' }}
+            style={{
+              border: 'none',
+              background: 'none',
+              color: 'var(--tx3)',
+              ...mono(400, 10),
+              cursor: 'pointer',
+              letterSpacing: '.06em',
+            }}
           >
             DISCONNECT
           </button>
@@ -2234,13 +2990,30 @@ function RepoCard({
                   })
                   .catch(() => toast('Disconnect failed'));
               }}
-              style={{ border: '1px solid var(--bad)', background: 'none', color: 'var(--bad)', borderRadius: 3, padding: '3px 8px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+              style={{
+                border: '1px solid var(--bad)',
+                background: 'none',
+                color: 'var(--bad)',
+                borderRadius: 3,
+                padding: '3px 8px',
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
             >
               Confirm
             </button>
             <button
               onClick={() => setDisconnectConfirm(false)}
-              style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '3px 8px', fontSize: 11, cursor: 'pointer' }}
+              style={{
+                border: '1px solid var(--line2)',
+                background: 'none',
+                color: 'var(--tx2)',
+                borderRadius: 3,
+                padding: '3px 8px',
+                fontSize: 11,
+                cursor: 'pointer',
+              }}
             >
               Cancel
             </button>
@@ -2252,7 +3025,18 @@ function RepoCard({
       {loadState === 'error' && (
         <div style={{ padding: '14px', fontSize: 12, color: 'var(--tx3)', textAlign: 'center' }}>
           Couldn’t load the repository connection.{' '}
-          <button onClick={load} style={{ border: 'none', background: 'none', color: 'var(--acc)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
+          <button
+            onClick={load}
+            style={{
+              border: 'none',
+              background: 'none',
+              color: 'var(--acc)',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              padding: 0,
+            }}
+          >
             Retry
           </button>
         </div>
@@ -2265,16 +3049,29 @@ function RepoCard({
       {loadState === 'ready' && !conn && lead && (
         <div style={{ padding: '14px 16px' }}>
           <div style={{ fontSize: 12.5, color: 'var(--tx2)', marginBottom: 10, lineHeight: 1.5 }}>
-            Connect the delivery repo to link commits and PRs to tickets by key (e.g. <span className="mono">ABC-104</span> in a branch or PR
-            title). Opening a linked PR moves its ticket to Review; merging holds it in Review while the deploy pipeline runs, then Done
-            once the pipeline succeeds.
+            Connect the delivery repo to link commits and PRs to tickets by key (e.g.{' '}
+            <span className="mono">ABC-104</span> in a branch or PR title). Opening a linked PR moves its ticket to
+            Review; merging holds it in Review while the deploy pipeline runs, then Done once the pipeline succeeds.
           </div>
           {Array.isArray(appRepos) && appRepos.length > 0 && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-              <span style={{ ...mono(500, 9), border: '1px solid var(--line2)', color: 'var(--tx2)', borderRadius: 2, padding: '2px 6px', letterSpacing: '.06em' }}>
+              <span
+                style={{
+                  ...mono(500, 9),
+                  border: '1px solid var(--line2)',
+                  color: 'var(--tx2)',
+                  borderRadius: 2,
+                  padding: '2px 6px',
+                  letterSpacing: '.06em',
+                }}
+              >
                 GITHUB APP
               </span>
-              <select value={appPick} onChange={(e) => setAppPick(e.target.value)} style={{ ...inputStyle, flex: '1 1 300px', cursor: 'pointer' }}>
+              <select
+                value={appPick}
+                onChange={(e) => setAppPick(e.target.value)}
+                style={{ ...inputStyle, flex: '1 1 300px', cursor: 'pointer' }}
+              >
                 <option value="">Pick an installed repository…</option>
                 {appRepos.map((r) => (
                   <option key={r.fullName} value={r.fullName}>
@@ -2342,21 +3139,48 @@ function RepoCard({
 
       {loadState === 'ready' && conn && (
         <div style={{ padding: '12px 16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: repo && (repo.prs.length > 0 || repo.commits.length > 0) ? 12 : 0 }}>
-            <a href={conn.repoUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13, fontWeight: 600, color: 'var(--tx)', textDecoration: 'none' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 14,
+              flexWrap: 'wrap',
+              marginBottom: repo && (repo.prs.length > 0 || repo.commits.length > 0) ? 12 : 0,
+            }}
+          >
+            <a
+              href={conn.repoUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ fontSize: 13, fontWeight: 600, color: 'var(--tx)', textDecoration: 'none' }}
+            >
               {conn.repoName}
             </a>
             <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{conn.defaultBranch}</span>
             <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
               {openPrs.length} OPEN PR{openPrs.length === 1 ? '' : 'S'}
             </span>
-            <span style={{ ...mono(400, 10), color: conn.status === 'error' ? 'var(--bad)' : 'var(--ok)', letterSpacing: '.06em' }}>
+            <span
+              style={{
+                ...mono(400, 10),
+                color: conn.status === 'error' ? 'var(--bad)' : 'var(--ok)',
+                letterSpacing: '.06em',
+              }}
+            >
               {conn.status === 'error' ? 'SYNC ERROR' : 'CONNECTED'}
             </span>
             {conn.lastSyncAt && (
               <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
                 SYNCED{' '}
-                {new Date(conn.lastSyncAt).toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).toUpperCase()}
+                {new Date(conn.lastSyncAt)
+                  .toLocaleString('en', {
+                    month: 'short',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                  })
+                  .toUpperCase()}
               </span>
             )}
             <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>TOKEN {conn.tokenHint}</span>
@@ -2367,41 +3191,73 @@ function RepoCard({
           {repo && (repo.prs.length > 0 || repo.commits.length > 0) && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
-                <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>PULL REQUESTS</div>
+                <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+                  PULL REQUESTS
+                </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {repo.prs.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>None synced yet.</span>}
+                  {repo.prs.length === 0 && (
+                    <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>None synced yet.</span>
+                  )}
                   {repo.prs.slice(0, 6).map((pr) => (
                     <a
                       key={pr.number}
                       href={pr.url}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--tx2)', textDecoration: 'none', minWidth: 0 }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        fontSize: 12,
+                        color: 'var(--tx2)',
+                        textDecoration: 'none',
+                        minWidth: 0,
+                      }}
                     >
-                      <span style={{ ...mono(500, 9), color: PR_STATE_COLOR[pr.state], flex: 'none' }}>{pr.state.toUpperCase()}</span>
+                      <span style={{ ...mono(500, 9), color: PR_STATE_COLOR[pr.state], flex: 'none' }}>
+                        {pr.state.toUpperCase()}
+                      </span>
                       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         #{pr.number} {pr.title}
                       </span>
-                      {pr.ticketKey && <span style={{ ...mono(400, 9), color: 'var(--agent)', flex: 'none' }}>{pr.ticketKey}</span>}
+                      {pr.ticketKey && (
+                        <span style={{ ...mono(400, 9), color: 'var(--agent)', flex: 'none' }}>{pr.ticketKey}</span>
+                      )}
                     </a>
                   ))}
                 </div>
               </div>
               <div>
-                <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>RECENT COMMITS</div>
+                <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+                  RECENT COMMITS
+                </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {repo.commits.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>None synced yet.</span>}
+                  {repo.commits.length === 0 && (
+                    <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>None synced yet.</span>
+                  )}
                   {repo.commits.slice(0, 6).map((c) => (
                     <a
                       key={c.sha}
                       href={c.url}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--tx2)', textDecoration: 'none', minWidth: 0 }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        fontSize: 12,
+                        color: 'var(--tx2)',
+                        textDecoration: 'none',
+                        minWidth: 0,
+                      }}
                     >
                       <span style={{ ...mono(400, 9), color: 'var(--tx3)', flex: 'none' }}>{c.sha.slice(0, 7)}</span>
-                      <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.message.split('\n')[0]}</span>
-                      {c.ticketKey && <span style={{ ...mono(400, 9), color: 'var(--agent)', flex: 'none' }}>{c.ticketKey}</span>}
+                      <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {c.message.split('\n')[0]}
+                      </span>
+                      {c.ticketKey && (
+                        <span style={{ ...mono(400, 9), color: 'var(--agent)', flex: 'none' }}>{c.ticketKey}</span>
+                      )}
                     </a>
                   ))}
                 </div>
@@ -2418,6 +3274,292 @@ function fmtSize(bytes: number): string {
   if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
   if (bytes >= 1024) return `${Math.ceil(bytes / 1024)} KB`;
   return `${bytes} B`;
+}
+
+function FileLibraryCard({
+  engId,
+  lead,
+  tickets,
+  toast,
+  refreshDetail,
+}: {
+  engId: string;
+  lead: boolean;
+  tickets: Ticket[];
+  toast: (msg: string) => void;
+  refreshDetail: () => void;
+}) {
+  const [data, setData] = useState<FileLibrary | null>(null);
+  const [folder, setFolder] = useState('');
+  const [newFolder, setNewFolder] = useState('');
+  const [parent, setParent] = useState('');
+  const [ruleName, setRuleName] = useState('Process uploaded file');
+  const [pattern, setPattern] = useState('*');
+  const [action, setAction] = useState<'create_ticket' | 'refine_ticket'>('create_ticket');
+  const [target, setTarget] = useState('');
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const load = useCallback(
+    () =>
+      api
+        .fileLibrary(engId)
+        .then((d) => {
+          setData(d);
+          setFolder((f) => f || d.folders[0]?.id || '');
+        })
+        .catch((e: Error) => toast(e.message)),
+    [engId, toast]
+  );
+  useEffect(() => void load(), [load]);
+  const mutate = (work: Promise<unknown>, message: string) =>
+    work
+      .then(() => {
+        toast(message);
+        void load();
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(e.message));
+  const path = (id: string): string => {
+    const f = data?.folders.find((x) => x.id === id);
+    return f ? `${f.parentId ? `${path(f.parentId)} / ` : ''}${f.name}` : '';
+  };
+  return (
+    <div
+      style={{
+        border: '1px solid var(--line)',
+        borderRadius: 4,
+        background: 'var(--bg2)',
+        marginBottom: 14,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          padding: '10px 14px',
+          borderBottom: '1px solid var(--line)',
+          ...mono(500, 10),
+          color: 'var(--tx3)',
+          letterSpacing: '.08em',
+        }}
+      >
+        VOLUME FILES
+      </div>
+      {!data ? (
+        <Empty label="Loading file library…" />
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', minHeight: 260 }}>
+          <div style={{ borderRight: '1px solid var(--line)', padding: 10 }}>
+            {data.folders.map((f) => (
+              <div
+                key={f.id}
+                style={{
+                  display: 'flex',
+                  gap: 5,
+                  alignItems: 'center',
+                  padding: '5px 4px',
+                  background: folder === f.id ? 'var(--bg3)' : 'transparent',
+                }}
+              >
+                <button
+                  onClick={() => setFolder(f.id)}
+                  style={{
+                    flex: 1,
+                    textAlign: 'left',
+                    border: 0,
+                    background: 'none',
+                    color: 'var(--tx)',
+                    cursor: 'pointer',
+                    fontSize: 11.5,
+                  }}
+                >
+                  {path(f.id)}
+                </button>
+                {lead && (
+                  <>
+                    <button
+                      title="Rename"
+                      onClick={() => {
+                        const n = prompt('Folder name', f.name);
+                        if (n) void mutate(api.renameFolder(engId, f.id, n), 'Folder renamed');
+                      }}
+                      style={{ border: 0, background: 'none', color: 'var(--tx3)', cursor: 'pointer' }}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      title="Delete"
+                      onClick={() => void mutate(api.deleteFolder(engId, f.id), 'Folder deleted')}
+                      style={{ border: 0, background: 'none', color: 'var(--tx3)', cursor: 'pointer' }}
+                    >
+                      ×
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+            {lead && (
+              <div style={{ borderTop: '1px solid var(--line)', marginTop: 8, paddingTop: 8 }}>
+                <input
+                  value={newFolder}
+                  onChange={(e) => setNewFolder(e.target.value)}
+                  placeholder="New folder"
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg)',
+                    border: '1px solid var(--line2)',
+                    color: 'var(--tx)',
+                    padding: 6,
+                  }}
+                />
+                <select
+                  value={parent}
+                  onChange={(e) => setParent(e.target.value)}
+                  style={{ width: '100%', marginTop: 5, background: 'var(--bg)', color: 'var(--tx)', padding: 5 }}
+                >
+                  <option value="">Top level</option>
+                  {data.folders.map((f) => (
+                    <option value={f.id} key={f.id}>
+                      Inside {path(f.id)}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  disabled={!newFolder.trim()}
+                  onClick={() => {
+                    void mutate(api.createFolder(engId, newFolder, parent || null), 'Folder created');
+                    setNewFolder('');
+                  }}
+                  style={{ marginTop: 5, width: '100%' }}
+                >
+                  Create folder
+                </button>
+              </div>
+            )}
+          </div>
+          <div style={{ padding: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <strong style={{ fontSize: 12 }}>{path(folder) || 'Select a folder'}</strong>
+              <div style={{ flex: 1 }} />
+              <input
+                ref={uploadRef}
+                type="file"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = '';
+                  if (f && folder)
+                    void api
+                      .uploadLibraryFile(engId, folder, f)
+                      .then((r) => {
+                        toast(
+                          r.fired.length ? `${f.name} uploaded — ${r.fired.length} rule fired` : `${f.name} uploaded`
+                        );
+                        void load();
+                        refreshDetail();
+                      })
+                      .catch((x: Error) => toast(x.message));
+                }}
+              />
+              <button disabled={!folder} onClick={() => uploadRef.current?.click()}>
+                Upload file
+              </button>
+            </div>
+            {data.files
+              .filter((f) => f.folderId === folder)
+              .map((f) => (
+                <div
+                  key={f.id}
+                  style={{ display: 'flex', gap: 9, padding: '8px 4px', borderTop: '1px solid var(--line)' }}
+                >
+                  <a href={f.url} style={{ color: 'var(--tx)', fontSize: 12, flex: 1 }}>
+                    {f.filename}
+                  </a>
+                  {f.ticketKey && (
+                    <span style={{ ...mono(500, 9), color: 'var(--agent)' }}>ATTACHED TO {f.ticketKey}</span>
+                  )}
+                  <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtSize(f.size)}</span>
+                  {lead && !f.ticketKey && (
+                    <button
+                      onClick={() => void mutate(api.deleteLibraryFile(engId, f.id), 'File deleted')}
+                      style={{ border: 0, background: 'none', color: 'var(--bad)', cursor: 'pointer' }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              ))}
+            {data.files.filter((f) => f.folderId === folder).length === 0 && <Empty label="No files in this folder." />}
+          </div>
+        </div>
+      )}
+      <div style={{ borderTop: '1px solid var(--line)', padding: 12 }}>
+        <div style={{ ...mono(500, 10), color: 'var(--tx3)', marginBottom: 8 }}>AUTOMATION RULES</div>
+        {data?.rules.map((r) => (
+          <div key={r.id} style={{ display: 'flex', gap: 8, padding: '6px 0', fontSize: 11.5 }}>
+            <span style={{ flex: 1 }}>
+              {r.name}: {path(r.folderId)}/{r.filePattern} →{' '}
+              {r.actionType === 'create_ticket' ? 'create ticket' : `refine ${r.targetTicket}`}
+            </span>
+            {lead && (
+              <button onClick={() => void mutate(api.deleteFileRule(engId, r.id), 'Rule deleted')}>Delete</button>
+            )}
+          </div>
+        ))}
+        {lead && data && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+            <input value={ruleName} onChange={(e) => setRuleName(e.target.value)} placeholder="Rule name" />
+            <select value={folder} onChange={(e) => setFolder(e.target.value)}>
+              {data.folders.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {path(f.id)}
+                </option>
+              ))}
+            </select>
+            <input
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              placeholder="*.txt"
+              style={{ width: 80 }}
+            />
+            <select value={action} onChange={(e) => setAction(e.target.value as typeof action)}>
+              <option value="create_ticket">Create ticket</option>
+              <option value="refine_ticket">Refine ticket</option>
+            </select>
+            {action === 'refine_ticket' && (
+              <select value={target} onChange={(e) => setTarget(e.target.value)}>
+                <option value="">Target ticket…</option>
+                {tickets
+                  .filter((t) => !['done', 'dismissed'].includes(t.status))
+                  .map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.key}
+                    </option>
+                  ))}
+              </select>
+            )}
+            <button
+              disabled={!folder || !ruleName.trim() || (action === 'refine_ticket' && !target)}
+              onClick={() =>
+                void mutate(
+                  api.createFileRule(engId, {
+                    name: ruleName,
+                    folderId: folder,
+                    filePattern: pattern,
+                    actionType: action,
+                    targetTicket: target || null,
+                    enabled: true,
+                  }),
+                  'Rule created'
+                )
+              }
+            >
+              Add rule
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function ContextFilesCard({
@@ -2475,8 +3617,24 @@ function ContextFilesCard({
   };
 
   return (
-    <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', marginBottom: 14, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--line)' }}>
+    <div
+      style={{
+        border: '1px solid var(--line)',
+        borderRadius: 4,
+        background: 'var(--bg2)',
+        marginBottom: 14,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '10px 14px',
+          borderBottom: '1px solid var(--line)',
+        }}
+      >
         <span style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>CONTEXT FILES</span>
         <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>READ BY AGENTS WORKING QUEUED TICKETS</span>
         <div style={{ flex: 1 }} />
@@ -2493,29 +3651,64 @@ function ContextFilesCard({
         <button
           onClick={() => inputRef.current?.click()}
           disabled={uploading}
-          style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx)', borderRadius: 3, padding: '4px 12px', fontSize: 11, fontWeight: 600, cursor: 'pointer', opacity: uploading ? 0.5 : 1 }}
+          style={{
+            border: '1px solid var(--line2)',
+            background: 'none',
+            color: 'var(--tx)',
+            borderRadius: 3,
+            padding: '4px 12px',
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: 'pointer',
+            opacity: uploading ? 0.5 : 1,
+          }}
         >
           {uploading ? 'Uploading…' : 'Upload file'}
         </button>
       </div>
       {files === null && !loadError && <Empty label="Loading…" />}
       {loadError && (
-        <div style={{ padding: '14px', fontSize: 12, color: 'var(--tx3)', display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div
+          style={{ padding: '14px', fontSize: 12, color: 'var(--tx3)', display: 'flex', gap: 8, alignItems: 'center' }}
+        >
           Couldn’t load context files.
           <button
             onClick={load}
-            style={{ border: 'none', background: 'none', color: 'var(--acc)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}
+            style={{
+              border: 'none',
+              background: 'none',
+              color: 'var(--acc)',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              padding: 0,
+            }}
           >
             Retry
           </button>
         </div>
       )}
-      {files && files.length === 0 && <Empty label="No context files yet — upload specs, schemas or runbooks for agents (and the team) to reference." />}
+      {files && files.length === 0 && (
+        <Empty label="No context files yet — upload specs, schemas or runbooks for agents (and the team) to reference." />
+      )}
       {files && files.length > 0 && (
         <div>
           {files.map((f) => (
-            <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', borderBottom: '1px solid var(--line)' }}>
-              <a href={f.url} style={{ fontSize: 12.5, color: 'var(--tx)', textDecoration: 'none', fontWeight: 500 }} className="hv-agent">
+            <div
+              key={f.name}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '8px 14px',
+                borderBottom: '1px solid var(--line)',
+              }}
+            >
+              <a
+                href={f.url}
+                style={{ fontSize: 12.5, color: 'var(--tx)', textDecoration: 'none', fontWeight: 500 }}
+                className="hv-agent"
+              >
                 {f.name}
               </a>
               <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtSize(f.size)}</span>
@@ -2524,7 +3717,14 @@ function ContextFilesCard({
                 <button
                   className="hv-bad"
                   onClick={() => setDeleteConfirm(f.name)}
-                  style={{ border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 9), cursor: 'pointer', letterSpacing: '.06em' }}
+                  style={{
+                    border: 'none',
+                    background: 'none',
+                    color: 'var(--tx3)',
+                    ...mono(400, 9),
+                    cursor: 'pointer',
+                    letterSpacing: '.06em',
+                  }}
                 >
                   REMOVE
                 </button>
@@ -2533,13 +3733,30 @@ function ContextFilesCard({
                 <span style={{ display: 'inline-flex', gap: 6 }}>
                   <button
                     onClick={() => remove(f.name)}
-                    style={{ border: '1px solid var(--bad)', background: 'none', color: 'var(--bad)', borderRadius: 3, padding: '2px 8px', fontSize: 10.5, fontWeight: 600, cursor: 'pointer' }}
+                    style={{
+                      border: '1px solid var(--bad)',
+                      background: 'none',
+                      color: 'var(--bad)',
+                      borderRadius: 3,
+                      padding: '2px 8px',
+                      fontSize: 10.5,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
                   >
                     Confirm
                   </button>
                   <button
                     onClick={() => setDeleteConfirm(null)}
-                    style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '2px 8px', fontSize: 10.5, cursor: 'pointer' }}
+                    style={{
+                      border: '1px solid var(--line2)',
+                      background: 'none',
+                      color: 'var(--tx2)',
+                      borderRadius: 3,
+                      padding: '2px 8px',
+                      fontSize: 10.5,
+                      cursor: 'pointer',
+                    }}
                   >
                     Cancel
                   </button>

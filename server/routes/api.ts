@@ -22,15 +22,14 @@ import { extractText, refinePlan, refineTicketWithBoard, type RefinedPlan, type 
 import { setupTicketOrderRoutes } from './ticket-order';
 import { clipText, installUtf8BodyRecovery } from './utf8-body';
 import { setupVelocityRoutes } from './velocity';
-import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
 import {
-  SEED_ENGAGEMENTS,
-  SEED_TICKETS,
-  SEED_SOURCES,
-  SEED_FEED,
-  SEED_TEAM,
-  SEED_SUGGESTIONS,
-} from './seed-data';
+  TICKET_EVENTS_SCHEMA_SQL,
+  TICKET_EVENTS_BACKFILL_SQL,
+  recordTicketEvent,
+  computeBurndown,
+} from './ticket-events';
+import { FILE_LIBRARY_SCHEMA_SQL, setupFileLibraryRoutes } from './file-library';
+import { SEED_ENGAGEMENTS, SEED_TICKETS, SEED_SOURCES, SEED_FEED, SEED_TEAM, SEED_SUGGESTIONS } from './seed-data';
 
 interface AppKitServices {
   lakebase: {
@@ -42,7 +41,9 @@ interface AppKitServices {
   files(key: string): {
     upload(filePath: string, contents: Buffer, options?: { overwrite?: boolean }): Promise<void>;
     download(filePath: string): Promise<{ contents?: ReadableStream }>;
-    list(directoryPath?: string): Promise<{ name?: string; path?: string; is_directory?: boolean; file_size?: number; last_modified?: number }[]>;
+    list(
+      directoryPath?: string
+    ): Promise<{ name?: string; path?: string; is_directory?: boolean; file_size?: number; last_modified?: number }[]>;
     delete(filePath: string): Promise<void>;
   };
   serving(alias: string): {
@@ -172,11 +173,27 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL]) {
+  for (const sql of [
+    ...SCHEMA_SQL,
+    ...REPO_SCHEMA_SQL,
+    ...AGENT_SCHEMA_SQL,
+    ...PROJECT_AGENTS_SCHEMA_SQL,
+    ...TOOL_CALL_SCHEMA_SQL,
+    ...COORDINATION_SCHEMA_SQL,
+    ...STANDARDS_SCHEMA_SQL,
+    ...TICKET_EVENTS_SCHEMA_SQL,
+    ...LINKS_SCHEMA_SQL,
+    ...ESTIMATE_SCHEMA_SQL,
+    ...ATTACHMENT_SCHEMA_SQL,
+    ...FILE_LIBRARY_SCHEMA_SQL,
+  ]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
-      console.warn(`[api] schema statement failed (${sql.slice(0, 60).replace(/\s+/g, ' ')}…):`, (err as Error).message);
+      console.warn(
+        `[api] schema statement failed (${sql.slice(0, 60).replace(/\s+/g, ' ')}…):`,
+        (err as Error).message
+      );
     }
   }
   const { rows } = await appkit.lakebase.query('SELECT 1 FROM app.engagements LIMIT 1');
@@ -198,13 +215,29 @@ async function initSchema(appkit: AppKitServices) {
         sow_status, dates, value, hours, team_size, rm_start, rm_end, phases, milestones, composer)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [
-        e.id, e.client, e.name, e.health, e.health_reason, e.owner, e.phase, e.pct, e.burn, e.plan,
-        e.next_milestone, e.blockers, e.sow_status, e.dates, e.value, e.hours, e.team_size,
-        e.rm_start, e.rm_end,
+        e.id,
+        e.client,
+        e.name,
+        e.health,
+        e.health_reason,
+        e.owner,
+        e.phase,
+        e.pct,
+        e.burn,
+        e.plan,
+        e.next_milestone,
+        e.blockers,
+        e.sow_status,
+        e.dates,
+        e.value,
+        e.hours,
+        e.team_size,
+        e.rm_start,
+        e.rm_end,
         e.phases ? JSON.stringify(e.phases) : null,
         e.milestones ? JSON.stringify(e.milestones) : null,
         e.composer,
-      ],
+      ]
     );
   }
   for (const t of SEED_TICKETS) {
@@ -212,31 +245,51 @@ async function initSchema(appkit: AppKitServices) {
     await appkit.lakebase.query(
       `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, est_hours, human_est_hours, done_at)
        VALUES ($1,'cav',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, CASE WHEN $3 = 'done' THEN NOW() END)`,
-      [t.key, t.title, t.status, t.assignee, t.est, t.workstream, t.agent, JSON.stringify(t.sources), t.description, JSON.stringify(t.ac), t.blocked, seedEst.estHours, seedEst.humanEstHours],
+      [
+        t.key,
+        t.title,
+        t.status,
+        t.assignee,
+        t.est,
+        t.workstream,
+        t.agent,
+        JSON.stringify(t.sources),
+        t.description,
+        JSON.stringify(t.ac),
+        t.blocked,
+        seedEst.estHours,
+        seedEst.humanEstHours,
+      ]
     );
   }
   for (const s of SEED_SOURCES) {
     await appkit.lakebase.query(
       `INSERT INTO app.sources (engagement_id, name, type, status, status_color, last_sync, chunks, linked)
        VALUES ('cav',$1,$2,$3,$4,$5,$6,$7)`,
-      [s.name, s.type, s.status, s.status_color, s.last_sync, s.chunks, s.linked],
+      [s.name, s.type, s.status, s.status_color, s.last_sync, s.chunks, s.linked]
     );
   }
   for (const f of SEED_FEED) {
     await appkit.lakebase.query(
       `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
        VALUES ('cav',$1,$2,$3,$4,$5)`,
-      [f.actor, f.text, f.time_label, f.source, f.reversible],
+      [f.actor, f.text, f.time_label, f.source, f.reversible]
     );
   }
   for (const m of SEED_TEAM) {
     await appkit.lakebase.query(`INSERT INTO app.team_members (name, role, skills, load) VALUES ($1,$2,$3,$4)`, [
-      m.name, m.role, JSON.stringify(m.skills), m.load,
+      m.name,
+      m.role,
+      JSON.stringify(m.skills),
+      m.load,
     ]);
   }
   for (const g of SEED_SUGGESTIONS) {
     await appkit.lakebase.query(`INSERT INTO app.suggestions (id, ticket, person, rationale) VALUES ($1,$2,$3,$4)`, [
-      g.id, g.ticket, g.person, g.rationale,
+      g.id,
+      g.ticket,
+      g.person,
+      g.rationale,
     ]);
   }
   // The seeded tickets need baseline events too — the schema-time backfill ran before they existed.
@@ -253,7 +306,7 @@ async function backfillMemberships(appkit: AppKitServices) {
     `INSERT INTO app.engagement_members (engagement_id, member_id)
      SELECT 'cav', id FROM app.team_members
      WHERE EXISTS (SELECT 1 FROM app.engagements WHERE id = 'cav')
-     ON CONFLICT DO NOTHING`,
+     ON CONFLICT DO NOTHING`
   );
 }
 
@@ -271,7 +324,7 @@ function foldPlanIntoTicket(
   plan: RefinedPlan,
   original: string,
   currentRow: Record<string, unknown> | undefined,
-  actions: ScopingAction[],
+  actions: ScopingAction[]
 ): { description: string; ac: string[] } {
   let description = plan.description
     ? `${plan.description}\n\n## Original request\n\n> ${original.replace(/\n/g, '\n> ')}`
@@ -299,7 +352,13 @@ function roadmapItemNames(phasesRaw: unknown): string[] {
   try {
     const arr: unknown = typeof phasesRaw === 'string' ? JSON.parse(phasesRaw) : phasesRaw;
     if (!Array.isArray(arr)) return [];
-    return arr.map((p) => (p && typeof p === 'object' && typeof (p as { name?: unknown }).name === 'string' ? (p as { name: string }).name : '')).filter(Boolean);
+    return arr
+      .map((p) =>
+        p && typeof p === 'object' && typeof (p as { name?: unknown }).name === 'string'
+          ? (p as { name: string }).name
+          : ''
+      )
+      .filter(Boolean);
   } catch {
     return [];
   }
@@ -313,7 +372,11 @@ function activeRoadmapItem(phasesRaw: unknown): string | null {
     const today = new Date().toISOString().slice(0, 10);
     const phases = arr.filter(
       (p): p is { name: string; s: string; e: string } =>
-        !!p && typeof p === 'object' && typeof (p as { name?: unknown }).name === 'string' && typeof (p as { s?: unknown }).s === 'string' && typeof (p as { e?: unknown }).e === 'string',
+        !!p &&
+        typeof p === 'object' &&
+        typeof (p as { name?: unknown }).name === 'string' &&
+        typeof (p as { s?: unknown }).s === 'string' &&
+        typeof (p as { e?: unknown }).e === 'string'
     );
     const current = phases.find((p) => p.s <= today && today <= p.e);
     if (current) return current.name;
@@ -333,7 +396,12 @@ function activeRoadmapItem(phasesRaw: unknown): string | null {
  * background after the comment posts; any failure leaves the comment as a
  * plain comment.
  */
-async function applyCommentFeedback(appkit: AppKitServices, key: string, author: string, feedback: string): Promise<void> {
+export async function applyCommentFeedback(
+  appkit: AppKitServices,
+  key: string,
+  author: string,
+  feedback: string
+): Promise<void> {
   const q = (text: string, params?: unknown[]) => appkit.lakebase.query(text, params);
   const asText = (v: unknown): string => (typeof v === 'string' ? v : '');
   const t = (await q('SELECT * FROM app.tickets WHERE key = $1', [key])).rows[0];
@@ -341,7 +409,10 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
   if (!['backlog', 'progress', 'proposed'].includes(String(t.status))) return;
   // "Never picked up": no runner has ever claimed work on this ticket.
   const picked = (
-    await q(`SELECT 1 FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('claimed','working','done','failed') LIMIT 1`, [key])
+    await q(
+      `SELECT 1 FROM app.agent_tasks WHERE ticket_key = $1 AND state IN ('claimed','working','done','failed') LIMIT 1`,
+      [key]
+    )
   ).rows;
   if (picked.length > 0) return;
 
@@ -354,46 +425,71 @@ async function applyCommentFeedback(appkit: AppKitServices, key: string, author:
     }
   })();
 
-  const response = await invokeModel(appkit.serving.bind(appkit), q, 'comment-rework', {
-    messages: [
-      {
-        role: 'user',
-        content: [
-          'You are the delivery-planning agent for a consulting delivery board. A team member left feedback on a planned ticket that no agent has started yet. Update the ticket to incorporate the feedback.',
-          'Respond with ONLY a JSON object, no code fences:',
-          '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "reply": "1-2 short plain sentences telling the commenter what you changed — no jargon, no filler"}',
-          'Keep the description in the planned format (## Context / ## Approach / ## Dependencies). If the current description contains an "## Original request" section, keep it verbatim at the end. If it contains a ```mermaid diagram, keep it — updated to reflect the reworked plan — unless the feedback removes the need for it. Change only what the feedback calls for; keep everything else as-is.',
-          'Current title:',
-          asText(t.title),
-          'Current description:',
-          asText(t.description).trim() || '(empty)',
-          'Current acceptance criteria:',
-          existingAc.length > 0 ? existingAc.map((a) => `- ${a}`).join('\n') : '(none)',
-          'Feedback comment:',
-          feedback,
-        ].join('\n\n'),
-      },
-    ],
-    max_tokens: 2000,
-  }, { engagementId: String(t.engagement_id), ticketKey: key });
+  const response = await invokeModel(
+    appkit.serving.bind(appkit),
+    q,
+    'comment-rework',
+    {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            'You are the delivery-planning agent for a consulting delivery board. A team member left feedback on a planned ticket that no agent has started yet. Update the ticket to incorporate the feedback.',
+            'Respond with ONLY a JSON object, no code fences:',
+            '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "reply": "1-2 short plain sentences telling the commenter what you changed — no jargon, no filler"}',
+            'Keep the description in the planned format (## Context / ## Approach / ## Dependencies). If the current description contains an "## Original request" section, keep it verbatim at the end. If it contains a ```mermaid diagram, keep it — updated to reflect the reworked plan — unless the feedback removes the need for it. Change only what the feedback calls for; keep everything else as-is.',
+            'Current title:',
+            asText(t.title),
+            'Current description:',
+            asText(t.description).trim() || '(empty)',
+            'Current acceptance criteria:',
+            existingAc.length > 0 ? existingAc.map((a) => `- ${a}`).join('\n') : '(none)',
+            'Feedback comment:',
+            feedback,
+          ].join('\n\n'),
+        },
+      ],
+      max_tokens: 2000,
+    },
+    { engagementId: String(t.engagement_id), ticketKey: key }
+  );
   const text = extractText(response);
   const jsonMatch = /\{[\s\S]*\}/.exec(text);
   if (!jsonMatch) return;
-  const plan = JSON.parse(jsonMatch[0]) as { title?: unknown; description?: unknown; acceptance_criteria?: unknown; reply?: unknown };
-  const title = typeof plan.title === 'string' && plan.title.trim() ? clipText(plan.title.trim(), 200) : asText(t.title);
-  const description = typeof plan.description === 'string' && plan.description.trim() ? plan.description.trim() : asText(t.description);
+  const plan = JSON.parse(jsonMatch[0]) as {
+    title?: unknown;
+    description?: unknown;
+    acceptance_criteria?: unknown;
+    reply?: unknown;
+  };
+  const title =
+    typeof plan.title === 'string' && plan.title.trim() ? clipText(plan.title.trim(), 200) : asText(t.title);
+  const description =
+    typeof plan.description === 'string' && plan.description.trim() ? plan.description.trim() : asText(t.description);
   const ac = Array.isArray(plan.acceptance_criteria)
     ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)
     : existingAc;
-  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? clipText(plan.reply.trim(), 600) : 'Updated the ticket based on your comment.';
+  const reply =
+    typeof plan.reply === 'string' && plan.reply.trim()
+      ? clipText(plan.reply.trim(), 600)
+      : 'Updated the ticket based on your comment.';
 
   console.log(`[api] comment feedback applied to ${key} — plan updated (${ac.length} AC)`);
-  await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4, updated_at = NOW() WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
-  await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [key, 'Planning Agent', `@${author} — ${reply}`]);
+  await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4, updated_at = NOW() WHERE key = $1`, [
+    key,
+    title,
+    description,
+    JSON.stringify(ac),
+  ]);
+  await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [
+    key,
+    'Planning Agent',
+    `@${author} — ${reply}`,
+  ]);
   await q(
     `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
      VALUES ($1, 'AGENT', $2, 'JUST NOW', false)`,
-    [String(t.engagement_id), `Planning agent reworked ${key} from ${author}'s feedback.`],
+    [String(t.engagement_id), `Planning agent reworked ${key} from ${author}'s feedback.`]
   );
 }
 
@@ -503,7 +599,9 @@ const ParseBody = z
     client: z.string(),
     name: z.string(),
   })
-  .refine((b) => b.path || b.description, { message: 'Either an uploaded document path or a project description is required' });
+  .refine((b) => b.path || b.description, {
+    message: 'Either an uploaded document path or a project description is required',
+  });
 
 const CreateEngagementBody = z.object({
   client: z.string().min(1),
@@ -587,14 +685,18 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   };
 
   /** Sends 403 and returns null unless the caller is an admin or a lead assigned to the engagement. */
-  const requireLead = async (req: express.Request, res: express.Response, engagementId: string | null): Promise<Identity | null> => {
+  const requireLead = async (
+    req: express.Request,
+    res: express.Response,
+    engagementId: string | null
+  ): Promise<Identity | null> => {
     const id = await resolveIdentity(req);
     if (id.role === 'admin') return id;
     if (id.role === 'lead' && engagementId) {
-      const { rows } = await q('SELECT 1 FROM app.engagement_leads WHERE engagement_id = $1 AND LOWER(email) = LOWER($2)', [
-        engagementId,
-        id.email,
-      ]);
+      const { rows } = await q(
+        'SELECT 1 FROM app.engagement_leads WHERE engagement_id = $1 AND LOWER(email) = LOWER($2)',
+        [engagementId, id.email]
+      );
       if (rows.length > 0) return id;
     }
     res.status(403).json({ error: 'Engagement lead access required for this project' });
@@ -622,9 +724,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     app.get('/api/me', async (req, res) => {
       try {
         const id = await resolveIdentity(req);
-        const leadOf = (await q('SELECT engagement_id FROM app.engagement_leads WHERE LOWER(email) = LOWER($1)', [id.email])).rows.map(
-          (r) => String(r.engagement_id),
-        );
+        const leadOf = (
+          await q('SELECT engagement_id FROM app.engagement_leads WHERE LOWER(email) = LOWER($1)', [id.email])
+        ).rows.map((r) => String(r.engagement_id));
         res.json({ ...id, leadOf });
       } catch (err) {
         console.error('me failed:', err);
@@ -680,17 +782,19 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                ORDER BY b.last_heartbeat DESC NULLS LAST LIMIT 1
              ) ba ON true
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
-            [id],
+            [id]
           )
         ).rows;
         const sources = (await q('SELECT * FROM app.sources WHERE engagement_id = $1 ORDER BY id', [id])).rows;
-        const feed = (await q('SELECT * FROM app.feed_items WHERE engagement_id = $1 AND NOT reverted ORDER BY id', [id])).rows;
+        const feed = (
+          await q('SELECT * FROM app.feed_items WHERE engagement_id = $1 AND NOT reverted ORDER BY id', [id])
+        ).rows;
         const team = (
           await q(
             `SELECT t.* FROM app.team_members t
              JOIN app.engagement_members m ON m.member_id = t.id
              WHERE m.engagement_id = $1 ORDER BY t.id`,
-            [id],
+            [id]
           )
         ).rows;
         const suggestions = (
@@ -698,10 +802,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             `SELECT s.* FROM app.suggestions s
              JOIN app.tickets t ON t.key = s.ticket
              WHERE t.engagement_id = $1 ORDER BY s.id`,
-            [id],
+            [id]
           )
         ).rows;
-        const agentTasks = (await q('SELECT * FROM app.agent_tasks WHERE engagement_id = $1 ORDER BY id DESC LIMIT 50', [id])).rows;
+        const agentTasks = (
+          await q('SELECT * FROM app.agent_tasks WHERE engagement_id = $1 ORDER BY id DESC LIMIT 50', [id])
+        ).rows;
         res.json({ tickets, sources, feed, team, suggestions, agentTasks });
       } catch (err) {
         console.error('engagement detail failed:', err);
@@ -721,7 +827,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         const { rows } = await q(
           'SELECT ticket_key, to_status, created_at FROM app.ticket_events WHERE engagement_id = $1 ORDER BY created_at, id',
-          [id],
+          [id]
         );
         const events = rows.map((r) => ({
           ticketKey: String(r.ticket_key),
@@ -805,7 +911,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         if (status !== undefined) {
           // Moving tickets in or out of the agent-review states is a lead decision;
           // everything else (board moves, assignment) is open to developers.
-          const current = (await q('SELECT engagement_id, status FROM app.tickets WHERE key = $1', [req.params.key])).rows[0];
+          const current = (await q('SELECT engagement_id, status FROM app.tickets WHERE key = $1', [req.params.key]))
+            .rows[0];
           if (!current) {
             res.status(404).json({ error: 'Ticket not found' });
             return;
@@ -873,7 +980,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         const updated = result.rows[0] as { key: string; title: string; status: string };
         console.log(
-          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${branch !== undefined ? ` — branch → '${branch}'` : ''}${tags !== undefined ? ` — tags → [${tags.join(', ')}]` : ''}${parsed.data.description !== undefined ? ' — description edited' : ''}`,
+          `[api] ticket ${updated.key} patched${status !== undefined ? ` — status → '${status}'` : ''}${assignee !== undefined ? ` — assignee → '${assignee}'` : ''}${branch !== undefined ? ` — branch → '${branch}'` : ''}${tags !== undefined ? ` — tags → [${tags.join(', ')}]` : ''}${parsed.data.description !== undefined ? ' — description edited' : ''}`
         );
         if (enteredReview) {
           // Ready for review: log the actual LLM working time against the estimate.
@@ -888,7 +995,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           await q(
             `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
              VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
-            [review.engagementId, `${verb} ${updated.status === 'dismissed' ? 'proposed ' : ''}ticket ${updated.key} — ${updated.title}`],
+            [
+              review.engagementId,
+              `${verb} ${updated.status === 'dismissed' ? 'proposed ' : ''}ticket ${updated.key} — ${updated.title}`,
+            ]
           );
         }
         res.json(result.rows[0]);
@@ -907,10 +1017,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         const id = req.params.id;
         if (!(await requireLead(req, res, id))) return;
-        const result = await q('UPDATE app.engagements SET roadmap_settings = $2 WHERE id = $1 RETURNING roadmap_settings', [
-          id,
-          JSON.stringify(parsed.data),
-        ]);
+        const result = await q(
+          'UPDATE app.engagements SET roadmap_settings = $2 WHERE id = $1 RETURNING roadmap_settings',
+          [id, JSON.stringify(parsed.data)]
+        );
         if (result.rows.length === 0) {
           res.status(404).json({ error: 'Engagement not found' });
           return;
@@ -956,7 +1066,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           author: requestAuthor(req),
         });
         const plan =
-          agentic?.plan ?? (await refinePlan(serving, content, roadmapItems, q, { engagementId: String(t.engagement_id), ticketKey: key }));
+          agentic?.plan ??
+          (await refinePlan(serving, content, roadmapItems, q, {
+            engagementId: String(t.engagement_id),
+            ticketKey: key,
+          }));
         if (!plan) {
           res.status(502).json({ error: 'The planning model is unavailable — try again shortly' });
           return;
@@ -966,7 +1080,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         // Re-read the row — the scoping loop may have consolidated other
         // tickets into it since `t` was loaded.
-        const currentRow = agentic ? (await q('SELECT description, ac FROM app.tickets WHERE key = $1', [key])).rows[0] : t;
+        const currentRow = agentic
+          ? (await q('SELECT description, ac FROM app.tickets WHERE key = $1', [key])).rows[0]
+          : t;
         const folded = foldPlanIntoTicket(plan, original, currentRow, agentic?.actions ?? []);
         const existingAc: unknown[] = (() => {
           try {
@@ -991,7 +1107,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             plan.estHours,
             plan.humanEstHours,
             plan.roadmapItem,
-          ],
+          ]
         );
         // The plan (and so the scope) changed — re-estimate in the background.
         void estimateTicket(
@@ -1004,12 +1120,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             description: folded.description,
             ac: finalAc,
           },
-          'revised',
+          'revised'
         );
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
            VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
-          [String(t.engagement_id), `Refined ${key} into a planned ticket.`],
+          [String(t.engagement_id), `Refined ${key} into a planned ticket.`]
         );
         res.json(updated.rows[0]);
       } catch (err) {
@@ -1037,11 +1153,16 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         // Continue the engagement's existing key sequence (e.g. NAC-118 after
         // NAC-117); fall back to the client-derived prefix for a fresh board.
-        const existing = (await q('SELECT key FROM app.tickets WHERE engagement_id = $1 ORDER BY seq', [engId])).rows.map((r) =>
-          String(r.key),
-        );
+        const existing = (
+          await q('SELECT key FROM app.tickets WHERE engagement_id = $1 ORDER BY seq', [engId])
+        ).rows.map((r) => String(r.key));
         const prefix =
-          existing[0]?.split('-')[0] ?? (String(eng.client).replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'ENG');
+          existing[0]?.split('-')[0] ??
+          (String(eng.client)
+            .replace(/[^A-Za-z]/g, '')
+            .slice(0, 3)
+            .toUpperCase() ||
+            'ENG');
         let next = 101;
         for (const k of existing) {
           const m = k.match(/-(\d+)$/);
@@ -1081,7 +1202,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             estHours,
             humanEstHours,
             roadmapItem,
-          ],
+          ]
         );
         let row = inserted.rows[0];
         if (chatbox) {
@@ -1094,14 +1215,24 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           const content = description;
           const roadmapItems = roadmapItemNames(eng.phases);
           const serving = appkit.serving.bind(appkit);
-          const agentic = await refineTicketWithBoard(serving, q, { key, engagementId: engId, content, roadmapItems, author });
-          const plan = agentic?.plan ?? (await refinePlan(serving, content, roadmapItems, q, { engagementId: engId, ticketKey: key }));
+          const agentic = await refineTicketWithBoard(serving, q, {
+            key,
+            engagementId: engId,
+            content,
+            roadmapItems,
+            author,
+          });
+          const plan =
+            agentic?.plan ??
+            (await refinePlan(serving, content, roadmapItems, q, { engagementId: engId, ticketKey: key }));
           if (plan) {
             if (plan.title) title = plan.title;
             roadmapItem = plan.roadmapItem;
             // Keep the human's words verbatim below the plan — they are the
             // intent of record — and carry consolidation results across.
-            const currentRow = agentic ? (await q('SELECT description, ac FROM app.tickets WHERE key = $1', [key])).rows[0] : undefined;
+            const currentRow = agentic
+              ? (await q('SELECT description, ac FROM app.tickets WHERE key = $1', [key])).rows[0]
+              : undefined;
             const folded = foldPlanIntoTicket(plan, content, currentRow, agentic?.actions ?? []);
             if (plan.description) description = folded.description;
             ac = folded.ac;
@@ -1113,11 +1244,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           const updated = await q(
             `UPDATE app.tickets SET title = $2, description = $3, ac = $4, est = $5, roadmap_item = $6
              WHERE key = $1 RETURNING *`,
-            [key, title.trim(), description, JSON.stringify(ac), est?.trim() || `${estHours}h`, roadmapItem],
+            [key, title.trim(), description, JSON.stringify(ac), est?.trim() || `${estHours}h`, roadmapItem]
           );
           row = updated.rows[0] ?? row;
           console.log(
-            `[api] chatbox ticket ${key} for ${engId} ${plan ? (agentic ? 'planned via scoping agent' : 'planned via model') : 'using fallback title'} (${content.length} chars)`,
+            `[api] chatbox ticket ${key} for ${engId} ${plan ? (agentic ? 'planned via scoping agent' : 'planned via model') : 'using fallback title'} (${content.length} chars)`
           );
         }
         console.log(`[api] created ticket ${key} in ${engId} (${ac.length} AC)`);
@@ -1130,7 +1261,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
            VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
-          [engId, `Created ticket ${key} — ${title.trim()}${who && who !== '—' ? `, assigned to ${who}` : ''}`],
+          [engId, `Created ticket ${key} — ${title.trim()}${who && who !== '—' ? `, assigned to ${who}` : ''}`]
         );
         res.status(201).json(row);
       } catch (err) {
@@ -1158,7 +1289,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
            VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
-          [engagementId, `Deleted ticket ${key} — ${String(current.title)}`],
+          [engagementId, `Deleted ticket ${key} — ${String(current.title)}`]
         );
         res.json({ ok: true });
       } catch (err) {
@@ -1179,7 +1310,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           // Same review gate as the single-ticket PATCH: moving tickets in or out
           // of the agent-review states is a lead decision per engagement.
           const reviewStates = ['proposed', 'dismissed'];
-          const targets = (await q('SELECT key, engagement_id, status FROM app.tickets WHERE key = ANY($1)', [keys])).rows;
+          const targets = (await q('SELECT key, engagement_id, status FROM app.tickets WHERE key = ANY($1)', [keys]))
+            .rows;
           const gated = reviewStates.includes(patch.status)
             ? targets
             : targets.filter((t) => reviewStates.includes(String(t.status)));
@@ -1190,7 +1322,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             `UPDATE app.tickets SET status = $1,
                     done_at = CASE WHEN $1 = 'done' THEN COALESCE(done_at, NOW()) END
              WHERE key = ANY($2)`,
-            [patch.status, keys],
+            [patch.status, keys]
           );
           if (patch.status === 'review') {
             for (const t of targets.filter((t) => String(t.status) !== 'review')) {
@@ -1205,7 +1337,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           await q('UPDATE app.tickets SET assignee = $1 WHERE key = ANY($2)', [patch.assignee, keys]);
         }
         console.log(
-          `[api] bulk updated ${keys.length} ticket(s)${patch.status !== undefined ? ` — status → '${patch.status}'` : ''}${patch.assignee !== undefined ? ` — assignee → '${patch.assignee}'` : ''}`,
+          `[api] bulk updated ${keys.length} ticket(s)${patch.status !== undefined ? ` — status → '${patch.status}'` : ''}${patch.assignee !== undefined ? ` — assignee → '${patch.assignee}'` : ''}`
         );
         res.json({ updated: keys.length });
       } catch (err) {
@@ -1271,7 +1403,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
            VALUES ($1, 'YOU', 'Pushed weekly status update to the Teams delivery channel.', 'JUST NOW', false)`,
-          [req.params.id],
+          [req.params.id]
         );
         res.json({ ok: true });
       } catch (err) {
@@ -1289,7 +1421,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           res.status(404).json({ error: 'Engagement not found' });
           return;
         }
-        const tickets = (await q('SELECT key, title, status, assignee, blocked FROM app.tickets WHERE engagement_id = $1 ORDER BY seq', [id])).rows;
+        const tickets = (
+          await q(
+            'SELECT key, title, status, assignee, blocked FROM app.tickets WHERE engagement_id = $1 ORDER BY seq',
+            [id]
+          )
+        ).rows;
         const es = (v: unknown) => (typeof v === 'string' ? v : '');
         const prompt = [
           `You are the delivery agent for a consulting engagement. Draft a concise weekly status update (plain text, no markdown) for the client channel.`,
@@ -1301,10 +1438,16 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           `Risks: <1-2 sentences>`,
           `Next: <1-2 sentences>`,
         ].join('\n\n');
-        const response = await invokeModel(appkit.serving.bind(appkit), q, 'status-draft', {
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 400,
-        }, { engagementId: id });
+        const response = await invokeModel(
+          appkit.serving.bind(appkit),
+          q,
+          'status-draft',
+          {
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 400,
+          },
+          { engagementId: id }
+        );
         const text = extractText(response).trim();
         if (!text) throw new Error('empty model response');
         console.log(`[api] weekly draft generated for ${id} (${text.length} chars)`);
@@ -1329,7 +1472,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           return;
         }
         if (!(await requireLead(req, res, String(target.engagement_id)))) return;
-        const result = await q('UPDATE app.feed_items SET reverted = true WHERE id = $1 AND reversible RETURNING engagement_id, text', [idNum]);
+        const result = await q(
+          'UPDATE app.feed_items SET reverted = true WHERE id = $1 AND reversible RETURNING engagement_id, text',
+          [idNum]
+        );
         if (result.rows.length === 0) {
           res.status(404).json({ error: 'Feed item not found or not reversible' });
           return;
@@ -1338,7 +1484,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
            VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
-          [item.engagement_id, `Reverted agent action: “${item.text}”`],
+          [item.engagement_id, `Reverted agent action: “${item.text}”`]
         );
         res.json({ ok: true });
       } catch (err) {
@@ -1399,14 +1545,18 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             }
           }
           if (!buf) {
-            res.status(502).json({ error: 'Could not read the uploaded document back from the volume — please re-upload the SOW.' });
+            res
+              .status(502)
+              .json({ error: 'Could not read the uploaded document back from the volume — please re-upload the SOW.' });
             return;
           }
           docText = await extractSowText(path, buf);
         } else {
           docText = description ?? '';
         }
-        console.log(`[api] SOW parse — source ${path ? `document ${path}` : 'written brief'}, ${docText.length} chars extracted`);
+        console.log(
+          `[api] SOW parse — source ${path ? `document ${path}` : 'written brief'}, ${docText.length} chars extracted`
+        );
         const today = new Date().toISOString().slice(0, 10);
         const sourceKind = path ? 'a signed SOW / SOP document' : 'a written project brief from the engagement lead';
         const prompt = [
@@ -1445,7 +1595,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           return;
         }
         console.log(
-          `[api] SOW plan validated — ${validated.data.phases.length} phases, ${validated.data.milestones?.length ?? 0} milestones, ${validated.data.proposals.length} proposals`,
+          `[api] SOW plan validated — ${validated.data.phases.length} phases, ${validated.data.milestones?.length ?? 0} milestones, ${validated.data.proposals.length} proposals`
         );
         res.json({ milestones: [], ...validated.data, extractedChars: docText.length });
       } catch (err) {
@@ -1466,17 +1616,22 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const creator = await requireAnyLead(req, res);
         if (!creator) return;
         const { client, name, sowFile, phases, milestones, proposals } = parsed.data;
-        const base = name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/(^-|-$)/g, '')
-          .slice(0, 24) || 'engagement';
+        const base =
+          name
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/(^-|-$)/g, '')
+            .slice(0, 24) || 'engagement';
         let id = base;
         let n = 2;
         while ((await q('SELECT 1 FROM app.engagements WHERE id = $1', [id])).rows.length > 0) {
           id = `${base}-${n++}`;
         }
-        const prefix = (client.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'ENG');
+        const prefix =
+          client
+            .replace(/[^A-Za-z]/g, '')
+            .slice(0, 3)
+            .toUpperCase() || 'ENG';
         const rmStart = phases[0]?.s ?? '2026-08-01';
         const phaseEnd = phases[phases.length - 1]?.e ?? '2027-02-20';
         // The roadmap window must also cover milestones that land after the last
@@ -1485,12 +1640,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const fmt = (d: string) =>
           new Date(`${d}T12:00:00`).toLocaleString('en', { month: 'short', day: '2-digit' }).toUpperCase();
         // Owner defaults to the creator; "nigel.silva@…" reads as "Nigel Silva".
-        const owner = creator.email
-          .split('@')[0]
-          .split(/[._-]+/)
-          .filter(Boolean)
-          .map((w) => w[0].toUpperCase() + w.slice(1))
-          .join(' ') || 'Unassigned';
+        const owner =
+          creator.email
+            .split('@')[0]
+            .split(/[._-]+/)
+            .filter(Boolean)
+            .map((w) => w[0].toUpperCase() + w.slice(1))
+            .join(' ') || 'Unassigned';
         const planOrigin = sowFile ? 'the signed SOW' : 'the project brief';
         await q(
           `INSERT INTO app.engagements
@@ -1514,12 +1670,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                     { label: 'Kickoff', d: rmStart },
                     { label: 'Go-live', d: rmEnd },
                   ]
-              ).map((m) => ({ ...m, done: false })),
+              ).map((m) => ({ ...m, done: false }))
             ),
             owner,
             phases[0]?.name ?? 'Discover',
             sowFile ? 'SIGNED' : 'BRIEF',
-          ],
+          ]
         );
         let i = 101;
         for (const p of proposals) {
@@ -1541,7 +1697,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
               JSON.stringify(['Scope confirmed at kickoff', `Deliverable acceptance per ${p.source}`]),
               seedEst.estHours,
               seedEst.humanEstHours,
-            ],
+            ]
           );
           await recordTicketEvent(q, ticketKey, id, null, 'backlog');
         }
@@ -1549,19 +1705,25 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           await q(
             `INSERT INTO app.sources (engagement_id, name, type, status, status_color, last_sync, chunks, linked)
              VALUES ($1,$2,'SOW','SYNCED','ok','JUST NOW',0,$3)`,
-            [id, sowFile, proposals.length],
+            [id, sowFile, proposals.length]
           );
         }
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
            VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
-          [id, `Seeded ${proposals.length} tickets, phase schedule and roadmap from ${planOrigin}.`, sowFile ?? 'Project brief'],
+          [
+            id,
+            `Seeded ${proposals.length} tickets, phase schedule and roadmap from ${planOrigin}.`,
+            sowFile ?? 'Project brief',
+          ]
         );
-        await q('INSERT INTO app.engagement_leads (engagement_id, email) VALUES ($1, LOWER($2)) ON CONFLICT DO NOTHING', [
-          id,
-          creator.email,
-        ]);
-        console.log(`[api] created engagement ${id} — ${proposals.length} tickets seeded from ${planOrigin} (${phases.length} phases)`);
+        await q(
+          'INSERT INTO app.engagement_leads (engagement_id, email) VALUES ($1, LOWER($2)) ON CONFLICT DO NOTHING',
+          [id, creator.email]
+        );
+        console.log(
+          `[api] created engagement ${id} — ${proposals.length} tickets seeded from ${planOrigin} (${phases.length} phases)`
+        );
         res.status(201).json({ id });
       } catch (err) {
         console.error('create engagement failed:', err);
@@ -1579,9 +1741,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           res.status(404).json({ error: 'Engagement not found' });
           return;
         }
-        const ticketKeys = (await q('SELECT key FROM app.tickets WHERE engagement_id = $1', [id])).rows.map((r) => String(r.key));
+        const ticketKeys = (await q('SELECT key FROM app.tickets WHERE engagement_id = $1', [id])).rows.map((r) =>
+          String(r.key)
+        );
         await deleteAttachmentFiles(q, appkit.files('files'), ticketKeys);
-        await q('DELETE FROM app.suggestions WHERE ticket IN (SELECT key FROM app.tickets WHERE engagement_id = $1)', [id]);
+        await q('DELETE FROM app.suggestions WHERE ticket IN (SELECT key FROM app.tickets WHERE engagement_id = $1)', [
+          id,
+        ]);
         await q('DELETE FROM app.feed_items WHERE engagement_id = $1', [id]);
         await q('DELETE FROM app.sources WHERE engagement_id = $1', [id]);
         await q('DELETE FROM app.engagement_members WHERE engagement_id = $1', [id]);
@@ -1599,10 +1765,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     app.get('/api/admin', async (req, res) => {
       try {
         if (!(await requireAdmin(req, res))) return;
-        const engagements = (await q('SELECT id, client, name, phase, health FROM app.engagements ORDER BY created_at, id')).rows;
+        const engagements = (
+          await q('SELECT id, client, name, phase, health FROM app.engagements ORDER BY created_at, id')
+        ).rows;
         const members = (await q('SELECT * FROM app.team_members ORDER BY id')).rows;
         const assignments = (await q('SELECT engagement_id, member_id FROM app.engagement_members')).rows;
-        const leads = (await q('SELECT engagement_id, email FROM app.engagement_leads ORDER BY engagement_id, email')).rows;
+        const leads = (await q('SELECT engagement_id, email FROM app.engagement_leads ORDER BY engagement_id, email'))
+          .rows;
         res.json({ engagements, members, assignments, leads });
       } catch (err) {
         console.error('admin overview failed:', err);
@@ -1621,7 +1790,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         if (!(await requireLead(req, res, id))) return;
         await q('DELETE FROM app.engagement_members WHERE engagement_id = $1', [id]);
         for (const memberId of parsed.data.memberIds) {
-          await q('INSERT INTO app.engagement_members (engagement_id, member_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [id, memberId]);
+          await q(
+            'INSERT INTO app.engagement_members (engagement_id, member_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+            [id, memberId]
+          );
         }
         await q('UPDATE app.engagements SET team_size = $2 WHERE id = $1', [id, parsed.data.memberIds.length]);
         res.json({ ok: true, count: parsed.data.memberIds.length });
@@ -1642,7 +1814,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const id = req.params.id;
         await q('DELETE FROM app.engagement_leads WHERE engagement_id = $1', [id]);
         for (const email of parsed.data.emails) {
-          await q('INSERT INTO app.engagement_leads (engagement_id, email) VALUES ($1, LOWER($2)) ON CONFLICT DO NOTHING', [id, email]);
+          await q(
+            'INSERT INTO app.engagement_leads (engagement_id, email) VALUES ($1, LOWER($2)) ON CONFLICT DO NOTHING',
+            [id, email]
+          );
         }
         res.json({ ok: true, count: parsed.data.emails.length });
       } catch (err) {
@@ -1661,7 +1836,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         if (!(await requireAdmin(req, res))) return;
         const result = await q(
           `INSERT INTO app.team_members (name, role, skills, load) VALUES ($1,$2,'[0,0,0,0,0,0]',0) RETURNING *`,
-          [parsed.data.name.trim(), parsed.data.role.trim().toUpperCase()],
+          [parsed.data.name.trim(), parsed.data.role.trim().toUpperCase()]
         );
         res.status(201).json(result.rows[0]);
       } catch (err) {
@@ -1689,7 +1864,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           await q(
             `UPDATE app.engagements e SET team_size = (SELECT COUNT(*) FROM app.engagement_members m WHERE m.engagement_id = e.id)
              WHERE e.id = $1`,
-            [row.engagement_id],
+            [row.engagement_id]
           );
         }
         res.json({ ok: true });
@@ -1702,7 +1877,9 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     // ---- ticket comments ----
     app.get('/api/tickets/:key/comments', async (req, res) => {
       try {
-        const { rows } = await q('SELECT * FROM app.ticket_comments WHERE ticket_key = $1 ORDER BY id', [req.params.key]);
+        const { rows } = await q('SELECT * FROM app.ticket_comments WHERE ticket_key = $1 ORDER BY id', [
+          req.params.key,
+        ]);
         res.json(rows);
       } catch (err) {
         console.error('list comments failed:', err);
@@ -1717,7 +1894,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         telemetry = appkit.files('telemetry');
       } catch (err) {
-        console.warn('[api] telemetry volume unavailable — tool-call logs stay in Postgres only:', (err as Error).message);
+        console.warn(
+          '[api] telemetry volume unavailable — tool-call logs stay in Postgres only:',
+          (err as Error).message
+        );
       }
     } else {
       console.log('[api] DATABRICKS_VOLUME_TELEMETRY not set — tool-call logs stay in Postgres only');
@@ -1737,7 +1917,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupPrConflictRoutes(app, q);
     setupEstimateRoutes(app, q, appkit.serving.bind(appkit), requireLead);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
-    setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead);
+    const refineFromFile = (key: string, feedback: string) =>
+      applyCommentFeedback(appkit, key, 'Files automation', feedback);
+    setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead, refineFromFile);
+    setupFileLibraryRoutes(app, q, appkit.files('files'), requireLead, refineFromFile);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
     setupLlmHealthRoutes(app, appkit.serving.bind(appkit));
 
@@ -1756,13 +1939,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const author = requestAuthor(req);
         const result = await q(
           'INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3) RETURNING *',
-          [req.params.key, author, parsed.data.body.trim()],
+          [req.params.key, author, parsed.data.body.trim()]
         );
         res.status(201).json(result.rows[0]);
         // Before a runner ever picks the ticket up, comments double as plan
         // feedback — the planning agent updates the ticket and replies here.
         void applyCommentFeedback(appkit, req.params.key, author, parsed.data.body.trim()).catch((err) =>
-          console.warn('[api] comment feedback refinement failed:', (err as Error).message),
+          console.warn('[api] comment feedback refinement failed:', (err as Error).message)
         );
       } catch (err) {
         console.error('add comment failed:', err);

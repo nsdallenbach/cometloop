@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { api } from '../api';
-import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
+import type {
+  AgentTask,
+  FileFolder,
+  Ticket,
+  TicketAttachment,
+  TicketComment,
+  TicketDev,
+  TicketLinkType,
+  TicketLinks,
+  ToolCall,
+} from '../types';
 import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
@@ -165,8 +175,12 @@ export function TicketDrawer({
   // Estimate edits (DAT-195): same keying rule as branch edits. Both time
   // estimates are mandatory — clearing or a non-positive value is blocked
   // with an inline error instead of a save.
-  const [estEdit, setEstEdit] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; value: string } | null>(null);
-  const [estError, setEstError] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; msg: string } | null>(null);
+  const [estEdit, setEstEdit] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; value: string } | null>(
+    null
+  );
+  const [estError, setEstError] = useState<{ key: string; field: 'estHours' | 'humanEstHours'; msg: string } | null>(
+    null
+  );
   const estEditValue = (field: 'estHours' | 'humanEstHours'): string | null =>
     estEdit && estEdit.key === ticket.key && estEdit.field === field ? estEdit.value : null;
   const estFieldError = (field: 'estHours' | 'humanEstHours'): string | null =>
@@ -229,9 +243,13 @@ export function TicketDrawer({
             return { key: ticket.key, list: [...list, ...extra], error: false };
           }
           return { key: ticket.key, list, error: false };
-        }),
+        })
       )
-      .catch(() => setLoaded((cur) => (cur && cur.key === ticket.key && cur.list ? cur : { key: ticket.key, list: null, error: true })));
+      .catch(() =>
+        setLoaded((cur) =>
+          cur && cur.key === ticket.key && cur.list ? cur : { key: ticket.key, list: null, error: true }
+        )
+      );
   }, [ticket.key]);
 
   useEffect(loadComments, [loadComments]);
@@ -239,6 +257,8 @@ export function TicketDrawer({
   const [attach, setAttach] = useState<{ key: string; list: TicketAttachment[] | null } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [attachArm, setAttachArm] = useState<string | null>(null);
+  const [attachFolders, setAttachFolders] = useState<FileFolder[]>([]);
+  const [attachFolder, setAttachFolder] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const loadAttachments = useCallback(() => {
@@ -249,11 +269,20 @@ export function TicketDrawer({
   }, [ticket.key]);
 
   useEffect(loadAttachments, [loadAttachments]);
+  useEffect(() => {
+    void api
+      .fileLibrary(ticket.engagementId)
+      .then((d) => {
+        setAttachFolders(d.folders);
+        setAttachFolder((v) => v || d.folders[0]?.id || '');
+      })
+      .catch(() => undefined);
+  }, [ticket.engagementId]);
 
   const uploadAttachment = (file: File) => {
     setUploading(true);
     api
-      .uploadAttachment(ticket.key, file)
+      .uploadAttachment(ticket.key, file, attachFolder || undefined)
       .then(() => {
         toast(`Attached ${file.name}`);
         loadAttachments();
@@ -300,7 +329,7 @@ export function TicketDrawer({
   const linksData = linked && linked.key === ticket.key ? linked.data : null;
   const linkedKeys = new Set((linksData?.links ?? []).filter((l) => l.type !== 'mention').map((l) => l.key));
   const linkableTickets = allTickets.filter(
-    (t) => t.key !== ticket.key && !linkedKeys.has(t.key) && !['dismissed', 'proposed'].includes(t.status),
+    (t) => t.key !== ticket.key && !linkedKeys.has(t.key) && !['dismissed', 'proposed'].includes(t.status)
   );
 
   const addLink = () => {
@@ -377,7 +406,8 @@ export function TicketDrawer({
   // poll so merges and pipeline progress show up without reopening the drawer.
   // ('failed' stays watched too — a re-run pipeline can still turn it green.)
   const watchDev =
-    devData?.prs.some((p) => p.state === 'open' || ['pending', 'running', 'failed'].includes(p.deployState ?? '')) ?? false;
+    devData?.prs.some((p) => p.state === 'open' || ['pending', 'running', 'failed'].includes(p.deployState ?? '')) ??
+    false;
   useEffect(() => {
     if (!watchDev) return;
     const iv = setInterval(loadDev, 8000);
@@ -455,7 +485,7 @@ export function TicketDrawer({
         setLoaded((cur) =>
           cur && cur.key === ticket.key && cur.list
             ? { key: cur.key, list: [...cur.list, c], error: false }
-            : { key: ticket.key, list: [c], error: false },
+            : { key: ticket.key, list: [c], error: false }
         );
         setDraft('');
         // On un-picked-up tickets the planning agent may rework the plan and
@@ -466,7 +496,7 @@ export function TicketDrawer({
           setTimeout(() => {
             loadComments();
             refreshDetail();
-          }, ms),
+          }, ms)
         );
       })
       .catch(() => toast('Comment failed to post'))
@@ -477,7 +507,9 @@ export function TicketDrawer({
     const d = new Date(iso);
     return isNaN(+d)
       ? ''
-      : d.toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).toUpperCase();
+      : d
+          .toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+          .toUpperCase();
   };
 
   const assigneeOptions = [...new Set(['—', ...team, ticket.assignee])];
@@ -515,20 +547,55 @@ export function TicketDrawer({
           title="Drag to resize"
           style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 6, cursor: 'ew-resize', zIndex: 1 }}
         />
-        <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--line)' }}>
+        <div
+          style={{
+            flex: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '14px 18px',
+            borderBottom: '1px solid var(--line)',
+          }}
+        >
           <span style={{ ...mono(500, 11), color: 'var(--tx3)' }}>{ticket.key}</span>
           {ticket.agent && !proposed && (
-            <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '2px 5px' }}>◆ AGENT-CREATED</span>
+            <span
+              style={{
+                ...mono(500, 9),
+                background: 'var(--agentsoft)',
+                color: 'var(--agent)',
+                borderRadius: 2,
+                padding: '2px 5px',
+              }}
+            >
+              ◆ AGENT-CREATED
+            </span>
           )}
           {proposed && (
-            <span style={{ ...mono(500, 9), border: '1px dashed var(--agent)', color: 'var(--agent)', borderRadius: 2, padding: '2px 5px' }}>
+            <span
+              style={{
+                ...mono(500, 9),
+                border: '1px dashed var(--agent)',
+                color: 'var(--agent)',
+                borderRadius: 2,
+                padding: '2px 5px',
+              }}
+            >
               PROPOSED — NOT ON BOARD
             </span>
           )}
           <button
             className="hv-tx"
             onClick={onClose}
-            style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 16, cursor: 'pointer', padding: '2px 6px' }}
+            style={{
+              marginLeft: 'auto',
+              border: 'none',
+              background: 'none',
+              color: 'var(--tx3)',
+              fontSize: 16,
+              cursor: 'pointer',
+              padding: '2px 6px',
+            }}
           >
             ×
           </button>
@@ -537,11 +604,15 @@ export function TicketDrawer({
           <h2 style={{ margin: '0 0 14px', fontSize: 15, fontWeight: 600, lineHeight: 1.4 }}>{ticket.title}</h2>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>STATUS</div>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
+                STATUS
+              </div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{STATUS_LABEL[ticket.status] ?? ticket.status}</div>
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>ASSIGNEE</div>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
+                ASSIGNEE
+              </div>
               <select
                 value={ticket.assignee}
                 onChange={(e) => onAssign(e.target.value)}
@@ -565,7 +636,9 @@ export function TicketDrawer({
               </select>
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>◆ AGENT ESTIMATE (H)</div>
+              <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>
+                ◆ AGENT ESTIMATE (H)
+              </div>
               <input
                 type="number"
                 min={0.1}
@@ -612,12 +685,16 @@ export function TicketDrawer({
               )}
             </div>
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>HUMAN DEV ESTIMATE (H)</div>
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
+                HUMAN DEV ESTIMATE (H)
+              </div>
               <input
                 type="number"
                 min={0.1}
                 step={0.1}
-                value={estEditValue('humanEstHours') ?? (ticket.humanEstHours != null ? String(ticket.humanEstHours) : '')}
+                value={
+                  estEditValue('humanEstHours') ?? (ticket.humanEstHours != null ? String(ticket.humanEstHours) : '')
+                }
                 onChange={(e) => {
                   setEstEdit({ key: ticket.key, field: 'humanEstHours', value: e.target.value });
                   if (estFieldError('humanEstHours')) setEstError(null);
@@ -640,15 +717,25 @@ export function TicketDrawer({
                 }}
               />
               {estFieldError('humanEstHours') && (
-                <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 3 }}>{estFieldError('humanEstHours')}</div>
+                <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 3 }}>
+                  {estFieldError('humanEstHours')}
+                </div>
               )}
             </div>
-            <div style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>WORKSTREAM</div>
+            <div
+              style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}
+            >
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
+                WORKSTREAM
+              </div>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ticket.workstream}</div>
             </div>
-            <div style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
-              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>BRANCH</div>
+            <div
+              style={{ gridColumn: '1 / -1', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}
+            >
+              <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 3 }}>
+                BRANCH
+              </div>
               <input
                 value={branchValue}
                 onChange={(e) => setBranchEdit({ key: ticket.key, value: e.target.value })}
@@ -695,7 +782,15 @@ export function TicketDrawer({
                   className="hv-bad"
                   title={`Remove tag "${tag}"`}
                   onClick={() => onTags(ticket.tags.filter((t) => t !== tag))}
-                  style={{ border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 11, cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}
+                  style={{
+                    border: 'none',
+                    background: 'none',
+                    color: 'var(--tx3)',
+                    fontSize: 11,
+                    cursor: 'pointer',
+                    padding: '0 2px',
+                    lineHeight: 1,
+                  }}
                 >
                   ×
                 </button>
@@ -860,17 +955,24 @@ export function TicketDrawer({
               <Markdown text={ticket.description} />
             )}
           </div>
-          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>ACCEPTANCE CRITERIA</div>
+          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+            ACCEPTANCE CRITERIA
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 16 }}>
             {ticket.ac.map((a, i) => (
               // eslint-disable-next-line react/no-array-index-key -- AC lines have no stable id and can repeat verbatim
-              <div key={`${i}-${a}`} style={{ display: 'flex', gap: 8, fontSize: 12.5, lineHeight: 1.45, color: 'var(--tx2)' }}>
+              <div
+                key={`${i}-${a}`}
+                style={{ display: 'flex', gap: 8, fontSize: 12.5, lineHeight: 1.45, color: 'var(--tx2)' }}
+              >
                 <span style={{ color: 'var(--tx3)', ...mono(400, 11) }}>—</span>
                 {a}
               </div>
             ))}
           </div>
-          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>PROVENANCE</div>
+          <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+            PROVENANCE
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
             {ticket.sources.map((sr) => (
               <div
@@ -878,9 +980,27 @@ export function TicketDrawer({
                 className="hv-agent"
                 onClick={goSources}
                 title="Open the Sources tab"
-                style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px', cursor: 'pointer' }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 9,
+                  border: '1px solid var(--line)',
+                  borderRadius: 3,
+                  padding: '8px 11px',
+                  cursor: 'pointer',
+                }}
               >
-                <span style={{ ...mono(500, 9), color: 'var(--agent)', border: '1px solid var(--agent)', borderRadius: 2, padding: '1px 5px' }}>{sr.type}</span>
+                <span
+                  style={{
+                    ...mono(500, 9),
+                    color: 'var(--agent)',
+                    border: '1px solid var(--agent)',
+                    borderRadius: 2,
+                    padding: '1px 5px',
+                  }}
+                >
+                  {sr.type}
+                </span>
                 <span style={{ fontSize: 12, color: 'var(--tx2)', flex: 1 }}>{sr.label}</span>
               </div>
             ))}
@@ -899,6 +1019,26 @@ export function TicketDrawer({
                 if (file) uploadAttachment(file);
               }}
             />
+            <select
+              value={attachFolder}
+              onChange={(e) => setAttachFolder(e.target.value)}
+              title="Volume folder"
+              style={{
+                background: 'var(--bg)',
+                border: '1px solid var(--line2)',
+                color: 'var(--tx2)',
+                borderRadius: 3,
+                padding: '4px 7px',
+                fontSize: 11,
+              }}
+            >
+              <option value="">Ticket attachments only</option>
+              {attachFolders.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
             <button
               className="hv-border"
               disabled={uploading}
@@ -927,20 +1067,53 @@ export function TicketDrawer({
             {(attachments ?? []).map((a) => (
               <div
                 key={a.id}
-                style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '7px 11px' }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 9,
+                  border: '1px solid var(--line)',
+                  borderRadius: 3,
+                  padding: '7px 11px',
+                }}
               >
-                <span style={{ ...mono(500, 9), color: 'var(--tx3)', border: '1px solid var(--line2)', borderRadius: 2, padding: '1px 5px' }}>
+                <span
+                  style={{
+                    ...mono(500, 9),
+                    color: 'var(--tx3)',
+                    border: '1px solid var(--line2)',
+                    borderRadius: 2,
+                    padding: '1px 5px',
+                  }}
+                >
                   {fmtSize(a.size)}
                 </span>
                 <a
                   href={a.url}
                   download={a.filename}
                   title={`Uploaded by ${a.uploader}${a.createdAt ? ` · ${fmtTime(a.createdAt)}` : ''}`}
-                  style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textDecoration: 'none' }}
+                  style={{
+                    fontSize: 12,
+                    color: 'var(--tx)',
+                    flex: 1,
+                    minWidth: 0,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    textDecoration: 'none',
+                  }}
                 >
                   {a.filename}
                 </a>
-                <span style={{ ...mono(400, 9), color: 'var(--tx3)', maxWidth: 140, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <span
+                  style={{
+                    ...mono(400, 9),
+                    color: 'var(--tx3)',
+                    maxWidth: 140,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
                   {a.uploader.split('@')[0]}
                 </span>
                 {lead && (
@@ -968,18 +1141,42 @@ export function TicketDrawer({
           </div>
           {(agentTask || canQueue) && (
             <>
-              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>AGENT WORK</div>
-              <div style={{ border: `1px solid ${agentActive ? 'var(--agent)' : 'var(--line)'}`, borderRadius: 3, padding: '10px 12px', marginBottom: 18 }}>
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+                AGENT WORK
+              </div>
+              <div
+                style={{
+                  border: `1px solid ${agentActive ? 'var(--agent)' : 'var(--line)'}`,
+                  borderRadius: 3,
+                  padding: '10px 12px',
+                  marginBottom: 18,
+                }}
+              >
                 {agentTask && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ ...mono(500, 9), color: 'var(--agent)', border: '1px solid var(--agent)', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
+                      <span
+                        style={{
+                          ...mono(500, 9),
+                          color: 'var(--agent)',
+                          border: '1px solid var(--agent)',
+                          borderRadius: 2,
+                          padding: '1px 5px',
+                          letterSpacing: '.06em',
+                        }}
+                      >
                         ◆ {AGENT_STATE_LABEL[agentTask.state]}
                       </span>
                       {agentTask.agent && (
                         <span
                           title={`${agentTask.agent} (${runnerBrand(agentTask.agent).label} runner)`}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: 5, ...mono(400, 10), color: 'var(--tx2)' }}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            ...mono(400, 10),
+                            color: 'var(--tx2)',
+                          }}
                         >
                           {runnerBrand(agentTask.agent).mark(11)}
                           {agentTask.agent}
@@ -989,7 +1186,15 @@ export function TicketDrawer({
                         <button
                           className="hv-bad"
                           onClick={onCancelAgent}
-                          style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 9), cursor: 'pointer', letterSpacing: '.06em' }}
+                          style={{
+                            marginLeft: 'auto',
+                            border: 'none',
+                            background: 'none',
+                            color: 'var(--tx3)',
+                            ...mono(400, 9),
+                            cursor: 'pointer',
+                            letterSpacing: '.06em',
+                          }}
                         >
                           CANCEL
                         </button>
@@ -999,23 +1204,41 @@ export function TicketDrawer({
                       <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>{agentTask.instructions}</div>
                     )}
                     {agentTask.flag && ['claimed', 'working'].includes(agentTask.state) && (
-                      <div style={{ fontSize: 12, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.5 }}>⚠ {agentTask.flag}</div>
+                      <div style={{ fontSize: 12, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.5 }}>
+                        ⚠ {agentTask.flag}
+                      </div>
                     )}
                     {agentTask.result && (agentTask.state === 'done' || agentTask.state === 'failed') && (
-                      <div style={{ fontSize: 12, color: agentTask.state === 'done' ? 'var(--tx2)' : 'var(--bad)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: agentTask.state === 'done' ? 'var(--tx2)' : 'var(--bad)',
+                          lineHeight: 1.5,
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
                         {agentTask.result}
                       </div>
                     )}
                     {agentTask.resultUrl && (
-                      <a href={agentTask.resultUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--acc)', wordBreak: 'break-all' }}>
+                      <a
+                        href={agentTask.resultUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ fontSize: 12, color: 'var(--acc)', wordBreak: 'break-all' }}
+                      >
                         {agentTask.resultUrl}
                       </a>
                     )}
                     {(agentRunning || toolCalls.length > 0) && (
                       <div>
-                        <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', margin: '3px 0 4px' }}>
+                        <div
+                          style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', margin: '3px 0 4px' }}
+                        >
                           TOOL ACTIVITY
-                          {toolCalls.length > 0 ? ` · ${toolCalls.length}${toolFeed && toolFeed.calls.length > toolCalls.length ? ' LATEST' : ''}` : ''}
+                          {toolCalls.length > 0
+                            ? ` · ${toolCalls.length}${toolFeed && toolFeed.calls.length > toolCalls.length ? ' LATEST' : ''}`
+                            : ''}
                           {agentRunning && (
                             <span style={{ color: 'var(--agent)', animation: 'eec-pulse 2.4s infinite' }}> · LIVE</span>
                           )}
@@ -1038,14 +1261,28 @@ export function TicketDrawer({
                             <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>WAITING FOR TOOL ACTIVITY…</span>
                           )}
                           {toolCalls.map((c) => (
-                            <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline', ...mono(400, 10), lineHeight: 1.55 }}>
+                            <div
+                              key={c.id}
+                              style={{
+                                display: 'flex',
+                                gap: 8,
+                                alignItems: 'baseline',
+                                ...mono(400, 10),
+                                lineHeight: 1.55,
+                              }}
+                            >
                               <span style={{ flex: 'none', color: 'var(--tx3)' }}>
                                 {new Date(c.calledAt).toLocaleTimeString('en', { hour12: false })}
                               </span>
                               <span style={{ flex: 'none', color: 'var(--agent)', fontWeight: 500 }}>{c.tool}</span>
                               <span
                                 title={c.detail}
-                                style={{ color: 'var(--tx2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                                style={{
+                                  color: 'var(--tx2)',
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
                               >
                                 {c.detail}
                               </span>
@@ -1100,13 +1337,30 @@ export function TicketDrawer({
                           setQueueOpen(false);
                           setInstructions('');
                         }}
-                        style={{ border: 'none', background: 'var(--agent)', color: '#fff', borderRadius: 3, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                        style={{
+                          border: 'none',
+                          background: 'var(--agent)',
+                          color: '#fff',
+                          borderRadius: 3,
+                          padding: '6px 14px',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
                       >
                         Add to queue
                       </button>
                       <button
                         onClick={() => setQueueOpen(false)}
-                        style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+                        style={{
+                          border: '1px solid var(--line2)',
+                          background: 'none',
+                          color: 'var(--tx2)',
+                          borderRadius: 3,
+                          padding: '6px 12px',
+                          fontSize: 12,
+                          cursor: 'pointer',
+                        }}
                       >
                         Cancel
                       </button>
@@ -1123,27 +1377,67 @@ export function TicketDrawer({
             {linksData === null && linked?.key === ticket.key && (
               <div style={{ fontSize: 12, color: 'var(--tx3)' }}>
                 Couldn’t load linked work.{' '}
-                <button onClick={loadLinks} style={{ border: 'none', background: 'none', color: 'var(--acc)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
+                <button
+                  onClick={loadLinks}
+                  style={{
+                    border: 'none',
+                    background: 'none',
+                    color: 'var(--acc)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                >
                   Retry
                 </button>
               </div>
             )}
             {(linksData?.links ?? []).map((l) => {
               const badge = LINK_BADGE[l.type];
-              const statusColor = l.status === 'done' ? 'var(--ok)' : l.status === 'review' ? 'var(--warn)' : 'var(--tx3)';
+              const statusColor =
+                l.status === 'done' ? 'var(--ok)' : l.status === 'review' ? 'var(--warn)' : 'var(--tx3)';
               return (
                 <div
                   key={`${l.type}-${l.key}-${l.id ?? 'm'}`}
                   className="hv-agent"
                   onClick={() => onOpenTicket(l.key)}
                   title={`Open ${l.key}`}
-                  style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px', cursor: 'pointer' }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 9,
+                    border: '1px solid var(--line)',
+                    borderRadius: 3,
+                    padding: '8px 11px',
+                    cursor: 'pointer',
+                  }}
                 >
-                  <span style={{ ...mono(500, 9), color: badge.color, border: `1px solid ${badge.color}`, borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em', flex: 'none' }}>
+                  <span
+                    style={{
+                      ...mono(500, 9),
+                      color: badge.color,
+                      border: `1px solid ${badge.color}`,
+                      borderRadius: 2,
+                      padding: '1px 5px',
+                      letterSpacing: '.06em',
+                      flex: 'none',
+                    }}
+                  >
                     {badge.label}
                   </span>
                   <span style={{ ...mono(500, 10), color: 'var(--tx3)', flex: 'none' }}>{l.key}</span>
-                  <span style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: 'var(--tx)',
+                      flex: 1,
+                      minWidth: 0,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
                     {l.title}
                   </span>
                   <span style={{ ...mono(400, 9), color: statusColor, flex: 'none', letterSpacing: '.06em' }}>
@@ -1157,7 +1451,16 @@ export function TicketDrawer({
                         removeLink(l.id as number);
                       }}
                       title="Remove link"
-                      style={{ flex: 'none', border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 13, cursor: 'pointer', padding: '0 2px', lineHeight: 1 }}
+                      style={{
+                        flex: 'none',
+                        border: 'none',
+                        background: 'none',
+                        color: 'var(--tx3)',
+                        fontSize: 13,
+                        cursor: 'pointer',
+                        padding: '0 2px',
+                        lineHeight: 1,
+                      }}
                     >
                       ×
                     </button>
@@ -1176,10 +1479,35 @@ export function TicketDrawer({
                     rel="noreferrer"
                     title={`PR #${b.prNumber} — ${b.state}`}
                     className="hv-border"
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid var(--line)', borderRadius: 3, padding: '3px 8px', textDecoration: 'none' }}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      border: '1px solid var(--line)',
+                      borderRadius: 3,
+                      padding: '3px 8px',
+                      textDecoration: 'none',
+                    }}
                   >
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: PR_STATE_COLOR[b.state] ?? 'var(--tx3)', flex: 'none' }} />
-                    <span style={{ ...mono(400, 10), color: 'var(--tx2)', maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <span
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: '50%',
+                        background: PR_STATE_COLOR[b.state] ?? 'var(--tx3)',
+                        flex: 'none',
+                      }}
+                    />
+                    <span
+                      style={{
+                        ...mono(400, 10),
+                        color: 'var(--tx2)',
+                        maxWidth: 220,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
                       {b.branch}
                     </span>
                   </a>
@@ -1192,7 +1520,15 @@ export function TicketDrawer({
                 <select
                   value={linkType}
                   onChange={(e) => setLinkType(e.target.value as typeof linkType)}
-                  style={{ background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
+                  style={{
+                    background: 'var(--bg)',
+                    border: '1px solid var(--line2)',
+                    color: 'var(--tx)',
+                    borderRadius: 3,
+                    padding: '3px 6px',
+                    fontSize: 11.5,
+                    cursor: 'pointer',
+                  }}
                 >
                   {LINK_TYPE_OPTIONS.map((o) => (
                     <option key={o.value} value={o.value}>
@@ -1203,7 +1539,17 @@ export function TicketDrawer({
                 <select
                   value={linkTarget}
                   onChange={(e) => setLinkTarget(e.target.value)}
-                  style={{ flex: 1, minWidth: 0, background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    background: 'var(--bg)',
+                    border: '1px solid var(--line2)',
+                    color: 'var(--tx)',
+                    borderRadius: 3,
+                    padding: '3px 6px',
+                    fontSize: 11.5,
+                    cursor: 'pointer',
+                  }}
                 >
                   <option value="">Select a ticket…</option>
                   {linkableTickets.map((t) => (
@@ -1235,89 +1581,139 @@ export function TicketDrawer({
           </div>
           {devData && (devData.prs.length > 0 || devData.commits.length > 0) && (
             <>
-              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>DEVELOPMENT</div>
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+                DEVELOPMENT
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
                 {devData.prs.map((pr) => {
                   const dep = pr.deployState ? DEPLOY_BADGE[pr.deployState] : null;
                   return (
-                  <div key={`pr${pr.number}`} style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                    <a
-                      href={pr.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="hv-agent"
-                      onMouseLeave={() => setMergeArm((cur) => (cur === pr.number ? null : cur))}
-                      style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: dep ? '3px 3px 0 0' : 3, padding: '8px 11px', textDecoration: 'none', color: 'inherit' }}
-                    >
-                      <span style={{ ...mono(500, 9), color: PR_STATE_COLOR[pr.state], border: `1px solid ${PR_STATE_COLOR[pr.state]}`, borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
-                        PR {pr.state.toUpperCase()}
-                      </span>
-                      <span style={{ fontSize: 12, color: 'var(--tx)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        #{pr.number} {pr.title}
-                      </span>
-                      {pr.branch && <span style={{ ...mono(400, 9), color: 'var(--tx3)', maxWidth: 110, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pr.branch}</span>}
-                      {lead && pr.state === 'open' && (
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            if (merging !== null) return;
-                            if (mergeArm === pr.number) mergePr(pr.number);
-                            else setMergeArm(pr.number);
-                          }}
-                          title={mergeArm === pr.number ? 'Click again to merge' : `Merge PR #${pr.number}`}
-                          style={{
-                            flex: 'none',
-                            border: `1px solid ${mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)'}`,
-                            background: 'none',
-                            color: mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)',
-                            borderRadius: 2,
-                            padding: '2px 8px',
-                            ...mono(500, 9),
-                            letterSpacing: '.06em',
-                            cursor: merging !== null ? 'default' : 'pointer',
-                            opacity: merging !== null && merging !== pr.number ? 0.5 : 1,
-                          }}
-                        >
-                          {merging === pr.number ? 'MERGING…' : mergeArm === pr.number ? 'CONFIRM MERGE?' : 'MERGE'}
-                        </button>
-                      )}
-                    </a>
-                    {dep && (
-                      <div
+                    <div key={`pr${pr.number}`} style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                      <a
+                        href={pr.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="hv-agent"
+                        onMouseLeave={() => setMergeArm((cur) => (cur === pr.number ? null : cur))}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
                           gap: 9,
                           border: '1px solid var(--line)',
-                          borderTop: 'none',
-                          borderRadius: '0 0 3px 3px',
-                          padding: '6px 11px',
-                          background: 'var(--bg)',
+                          borderRadius: dep ? '3px 3px 0 0' : 3,
+                          padding: '8px 11px',
+                          textDecoration: 'none',
+                          color: 'inherit',
                         }}
                       >
                         <span
                           style={{
                             ...mono(500, 9),
-                            color: dep.color,
-                            border: `1px solid ${dep.color}`,
+                            color: PR_STATE_COLOR[pr.state],
+                            border: `1px solid ${PR_STATE_COLOR[pr.state]}`,
                             borderRadius: 2,
                             padding: '1px 5px',
                             letterSpacing: '.06em',
-                            animation: dep.pulse ? 'eec-pulse 2.4s infinite' : 'none',
                           }}
                         >
-                          {dep.label}
+                          PR {pr.state.toUpperCase()}
                         </span>
-                        <span style={{ fontSize: 11, color: 'var(--tx3)', flex: 1, minWidth: 0 }}>{DEPLOY_NOTE[pr.deployState ?? '']}</span>
-                        {pr.deployUrl && (
-                          <a href={pr.deployUrl} target="_blank" rel="noreferrer" style={{ ...mono(400, 9), color: 'var(--acc)', flex: 'none' }}>
-                            VIEW RUN ↗
-                          </a>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: 'var(--tx)',
+                            flex: 1,
+                            minWidth: 0,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          #{pr.number} {pr.title}
+                        </span>
+                        {pr.branch && (
+                          <span
+                            style={{
+                              ...mono(400, 9),
+                              color: 'var(--tx3)',
+                              maxWidth: 110,
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {pr.branch}
+                          </span>
                         )}
-                      </div>
-                    )}
-                  </div>
+                        {lead && pr.state === 'open' && (
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (merging !== null) return;
+                              if (mergeArm === pr.number) mergePr(pr.number);
+                              else setMergeArm(pr.number);
+                            }}
+                            title={mergeArm === pr.number ? 'Click again to merge' : `Merge PR #${pr.number}`}
+                            style={{
+                              flex: 'none',
+                              border: `1px solid ${mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)'}`,
+                              background: 'none',
+                              color: mergeArm === pr.number ? 'var(--warn)' : 'var(--ok)',
+                              borderRadius: 2,
+                              padding: '2px 8px',
+                              ...mono(500, 9),
+                              letterSpacing: '.06em',
+                              cursor: merging !== null ? 'default' : 'pointer',
+                              opacity: merging !== null && merging !== pr.number ? 0.5 : 1,
+                            }}
+                          >
+                            {merging === pr.number ? 'MERGING…' : mergeArm === pr.number ? 'CONFIRM MERGE?' : 'MERGE'}
+                          </button>
+                        )}
+                      </a>
+                      {dep && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 9,
+                            border: '1px solid var(--line)',
+                            borderTop: 'none',
+                            borderRadius: '0 0 3px 3px',
+                            padding: '6px 11px',
+                            background: 'var(--bg)',
+                          }}
+                        >
+                          <span
+                            style={{
+                              ...mono(500, 9),
+                              color: dep.color,
+                              border: `1px solid ${dep.color}`,
+                              borderRadius: 2,
+                              padding: '1px 5px',
+                              letterSpacing: '.06em',
+                              animation: dep.pulse ? 'eec-pulse 2.4s infinite' : 'none',
+                            }}
+                          >
+                            {dep.label}
+                          </span>
+                          <span style={{ fontSize: 11, color: 'var(--tx3)', flex: 1, minWidth: 0 }}>
+                            {DEPLOY_NOTE[pr.deployState ?? '']}
+                          </span>
+                          {pr.deployUrl && (
+                            <a
+                              href={pr.deployUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ ...mono(400, 9), color: 'var(--acc)', flex: 'none' }}
+                            >
+                              VIEW RUN ↗
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
                 {devData.commits.map((c) => (
@@ -1327,10 +1723,29 @@ export function TicketDrawer({
                     target="_blank"
                     rel="noreferrer"
                     className="hv-agent"
-                    style={{ display: 'flex', alignItems: 'center', gap: 9, border: '1px solid var(--line)', borderRadius: 3, padding: '7px 11px', textDecoration: 'none', color: 'inherit' }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 9,
+                      border: '1px solid var(--line)',
+                      borderRadius: 3,
+                      padding: '7px 11px',
+                      textDecoration: 'none',
+                      color: 'inherit',
+                    }}
                   >
                     <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{c.sha.slice(0, 7)}</span>
-                    <span style={{ fontSize: 12, color: 'var(--tx2)', flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--tx2)',
+                        flex: 1,
+                        minWidth: 0,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
                       {c.message.split('\n')[0]}
                     </span>
                   </a>
@@ -1342,11 +1757,24 @@ export function TicketDrawer({
             COMMENTS{comments && comments.length > 0 ? ` · ${comments.length}` : ''}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
-            {comments === null && !commentsError && <div style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LOADING…</div>}
+            {comments === null && !commentsError && (
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)' }}>LOADING…</div>
+            )}
             {commentsError && (
               <div style={{ fontSize: 12, color: 'var(--tx3)' }}>
                 Couldn’t load comments.{' '}
-                <button onClick={loadComments} style={{ border: 'none', background: 'none', color: 'var(--acc)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
+                <button
+                  onClick={loadComments}
+                  style={{
+                    border: 'none',
+                    background: 'none',
+                    color: 'var(--acc)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                >
                   Retry
                 </button>
               </div>
@@ -1357,53 +1785,61 @@ export function TicketDrawer({
             {(comments ?? []).map((c) => {
               const coord = parseCoordComment(c.body);
               return (
-              <motion.div
-                key={c.id}
-                initial={{ opacity: 0, transform: 'translateY(4px)' }}
-                animate={{ opacity: 1, transform: 'translateY(0px)' }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
-                style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}
-              >
-                <span
-                  style={{
-                    flex: 'none',
-                    width: 22,
-                    height: 22,
-                    borderRadius: '50%',
-                    background: coord ? 'var(--agentsoft)' : 'var(--bg3)',
-                    border: `1px solid ${coord ? 'var(--agent)' : 'var(--line2)'}`,
-                    display: 'grid',
-                    placeItems: 'center',
-                    ...mono(500, 9),
-                    color: coord ? 'var(--agent)' : 'var(--tx2)',
-                  }}
-                  title={c.author}
+                <motion.div
+                  key={c.id}
+                  initial={{ opacity: 0, transform: 'translateY(4px)' }}
+                  animate={{ opacity: 1, transform: 'translateY(0px)' }}
+                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                  style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}
                 >
-                  {coord ? '◆' : initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
-                </span>
-                <div
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    border: `1px solid ${coord ? 'var(--agent)' : 'var(--line)'}`,
-                    borderLeft: coord ? '3px solid var(--agent)' : '1px solid var(--line)',
-                    borderRadius: 3,
-                    padding: '7px 10px',
-                    background: coord ? 'var(--agentsoft)' : 'var(--bg)',
-                  }}
-                >
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: coord ? 5 : 3 }}>
-                    <span style={{ fontSize: 11.5, fontWeight: 600, color: coord ? 'var(--agent)' : 'var(--tx)' }}>{c.author}</span>
-                    {coord && <span style={{ ...mono(500, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>AGENT&nbsp;COMMS</span>}
-                    <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 'auto' }}>{fmtTime(c.createdAt)}</span>
+                  <span
+                    style={{
+                      flex: 'none',
+                      width: 22,
+                      height: 22,
+                      borderRadius: '50%',
+                      background: coord ? 'var(--agentsoft)' : 'var(--bg3)',
+                      border: `1px solid ${coord ? 'var(--agent)' : 'var(--line2)'}`,
+                      display: 'grid',
+                      placeItems: 'center',
+                      ...mono(500, 9),
+                      color: coord ? 'var(--agent)' : 'var(--tx2)',
+                    }}
+                    title={c.author}
+                  >
+                    {coord ? '◆' : initials(c.author.split('@')[0].replace(/[._-]/g, ' '))}
+                  </span>
+                  <div
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      border: `1px solid ${coord ? 'var(--agent)' : 'var(--line)'}`,
+                      borderLeft: coord ? '3px solid var(--agent)' : '1px solid var(--line)',
+                      borderRadius: 3,
+                      padding: '7px 10px',
+                      background: coord ? 'var(--agentsoft)' : 'var(--bg)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: coord ? 5 : 3 }}>
+                      <span style={{ fontSize: 11.5, fontWeight: 600, color: coord ? 'var(--agent)' : 'var(--tx)' }}>
+                        {c.author}
+                      </span>
+                      {coord && (
+                        <span style={{ ...mono(500, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>
+                          AGENT&nbsp;COMMS
+                        </span>
+                      )}
+                      <span style={{ ...mono(400, 9), color: 'var(--tx3)', marginLeft: 'auto' }}>
+                        {fmtTime(c.createdAt)}
+                      </span>
+                    </div>
+                    {coord ? (
+                      <CoordCommentBody meta={coord.meta} text={coord.text} onOpenTicket={onOpenTicket} />
+                    ) : (
+                      <Markdown text={c.body} />
+                    )}
                   </div>
-                  {coord ? (
-                    <CoordCommentBody meta={coord.meta} text={coord.text} onOpenTicket={onOpenTicket} />
-                  ) : (
-                    <Markdown text={c.body} />
-                  )}
-                </div>
-              </motion.div>
+                </motion.div>
               );
             })}
             {(planningActive || (agentTask !== null && ['claimed', 'working'].includes(agentTask.state))) && (
@@ -1456,7 +1892,13 @@ export function TicketDrawer({
                         transform: ['translateY(0px)', 'translateY(-2.5px)', 'translateY(0px)'],
                       }}
                       transition={{ repeat: Infinity, duration: 1, delay: i * 0.16, ease: 'easeInOut' }}
-                      style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--agent)', display: 'inline-block' }}
+                      style={{
+                        width: 5,
+                        height: 5,
+                        borderRadius: '50%',
+                        background: 'var(--agent)',
+                        display: 'inline-block',
+                      }}
                     />
                   ))}
                   <span style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em', marginLeft: 5 }}>
@@ -1507,27 +1949,63 @@ export function TicketDrawer({
             </button>
           </div>
           {lead && (
-            <div style={{ marginTop: 22, paddingTop: 12, borderTop: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div
+              style={{
+                marginTop: 22,
+                paddingTop: 12,
+                borderTop: '1px solid var(--line)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
               {!delConfirm && (
                 <button
                   onClick={() => setDelConfirm(true)}
-                  style={{ border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), letterSpacing: '.06em', cursor: 'pointer', padding: 0 }}
+                  style={{
+                    border: 'none',
+                    background: 'none',
+                    color: 'var(--tx3)',
+                    ...mono(400, 10),
+                    letterSpacing: '.06em',
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
                 >
                   DELETE TICKET
                 </button>
               )}
               {delConfirm && (
                 <>
-                  <span style={{ ...mono(400, 10), color: 'var(--bad)' }}>Delete {ticket.key} and its comments permanently?</span>
+                  <span style={{ ...mono(400, 10), color: 'var(--bad)' }}>
+                    Delete {ticket.key} and its comments permanently?
+                  </span>
                   <button
                     onClick={onDelete}
-                    style={{ border: '1px solid var(--bad)', background: 'none', color: 'var(--bad)', borderRadius: 3, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+                    style={{
+                      border: '1px solid var(--bad)',
+                      background: 'none',
+                      color: 'var(--bad)',
+                      borderRadius: 3,
+                      padding: '3px 10px',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
                   >
                     Delete
                   </button>
                   <button
                     onClick={() => setDelConfirm(false)}
-                    style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}
+                    style={{
+                      border: '1px solid var(--line2)',
+                      background: 'none',
+                      color: 'var(--tx2)',
+                      borderRadius: 3,
+                      padding: '3px 10px',
+                      fontSize: 11,
+                      cursor: 'pointer',
+                    }}
                   >
                     Cancel
                   </button>
@@ -1537,23 +2015,60 @@ export function TicketDrawer({
           )}
         </div>
         {proposed && lead && (
-          <div style={{ flex: 'none', display: 'flex', gap: 10, padding: '14px 18px', borderTop: '1px solid var(--line)', background: 'var(--agentsoft)' }}>
+          <div
+            style={{
+              flex: 'none',
+              display: 'flex',
+              gap: 10,
+              padding: '14px 18px',
+              borderTop: '1px solid var(--line)',
+              background: 'var(--agentsoft)',
+            }}
+          >
             <button
               onClick={onAccept}
-              style={{ flex: 1, border: 'none', background: 'var(--ok)', color: '#fff', borderRadius: 3, padding: 8, fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}
+              style={{
+                flex: 1,
+                border: 'none',
+                background: 'var(--ok)',
+                color: '#fff',
+                borderRadius: 3,
+                padding: 8,
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
             >
               Accept onto board
             </button>
             <button
               onClick={onDismiss}
-              style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '8px 16px', fontSize: 12.5, cursor: 'pointer' }}
+              style={{
+                border: '1px solid var(--line2)',
+                background: 'none',
+                color: 'var(--tx2)',
+                borderRadius: 3,
+                padding: '8px 16px',
+                fontSize: 12.5,
+                cursor: 'pointer',
+              }}
             >
               Dismiss
             </button>
           </div>
         )}
         {proposed && !lead && (
-          <div style={{ flex: 'none', padding: '12px 18px', borderTop: '1px solid var(--line)', background: 'var(--agentsoft)', ...mono(400, 10), color: 'var(--agent)', letterSpacing: '.06em' }}>
+          <div
+            style={{
+              flex: 'none',
+              padding: '12px 18px',
+              borderTop: '1px solid var(--line)',
+              background: 'var(--agentsoft)',
+              ...mono(400, 10),
+              color: 'var(--agent)',
+              letterSpacing: '.06em',
+            }}
+          >
             ◆ AWAITING ENGAGEMENT LEAD REVIEW
           </div>
         )}
