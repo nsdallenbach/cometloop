@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderPrompt } from './agent-work';
+import { COMMENT_STYLE_RULES } from './comment-style';
 
 const task = { id: 7, ticket_key: 'DAT-146', agent: 'devbox-1', instructions: '' };
 const ticket = { title: 'Validate comment steering', description: 'Do the thing.', ac: '[]' };
@@ -44,5 +45,72 @@ describe('renderPrompt ticket comments', () => {
   it('tells the agent to re-read comments mid-run via get_ticket', () => {
     const prompt = renderPrompt(task, ticket, engagement, null, [], []);
     expect(prompt).toContain('get_ticket (key DAT-146)');
+  });
+});
+
+describe('renderPrompt review rejections', () => {
+  const rejection = (n: number, reason: string) => ({
+    id: n,
+    reason,
+    rejectedBy: 'lead@datavail.com',
+    rejectedAt: `2026-08-1${n}T09:00:00.000Z`,
+  });
+
+  it('omits the section for a ticket that was never rejected', () => {
+    expect(renderPrompt(task, ticket, engagement, null, [], [], [])).not.toContain('## Previous review rejections');
+  });
+
+  it('hands the runner every prior reason, newest last', () => {
+    const prompt = renderPrompt(task, ticket, engagement, null, [], [], [], [
+      rejection(1, 'No tests on the new endpoint.'),
+      rejection(2, 'Still no tests.'),
+    ]);
+    expect(prompt).toContain('## Previous review rejections (2)');
+    expect(prompt.indexOf('No tests on the new endpoint.')).toBeLessThan(prompt.indexOf('Still no tests.'));
+  });
+
+  it('puts the rejections ahead of the lead instructions and the comment thread', () => {
+    const prompt = renderPrompt(
+      { ...task, instructions: 'Ship it behind a flag.' },
+      ticket,
+      engagement,
+      null,
+      [],
+      [{ author: 'lead', body: 'One more thing.', created_at: '' }],
+      [],
+      [rejection(1, 'Wrong lane after rejection.')],
+    );
+    expect(prompt.indexOf('## Previous review rejections')).toBeLessThan(prompt.indexOf('## Lead instructions'));
+    expect(prompt.indexOf('## Previous review rejections')).toBeLessThan(prompt.indexOf('## Ticket comments'));
+  });
+});
+
+describe('renderPrompt comment formatting rules (DAT-204)', () => {
+  const prompt = renderPrompt(task, ticket, engagement, null, [], []);
+
+  it('carries the shared formatting section', () => {
+    expect(prompt).toContain('## Writing comments on the ticket');
+    for (const rule of COMMENT_STYLE_RULES) expect(prompt).toContain(`- ${rule}`);
+  });
+
+  it('spells out line breaks, lists and short paragraphs', () => {
+    expect(prompt).toContain('single newlines become line breaks');
+    expect(prompt).toContain('Keep paragraphs to 1-3 sentences');
+    expect(prompt).toMatch(/`-` bullets for unordered items/);
+  });
+
+  it('includes a worked example comment in the new style', () => {
+    expect(prompt).toContain('Example of a well-formatted progress note:');
+    expect(prompt).toContain('**Changed so far**');
+  });
+
+  it('applies to flags and completion summaries, not just progress notes', () => {
+    expect(prompt).toContain('progress notes, flags, completion summaries');
+  });
+
+  it('sits between the delivery expectations and the coordination section', () => {
+    const style = prompt.indexOf('## Writing comments on the ticket');
+    expect(prompt.indexOf('## Delivery expectations')).toBeLessThan(style);
+    expect(style).toBeLessThan(prompt.indexOf('## Coordinating with other agents'));
   });
 });

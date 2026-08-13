@@ -7,6 +7,7 @@ import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util
 import { runnerBrand } from './RunnerLogo';
 import { dropBoardTicket, laneOf } from '../lib/board-order';
 import { needsEstimate } from '../lib/ticket-hours';
+import { PLANNING_REVIEW_LABEL, planningReviewTitle } from '../lib/planning-review';
 import { Analytics } from './Analytics';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
@@ -250,6 +251,24 @@ export function Workspace({
         <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>{t.key}</span>
         {t.agent && (
           <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◆ AGENT</span>
+        )}
+        {/* DAT-218: the planning agent is rewriting this ticket right now. Per
+            ticket, so several cards can pulse independently. */}
+        {t.planningReview && (
+          <span
+            title={planningReviewTitle(t.planningReview)}
+            style={{
+              ...mono(500, 9),
+              background: 'var(--agentsoft)',
+              color: 'var(--agent)',
+              border: '1px solid var(--agent)',
+              borderRadius: 2,
+              padding: '1px 4px',
+              animation: 'eec-pulse 2.4s infinite',
+            }}
+          >
+            {PLANNING_REVIEW_LABEL}
+          </span>
         )}
         {(() => {
           if (!at) return null;
@@ -700,6 +719,14 @@ export function Workspace({
       return;
     }
     if (lane !== 'backlog' && lane !== 'review' && lane !== 'done') return;
+    // DAT-213: Done means deployed. Refuse the drop up front rather than let
+    // the card land and snap back on the server's 409 — the toast carries the
+    // server's own reason, so the two can never say different things.
+    const dropped = tickets.find((x) => x.key === payload.key);
+    if (lane === 'done' && dropped?.doneBlockedReason) {
+      toast(dropped.doneBlockedReason);
+      return;
+    }
     // Land exactly where the slot gap previewed it — including a new order
     // within the lane. Optimistic like every board mutation; a failed save
     // refetches so the board falls back to the server's truth.
@@ -1202,13 +1229,18 @@ export function Workspace({
                         <td style={tdBase}>
                           <select
                             value={t.status}
+                            // Done is off the menu until the work is deployed
+                            // (DAT-213); the title says why on hover.
+                            title={t.doneBlockedReason ?? undefined}
                             onChange={(e) => setTicket(t.key, { status: e.target.value as TicketStatus })}
                             style={{ background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
                           >
                             <option value="backlog">Backlog</option>
                             <option value="progress">In Progress</option>
                             <option value="review">In Review</option>
-                            <option value="done">Done</option>
+                            <option value="done" disabled={t.doneBlockedReason !== null}>
+                              {t.doneBlockedReason !== null ? 'Done — not deployed' : 'Done'}
+                            </option>
                           </select>
                         </td>
                         <td style={{ ...tdBase, whiteSpace: 'nowrap' }}>

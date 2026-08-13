@@ -90,6 +90,13 @@ export interface Ticket {
   tags: string[];
   deployState: DeployState | null;
   deployUrl: string | null;
+  /**
+   * Why this ticket cannot move to Done yet (DAT-213) — null when the move is
+   * allowed, and always null for tickets already in Done, exempt tickets and
+   * engagements with no repo connected. Only the board detail payload carries
+   * it; the cross-project ticket reads leave it null.
+   */
+  doneBlockedReason: string | null;
   /** Roadmap item (phase name) this ticket is linked to; null = unscheduled. */
   roadmapItem: string | null;
   /** Git branch for the work: manual value, else the branch a runner announced
@@ -111,6 +118,21 @@ export interface Ticket {
   escalationStage: EscalationStage | null;
   /** PR the escalation is about, when one is live. */
   escalationPr: number | null;
+  /** The planning agent's review pass on this ticket right now (DAT-218);
+   *  null whenever no pass is running. Server-side state, so every ticket
+   *  reports its own — several can be under review at once. */
+  planningReview: PlanningReview | null;
+}
+
+/** Which planning pass is running: the first plan for a chatbox ticket, an
+ *  on-demand re-plan, or a rework triggered by a comment. */
+export type PlanningReviewFlow = 'plan' | 'refine' | 'comment-rework';
+
+/** A live planning-agent review pass, as the board and drawer show it. */
+export interface PlanningReview {
+  flow: PlanningReviewFlow;
+  /** When the pass started; null if the server sent no timestamp. */
+  startedAt: string | null;
 }
 
 /** Stage of a PR review-SLA escalation (DAT-201); cleared rows are never sent. */
@@ -154,6 +176,7 @@ export interface ContextSource {
 export interface TeamMember {
   id: number;
   name: string;
+  email: string | null;
   role: string;
   skills: number[];
   load: number;
@@ -375,6 +398,7 @@ export interface Me {
   email: string;
   role: Role;
   leadOf: string[];
+  memberOf: string[];
 }
 
 export interface TicketComment {
@@ -382,6 +406,14 @@ export interface TicketComment {
   author: string;
   body: string;
   createdAt: string;
+}
+
+/** One review rejection cycle (DAT-217); a ticket accumulates these, oldest first. */
+export interface TicketRejection {
+  id: number;
+  reason: string;
+  rejectedBy: string;
+  rejectedAt: string;
 }
 
 export interface RepoConnection {
