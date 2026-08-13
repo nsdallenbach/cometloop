@@ -61,7 +61,7 @@ export function scopingToolDefs(opts: { selfKey?: string } = {}): ScopingToolDef
         properties: {
           ...(self ? {} : { engagement_id: { type: 'string', description: 'Engagement (board) id to search' } }),
           query: { type: 'string', description: 'Keywords to match in title or description; omit to list the board' },
-          status: { type: 'string', enum: ['backlog', 'proposed', 'progress', 'review', 'done'], description: 'Only tickets in this status' },
+          status: { type: 'string', enum: ['backlog', 'proposed', 'progress', 'review', 'deploying', 'done'], description: 'Only tickets in this status' },
           limit: { type: 'integer', minimum: 1, maximum: SEARCH_LIMIT_MAX, description: `Max results (default ${SEARCH_LIMIT_DEFAULT})` },
         },
         required: self ? [] : ['engagement_id'],

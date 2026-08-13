@@ -14,6 +14,7 @@ import type {
   ToolCall,
 } from '../types';
 import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
+import { nextInQueue, queuePosition, reviewQueue } from '../lib/review-queue';
 import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
 import { CoordCommentBody, parseCoordComment } from './AgentComment';
@@ -55,10 +56,10 @@ const DEPLOY_BADGE: Record<string, { label: string; color: string; pulse?: boole
 };
 
 const DEPLOY_NOTE: Record<string, string> = {
-  pending: 'Waiting for the pipeline to pick up the merge — the ticket moves to Done when it succeeds.',
-  running: 'Pipeline running — the ticket moves to Done when it succeeds.',
+  pending: 'Waiting for the pipeline to pick up the merge — the ticket sits in Deploying and moves to Done when it succeeds.',
+  running: 'Pipeline running — the ticket sits in Deploying and moves to Done when it succeeds.',
   success: 'Pipeline succeeded — the ticket moved to Done.',
-  failed: 'Pipeline failed — the ticket stays in Review until a passing run.',
+  failed: 'Pipeline failed — the ticket stays in Deploying until a passing run.',
   none: 'No deploy pipeline detected — the ticket moved straight to Done.',
 };
 
@@ -494,6 +495,54 @@ export function TicketDrawer({
       })
       .catch((e: Error) => toast(`Merge failed — ${e.message}`))
       .finally(() => setMerging(null));
+  };
+
+  // ---- review decisions (DAT-222) ----
+  // The reviewer's queue: Approve is one click with no confirmation, Reject
+  // takes a note first, and either way the drawer loads the next ticket in
+  // Review so a sitting of sign-offs never returns to the board.
+  const inReview = ticket.status === 'review';
+  const queue = reviewQueue(allTickets);
+  const queueAt = queuePosition(allTickets, ticket.key);
+  // Note drafts are keyed to the ticket like every other draft in this drawer,
+  // so auto-advancing can't carry half-typed feedback onto the next ticket.
+  const [noteDraft, setNoteDraft] = useState<{ key: string; text: string } | null>(null);
+  const [decideError, setDecideError] = useState<{ key: string; msg: string } | null>(null);
+  const [deciding, setDeciding] = useState<'approve' | 'reject' | null>(null);
+  const noteText = noteDraft && noteDraft.key === ticket.key ? noteDraft.text : null;
+  const decideErrorMsg = decideError && decideError.key === ticket.key ? decideError.msg : '';
+
+  const decide = (decision: 'approve' | 'reject', note?: string) => {
+    if (deciding !== null) return;
+    // Resolved before the call: `allTickets` still holds this ticket in Review,
+    // which is exactly the queue the reviewer is looking at.
+    const next = nextInQueue(allTickets, ticket.key);
+    setDeciding(decision);
+    api
+      .decideTicket(ticket.key, decision, note)
+      .then(() => {
+        setNoteDraft(null);
+        setDecideError(null);
+        toast(
+          decision === 'approve'
+            ? `${ticket.key} approved — moved to Deploying`
+            : `${ticket.key} rejected — back to Backlog with your note`,
+        );
+        refreshDetail();
+        if (next) onOpenTicket(next.key);
+        else onClose();
+      })
+      .catch((e: Error) => setDecideError({ key: ticket.key, msg: e.message }))
+      .finally(() => setDeciding(null));
+  };
+
+  const submitRejection = () => {
+    const note = (noteText ?? '').trim();
+    if (!note) {
+      setDecideError({ key: ticket.key, msg: 'A note is required to reject — say what needs to change.' });
+      return;
+    }
+    decide('reject', note);
   };
 
   const postComment = () => {
@@ -1677,6 +1726,132 @@ export function TicketDrawer({
             </div>
           )}
         </div>
+        {/* Review queue bar (DAT-222): pinned under the scroll area so the
+            decision is always one click away, however long the ticket is. */}
+        {inReview && (
+          <div
+            style={{
+              flex: 'none',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              padding: '14px 18px',
+              borderTop: '1px solid var(--line)',
+              background: 'var(--bg3)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ ...mono(400, 10), color: 'var(--warn)', letterSpacing: '.08em' }}>REVIEW DECISION</span>
+              {queueAt > 0 && queue.length > 1 && (
+                <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
+                  {queueAt} OF {queue.length} IN REVIEW · NEXT LOADS AUTOMATICALLY
+                </span>
+              )}
+            </div>
+            {noteText === null ? (
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  onClick={() => decide('approve')}
+                  disabled={deciding !== null}
+                  title="Approve this ticket — it moves to Deploying and the next ticket in review opens"
+                  style={{
+                    flex: 2,
+                    border: 'none',
+                    background: 'var(--ok)',
+                    color: '#fff',
+                    borderRadius: 3,
+                    padding: '12px 10px',
+                    fontSize: 13.5,
+                    fontWeight: 600,
+                    cursor: deciding !== null ? 'progress' : 'pointer',
+                    opacity: deciding !== null ? 0.6 : 1,
+                  }}
+                >
+                  {deciding === 'approve' ? 'Approving…' : '✓ Approve → Deploying'}
+                </button>
+                <button
+                  onClick={() => {
+                    setDecideError(null);
+                    setNoteDraft({ key: ticket.key, text: '' });
+                  }}
+                  disabled={deciding !== null}
+                  title="Send this ticket back — a note saying what needs to change is required"
+                  style={{
+                    flex: 1,
+                    border: '1px solid var(--bad)',
+                    background: 'none',
+                    color: 'var(--bad)',
+                    borderRadius: 3,
+                    padding: '12px 10px',
+                    fontSize: 13.5,
+                    fontWeight: 600,
+                    cursor: deciding !== null ? 'progress' : 'pointer',
+                  }}
+                >
+                  ⨯ Reject
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <textarea
+                  autoFocus
+                  value={noteText}
+                  onChange={(e) => {
+                    setNoteDraft({ key: ticket.key, text: e.target.value });
+                    if (decideErrorMsg) setDecideError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submitRejection();
+                    if (e.key === 'Escape' && deciding === null) setNoteDraft(null);
+                  }}
+                  rows={3}
+                  maxLength={4000}
+                  placeholder="Why is this being sent back? The note is saved to the ticket history for whoever picks it up next."
+                  style={{
+                    boxSizing: 'border-box',
+                    background: 'var(--bg)',
+                    border: `1px solid ${decideErrorMsg ? 'var(--bad)' : 'var(--line2)'}`,
+                    borderRadius: 3,
+                    color: 'var(--tx)',
+                    padding: '8px 10px',
+                    fontSize: 12.5,
+                    lineHeight: 1.5,
+                    resize: 'vertical',
+                  }}
+                />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    onClick={submitRejection}
+                    disabled={deciding !== null || !noteText.trim()}
+                    title={noteText.trim() ? 'Confirm the rejection (Ctrl+Enter)' : 'Write a note first — rejections need one'}
+                    style={{
+                      border: 'none',
+                      background: 'var(--bad)',
+                      color: '#fff',
+                      borderRadius: 3,
+                      padding: '9px 16px',
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      cursor: deciding !== null || !noteText.trim() ? 'not-allowed' : 'pointer',
+                      opacity: deciding !== null || !noteText.trim() ? 0.5 : 1,
+                    }}
+                  >
+                    {deciding === 'reject' ? 'Rejecting…' : 'Confirm rejection'}
+                  </button>
+                  <button
+                    onClick={() => setNoteDraft(null)}
+                    disabled={deciding !== null}
+                    style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '9px 14px', fontSize: 12.5, cursor: 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                  <span style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>CTRL+ENTER TO CONFIRM · ESC TO CANCEL</span>
+                </div>
+              </div>
+            )}
+            {decideErrorMsg && <div style={{ ...mono(400, 9.5), color: 'var(--bad)' }}>{decideErrorMsg}</div>}
+          </div>
+        )}
         {proposed && lead && (
           <div style={{ flex: 'none', display: 'flex', gap: 10, padding: '14px 18px', borderTop: '1px solid var(--line)', background: 'var(--agentsoft)' }}>
             <button

@@ -5,7 +5,7 @@ import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
-import { dropBoardTicket, laneOf } from '../lib/board-order';
+import { dropBoardTicket, laneOf, type BoardLane } from '../lib/board-order';
 import { needsEstimate } from '../lib/ticket-hours';
 import { Analytics } from './Analytics';
 import { Roadmap } from './Roadmap';
@@ -16,6 +16,7 @@ import type { Tab } from '../App';
 const COLS: [TicketStatus, string][] = [
   ['backlog', 'BACKLOG'],
   ['review', 'REVIEW'],
+  ['deploying', 'DEPLOYING'],
   ['done', 'DONE'],
 ];
 
@@ -27,7 +28,12 @@ type DragPayload =
   | { kind: 'task'; key: string; taskId: number; queued: boolean; w: number; h: number };
 
 /** Where a dragged ticket would land: lane + slot index among its cards. */
-type DropSlot = { lane: Extract<TicketStatus, 'backlog' | 'review' | 'done'>; idx: number };
+type DropSlot = { lane: BoardLane; idx: number };
+
+/** Lanes whose cards the drag engine slots by hand (Done self-sorts). */
+const ORDERED_LANES: BoardLane[] = ['backlog', 'review', 'deploying'];
+const isOrderedLane = (lane: unknown): lane is 'backlog' | 'review' | 'deploying' =>
+  ORDERED_LANES.includes(lane as BoardLane);
 
 const PR_STATE_COLOR: Record<string, string> = { open: 'var(--warn)', merged: 'var(--ok)', closed: 'var(--tx3)' };
 
@@ -170,7 +176,8 @@ export function Workspace({
    * A lane's cards in render order — shared by the kanban render and the
    * drag engine so drop slots always line up with what's on screen. No In
    * Progress lane: human-active tickets sit in Backlog until they reach
-   * Review; agent-active ones sit in the agent lane. Done auto-hides work
+   * Review; agent-active ones sit in the agent lane. Deploying holds approved
+   * and merged work until its pipeline goes green. Done auto-hides work
    * completed more than 24h ago (tickets without a completion time age out
    * too) and shows the rest newest-first.
    */
@@ -229,6 +236,7 @@ export function Workspace({
     const agentDone = at?.state === 'done' && t.status === 'review';
     const agentFailed = at?.state === 'failed' && t.status === 'backlog';
     const isDone = t.status === 'done';
+    const isDeploying = t.status === 'deploying';
     return (
     <div
       {...(!clone && {
@@ -239,7 +247,7 @@ export function Workspace({
         className: 'hv-border',
       })}
       style={{
-        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : t.status === 'review' ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
+        border: `1px solid ${t.blocked ? 'var(--bad)' : isDone ? 'var(--ok)' : isDeploying ? 'var(--acc)' : t.status === 'review' ? 'var(--warn)' : t.agent ? 'var(--line2)' : 'var(--line)'}`,
         background: 'var(--bg2)',
         borderRadius: 3,
         padding: '9px 11px',
@@ -269,6 +277,16 @@ export function Workspace({
         })()}
         {isDone && (
           <span style={{ ...mono(500, 9), color: 'var(--ok)', border: '1px solid var(--ok)', borderRadius: 2, padding: '1px 4px' }}>✓ DONE</span>
+        )}
+        {/* Approved out of review but no pipeline in flight yet — the deploy
+            chips below take over as soon as one starts (DAT-222). */}
+        {isDeploying && t.deployState !== 'pending' && t.deployState !== 'running' && t.deployState !== 'failed' && (
+          <span
+            title="Approved in review — waiting on the deploy pipeline"
+            style={{ ...mono(500, 9), color: 'var(--acc)', border: '1px solid var(--acc)', borderRadius: 2, padding: '1px 4px' }}
+          >
+            ✓ APPROVED
+          </span>
         )}
         {!isDone && (t.deployState === 'pending' || t.deployState === 'running') && (
           <span style={{ ...mono(500, 9), color: 'var(--acc)', border: '1px solid var(--acc)', borderRadius: 2, padding: '1px 4px', animation: 'eec-pulse 2.4s infinite' }}>
@@ -455,7 +473,8 @@ export function Workspace({
   );
 
   // Lane accents (drag highlight, drop slot): Review yellow, Done green,
-  // Backlog blue.
+  // Backlog and Deploying blue — Deploying reuses the accent its deploy chip
+  // already carries on the card.
   const laneAccent = (k: TicketStatus | 'agent') => (k === 'review' ? 'var(--warn)' : k === 'done' ? 'var(--ok)' : 'var(--acc)');
 
   /** The gap a dragged ticket will drop into; lane cards shift around it. */
@@ -618,7 +637,7 @@ export function Workspace({
         // Done sorts itself newest-first: an entering card lands on top; a
         // within-Done drag goes back where it came from.
         setSlot(origin !== null && origin.lane === 'done' ? origin : { lane: 'done', idx: 0 });
-      } else if (lane !== 'backlog' && lane !== 'review') {
+      } else if (!isOrderedLane(lane)) {
         setSlot(null);
       } else {
         const cardEl = laneEl ? under?.closest('[data-tcard]') : null;
@@ -699,7 +718,7 @@ export function Workspace({
       deployTicket(payload.key);
       return;
     }
-    if (lane !== 'backlog' && lane !== 'review' && lane !== 'done') return;
+    if (!isOrderedLane(lane) && lane !== 'done') return;
     // Land exactly where the slot gap previewed it — including a new order
     // within the lane. Optimistic like every board mutation; a failed save
     // refetches so the board falls back to the server's truth.
@@ -1117,7 +1136,9 @@ export function Workspace({
                 </div>
               )}
               <LayoutGroup>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(250px,1fr))', gap: 12, minWidth: 1040, height: '100%' }}>
+              {/* One column per status lane plus the agent lane wedged in
+                  before Review — five since Deploying joined (DAT-222). */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,minmax(220px,1fr))', gap: 12, minWidth: 1180, height: '100%' }}>
                 {COLS.map(([k, label]) => {
                   const colTickets = laneTickets(k);
                   // While a ticket is dragged its card leaves the lane; the
@@ -1208,6 +1229,7 @@ export function Workspace({
                             <option value="backlog">Backlog</option>
                             <option value="progress">In Progress</option>
                             <option value="review">In Review</option>
+                            <option value="deploying">Deploying</option>
                             <option value="done">Done</option>
                           </select>
                         </td>

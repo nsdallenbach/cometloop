@@ -103,14 +103,17 @@ export async function postCoordinationMessage(
   return inserted;
 }
 
-/** The ticket an agent is currently working, or (failing that) has in review. */
+/**
+ * The ticket an agent is currently working, or (failing that) the last one it
+ * delivered that has not shipped yet — in review, or approved and deploying.
+ */
 async function agentTicket(q: Query, agent: string): Promise<string | null> {
   const active = (
     await q(`SELECT ticket_key FROM app.agent_tasks WHERE agent = $1 AND state IN ('claimed','working') ORDER BY id DESC LIMIT 1`, [agent])
   ).rows[0];
   if (active) return String(active.ticket_key);
   const review = (
-    await q(`SELECT key FROM app.tickets WHERE assignee = $1 AND status = 'review' ORDER BY seq DESC LIMIT 1`, [agent])
+    await q(`SELECT key FROM app.tickets WHERE assignee = $1 AND status IN ('review','deploying') ORDER BY seq DESC LIMIT 1`, [agent])
   ).rows[0];
   return review ? String(review.key) : null;
 }

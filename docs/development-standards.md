@@ -23,8 +23,8 @@ the context handed to agent runners.
 
 - **One ticket, one branch, one PR.** Branch names and/or PR titles MUST
   contain the ticket key (`DAT-123-short-slug`) — that is what auto-links the
-  work and drives ticket automation (PR opened → Review, merged → deploy
-  watch → Done).
+  work and drives ticket automation (PR opened → Review, merged → Deploying
+  while the pipeline runs → Done).
 - **Nobody merges their own agent PRs.** Agents (and Claude sessions acting
   as agents) open PRs and stop. Merging is the human review gate.
 - **Merged is not deployed.** Every merge to `main` runs the CI gate
