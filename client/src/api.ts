@@ -16,7 +16,9 @@ import type {
   Me,
   ParsedPlan,
   Phase,
+  ProjectAgentRole,
   ProjectAgentType,
+  PrReview,
   ProjectStandards,
   RepoCommit,
   RepoConnection,
@@ -536,13 +538,18 @@ export const api = {
       })),
       agents: (d.agents ?? []).map((r) => ({
         id: s(r.id),
+        recordId: r.recordId == null ? null : n(r.recordId),
         engagementId: s(r.engagementId),
         name: s(r.name),
         agentType: (s(r.agentType) as ProjectAgentType) || 'runner',
+        role: (s(r.role) as ProjectAgentRole) || 'delivery',
+        description: r.description == null ? null : s(r.description),
         harness: r.harness == null ? null : s(r.harness),
         modelProvider: r.modelProvider == null ? null : s(r.modelProvider),
         model: r.model == null ? null : s(r.model),
         endpointType: r.endpointType == null ? null : s(r.endpointType),
+        endpointName: r.endpointName == null ? null : s(r.endpointName),
+        endpointError: r.endpointError == null ? null : s(r.endpointError),
         status: s(r.status) || 'configured',
         source: s(r.source) === 'observed' ? 'observed' : 'configured',
         tasks: n(r.tasks),
@@ -553,13 +560,48 @@ export const api = {
     };
   },
 
-  /** Scaffolded deploy: persists the configuration; rollout itself is future work.
-   *  Returns the raw stored row — callers refetch the overview for mapped data. */
-  deployAgent(
+  /** Register an agent on a project. Endpoint-backed agents (AgentBricks, model
+   *  serving) go live immediately; harness runners are staged until rollout. */
+  createAgent(
     projectId: string,
-    payload: { name: string; agentType?: ProjectAgentType; harness?: string; modelProvider?: string; model?: string; notes?: string },
+    payload: {
+      name: string;
+      agentType?: ProjectAgentType;
+      role?: ProjectAgentRole;
+      harness?: string;
+      modelProvider?: string;
+      model?: string;
+      endpointName?: string;
+      description?: string;
+      notes?: string;
+    },
   ): Promise<unknown> {
     return http(`/api/projects/${encodeURIComponent(projectId)}/agents`, { method: 'POST', ...json(payload) });
+  },
+
+  updateAgent(
+    projectId: string,
+    agentId: number,
+    payload: { role?: ProjectAgentRole; description?: string; endpointName?: string },
+  ): Promise<unknown> {
+    return http(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}`, { method: 'PATCH', ...json(payload) });
+  },
+
+  deleteAgent(projectId: string, agentId: number): Promise<unknown> {
+    return http(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}`, { method: 'DELETE' });
+  },
+
+  // ---- PR review gate ----
+
+  async prReview(ticketKey: string, prNumber: number): Promise<PrReview | null> {
+    const d = await http<{ review: PrReview | null }>(
+      `/api/tickets/${encodeURIComponent(ticketKey)}/prs/${String(prNumber)}/review`,
+    );
+    return d.review;
+  },
+
+  runPrReview(ticketKey: string, prNumber: number): Promise<{ ok: boolean; verdict?: string }> {
+    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/prs/${String(prNumber)}/review`, { method: 'POST', ...json({}) });
   },
 
   // ---- ticket attachments ----

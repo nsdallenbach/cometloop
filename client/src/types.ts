@@ -197,28 +197,51 @@ export interface AgentTask {
   createdAt: string;
 }
 
-/** Node kinds on the /agents map; only 'runner' has real data today. */
+/** Node kinds on the /agents map. 'foundry' is still a placeholder. */
 export type ProjectAgentType = 'runner' | 'serving-endpoint' | 'agentbricks' | 'foundry';
+
+/** What an agent is for. 'pr-reviewer' is wired to the PR review gate. */
+export type ProjectAgentRole = 'delivery' | 'pr-reviewer' | 'planning' | 'other';
 
 /** One agent node on the /agents architecture map. */
 export interface ProjectAgent {
   id: string;
+  /** project_agents.id for stored records; null for observed runners (not editable). */
+  recordId: number | null;
   engagementId: string;
   name: string;
   agentType: ProjectAgentType;
+  role: ProjectAgentRole;
+  description: string | null;
   /** Harness id ('claude-code', 'codex', …); null when only a provider is known. */
   harness: string | null;
   modelProvider: string | null;
   model: string | null;
   endpointType: string | null;
-  /** 'active' | 'idle' (observed runners) or 'configured'/'planned' (stub deploys). */
+  /** Workspace serving endpoint behind AgentBricks / model-serving agents. */
+  endpointName: string | null;
+  /** Why the endpoint could not be read (e.g. missing CAN_QUERY), when unreachable. */
+  endpointError: string | null;
+  /** 'active' | 'idle' | 'unreachable' (endpoints/runners) or 'configured' (staged deploys). */
   status: string;
-  /** observed = derived from real agent_tasks history; configured = deploy-flow record. */
+  /** observed = derived from real agent_tasks history; configured = stored record. */
   source: 'configured' | 'observed';
   tasks: number;
   activeTasks: number;
   lastSeen: string | null;
   createdAt: string | null;
+}
+
+/** Latest automated review for a PR, as shown next to the PR on a ticket. */
+export interface PrReview {
+  id: number;
+  state: string;
+  verdict: string | null;
+  summary: string | null;
+  reviewer: string;
+  error: string | null;
+  createdAt: string | null;
+  completedAt: string | null;
 }
 
 export interface AgentsOverviewProject {

@@ -22,6 +22,7 @@ verbatim with the serving tool-calling loop):
 | `get_ticket` | Full detail: description, AC, status, links, recent comments |
 | `link_tickets` | Record `relates` / `blocks` / `blocked_by` between two board tickets |
 | `consolidate_tickets` | Merge duplicate source tickets into a target: descriptions + AC fold in, links repoint, sources dismissed with a pointer comment |
+| `submit_pr_review` | Publish a PR review verdict: comments on the pull request, comments on the ticket, flags the ticket on `escalate`. Never merges. (`server/routes/pr-review.ts`) |
 
 The transport is stateless: no sessions, no server-initiated SSE. Each POST
 carries one JSON-RPC message (or a batch); `initialize`, `ping`,
@@ -66,6 +67,41 @@ curl -s -X POST "$MCP_URL" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
+
+## Attaching an Agent Bricks agent (DAT-209)
+
+The PR reviewer is an Agent Bricks agent, so it reaches the board the same way
+any other workspace principal does — over this MCP endpoint.
+
+1. **In Agent Bricks**, add a custom MCP server to the agent:
+
+   ```
+   https://delivery-console-7474645607548631.aws.databricksapps.com/api/mcp
+   ```
+
+   The same URL is on the /agents page — the New agent form and every
+   endpoint-backed agent's detail popup show it with a copy button, resolved
+   from the console you are looking at.
+
+2. **Grant the agent's service principal `Can use`** on the `delivery-console`
+   app (Apps → delivery-console → Permissions). Without it, `tools/list`
+   returns the OAuth proxy's sign-in page instead of tools.
+
+3. **Grant the console's service principal `CAN_QUERY`** on the agent's serving
+   endpoint (Serving → the endpoint → Permissions). This is the other
+   direction: it is how the console invokes the agent when a PR opens. Until it
+   is granted, the agent node on the map reads `UNREACHABLE` and says why.
+
+4. **Register the agent** on the /agents page: New agent → Agent Bricks agent →
+   the serving endpoint name → role **PR reviewer**. The node appears on that
+   project's cluster with live endpoint status.
+
+What the reviewer receives on each run is assembled by the console (ticket,
+acceptance criteria, diff, CI status, and a `review_run_id`); the MCP tools are
+there for anything else it wants to read, and for `submit_pr_review` if it
+prefers to publish its own verdict rather than return JSON. Either path posts
+exactly once — the console skips its own post if the tool already published
+that run.
 
 ## The ticket-scoping agent
 

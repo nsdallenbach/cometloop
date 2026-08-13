@@ -429,6 +429,20 @@ export function publicConnection(row: Record<string, unknown> | Connection) {
   return { ...rest, token_hint: rest.auth_type === 'app' ? 'GitHub App' : maskToken(token) };
 }
 
+/**
+ * Called when a linked PR is first seen open. pr-review.ts registers here so a
+ * PR opening can kick off the review gate; the hook is one-directional on
+ * purpose (repos.ts must not import the reviewer) and is a no-op until
+ * something registers, which keeps sync working in tests and in consoles with
+ * no reviewer agent.
+ */
+type PrOpenedHook = (engagementId: string, ticketKey: string, prNumber: number) => void;
+let prOpenedHook: PrOpenedHook | null = null;
+
+export function onPrOpened(hook: PrOpenedHook | null): void {
+  prOpenedHook = hook;
+}
+
 export async function syncConnection(q: Query, rawConn: Connection): Promise<{ commits: number; prs: number }> {
   const conn = await withLiveToken(rawConn);
   const impl = conn.provider === 'github' ? github : ado;
@@ -488,6 +502,9 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
          VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
         [conn.engagement_id, `PR #${p.number} opened for ${ticketKey} — moved to Review.`, conn.repo_name],
       );
+      // Review gate: fire-and-forget so a slow or unhappy reviewer never
+      // stalls (or fails) the sync pass that moved the ticket.
+      prOpenedHook?.(conn.engagement_id, ticketKey, p.number);
     } else if (p.state === 'merged' && status && status !== 'done' && status !== 'dismissed') {
       if (prev) {
         // Live merge transition: hold in Review and watch the deploy pipeline.

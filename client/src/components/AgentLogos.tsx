@@ -126,6 +126,27 @@ const DATABRICKS_MARK = (size: number): ReactNode => (
   </svg>
 );
 
+/**
+ * Agent Bricks: bricks in the Databricks orange-red, stacked in a half-bond so
+ * the courses interlock. Databricks lozenge red (var(--acc)) ties it to the
+ * platform marks above; the offset course is what tells it apart from the
+ * plain Databricks logo at 20px.
+ */
+const AGENTBRICKS_MARK = (size: number): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    {/* top course */}
+    <rect x="3" y="3.6" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.55} />
+    <rect x="12.6" y="3.6" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.55} />
+    {/* middle course: offset half-bond */}
+    <rect x="3" y="9.4" width="4" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.8} />
+    <rect x="8.2" y="9.4" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.8} />
+    <rect x="17.8" y="9.4" width="3.2" height="5.2" rx="1.2" fill="var(--acc)" opacity={0.8} />
+    {/* base course */}
+    <rect x="3" y="15.2" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" />
+    <rect x="12.6" y="15.2" width="8.4" height="5.2" rx="1.2" fill="var(--acc)" />
+  </svg>
+);
+
 /** Codex reuses the OpenAI knot; the harness has no distinct mark. */
 const HARNESSES: Record<string, AgentBrand> = {
   'claude-code': CLAUDE_CODE,
@@ -143,6 +164,12 @@ const PROVIDERS: Record<string, AgentBrand> = {
   microsoft: { label: 'Microsoft', mark: MICROSOFT_MARK },
   anysphere: { label: 'Anysphere', mark: CURSOR_MARK },
   databricks: { label: 'Databricks', mark: DATABRICKS_MARK },
+};
+
+/** Node-kind marks: an Agent Bricks agent is branded by what it runs on. */
+const AGENT_TYPES: Record<string, AgentBrand> = {
+  agentbricks: { label: 'Agent Bricks', mark: AGENTBRICKS_MARK },
+  'serving-endpoint': { label: 'Model Serving', mark: DATABRICKS_MARK },
 };
 
 /**
@@ -169,9 +196,16 @@ export function providerBrand(provider: string | null): AgentBrand | null {
   return provider ? (PROVIDERS[norm(provider)] ?? null) : null;
 }
 
-/** Harness logo when available, else the model provider's; null → letter chip. */
-export function agentBrand(a: { harness: string | null; modelProvider: string | null }): AgentBrand | null {
-  return harnessBrand(a.harness) ?? providerBrand(a.modelProvider);
+export function agentTypeBrand(agentType: string | null): AgentBrand | null {
+  return agentType ? (AGENT_TYPES[norm(agentType)] ?? null) : null;
+}
+
+/**
+ * Node-kind logo first (an Agent Bricks agent is an Agent Bricks agent whatever
+ * model it serves), then harness, then model provider; null → letter chip.
+ */
+export function agentBrand(a: { agentType?: string | null; harness: string | null; modelProvider: string | null }): AgentBrand | null {
+  return agentTypeBrand(a.agentType ?? null) ?? harnessBrand(a.harness) ?? providerBrand(a.modelProvider);
 }
 
 /** Selectable harnesses for the deploy form, in display order. */

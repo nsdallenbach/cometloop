@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { api } from '../api';
-import type { AgentsOverview, AgentsOverviewProject, ProjectAgent, ProjectAgentType } from '../types';
+import type { AgentsOverview, AgentsOverviewProject, ProjectAgent, ProjectAgentRole, ProjectAgentType } from '../types';
 import { HEALTH_COLOR, mono } from '../util';
 import { agentBrand, HARNESS_DEFAULT_PROVIDER, HARNESS_OPTIONS, PROVIDER_OPTIONS } from './AgentLogos';
 
 /**
- * /agents — the agent architecture map. Every project renders as a central
- * hub node with its agents as spokes around it: real runner history (from the
- * work queue) and configured-but-not-yet-rolled-out agents from the deploy
- * flow. The diagram is read-only apart from the scaffolded "Deploy agent"
- * entry point on each project hub. Future node kinds (model serving
- * endpoints, AgentBricks, Foundry agents) render as a dashed placeholder
- * spoke until real data exists for them.
+ * /agents — the agent architecture map. Every project renders as a central hub
+ * node with its agents as spokes around it: observed runners (from the work
+ * queue), endpoint-backed agents built in AgentBricks or Model Serving and
+ * registered here, and staged runner configs awaiting fleet rollout.
+ *
+ * "New agent" on a hub registers an agent against that project. Endpoint-backed
+ * agents are live records — their status comes from the workspace serving API
+ * — and an agent given the pr-reviewer role is what the PR review gate invokes.
  */
 
 // Cluster geometry: one fixed-size tile per project, spokes on an ellipse.
@@ -41,11 +42,22 @@ function clusterGeometry(count: number): ClusterGeom {
   return { w, h, cx: w / 2, cy: h / 2, rx, ry, stagger };
 }
 
-const FUTURE_LABEL: Record<string, string> = {
+const TYPE_LABEL: Record<string, string> = {
+  runner: 'RUNNER',
   'serving-endpoint': 'SERVING ENDPOINT',
-  agentbricks: 'AGENTBRICKS',
+  agentbricks: 'AGENT BRICKS',
   foundry: 'FOUNDRY AGENT',
 };
+
+const ROLE_LABEL: Record<string, string> = {
+  delivery: 'DELIVERY',
+  'pr-reviewer': 'PR REVIEWER',
+  planning: 'PLANNING',
+  other: 'AGENT',
+};
+
+/** The console's own MCP server — what an AgentBricks agent attaches to. */
+const mcpUrl = () => `${window.location.origin}/api/mcp`;
 
 /** Spoke positions: first node at 12 o'clock, then evenly around the ellipse. */
 function spokeXY(i: number, count: number, g: ClusterGeom): { x: number; y: number } {
@@ -63,45 +75,40 @@ function relTime(iso: string | null): string {
   return `${Math.round(mins / 1440)}d ago`;
 }
 
-/** Ghost spoke advertising the future node kinds on every project cluster. */
-function FutureSpoke({ x, y }: { x: number; y: number }) {
+/** Empty-project spoke: a hub with no agents yet still needs somewhere to look. */
+function EmptySpoke({ x, y, lead }: { x: number; y: number; lead: boolean }) {
   return (
     <div
-      title="Model serving endpoints, AgentBricks and Foundry agents created for this project will appear here — coming soon"
       style={{ position: 'absolute', left: x - 62, top: y - 30, width: 124, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, opacity: 0.75 }}
     >
-      <div
-        style={{
-          width: 38,
-          height: 38,
-          borderRadius: 9,
-          border: '1px dashed var(--line2)',
-          display: 'grid',
-          placeItems: 'center',
-          color: 'var(--tx3)',
-          fontSize: 15,
-        }}
-      >
+      <div style={{ width: 38, height: 38, borderRadius: 9, border: '1px dashed var(--line2)', display: 'grid', placeItems: 'center', color: 'var(--tx3)', fontSize: 15 }}>
         ◇
       </div>
-      <div style={{ ...mono(500, 8.5), color: 'var(--tx3)', letterSpacing: '.06em', textAlign: 'center' }}>
-        ENDPOINTS · BRICKS · FOUNDRY
+      <div style={{ ...mono(400, 8), color: 'var(--tx3)', letterSpacing: '.08em', textAlign: 'center' }}>
+        {lead ? 'NO AGENTS — ADD ONE' : 'NO AGENTS YET'}
       </div>
-      <div style={{ ...mono(400, 8), color: 'var(--tx3)', letterSpacing: '.08em' }}>COMING SOON</div>
     </div>
   );
 }
 
+/** Dashed = staged (a runner config awaiting rollout) or an unreachable endpoint. */
+function spokeState(agent: ProjectAgent): { staged: boolean; unreachable: boolean; color: string } {
+  const unreachable = agent.status === 'unreachable';
+  const staged = agent.source === 'configured' && !['active', 'idle', 'unreachable'].includes(agent.status);
+  return {
+    staged,
+    unreachable,
+    color: unreachable ? 'var(--bad)' : agent.status === 'active' ? 'var(--ok)' : staged ? 'var(--warn)' : 'var(--tx3)',
+  };
+}
+
 function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number; y: number; onSelect: (agent: ProjectAgent) => void }) {
   const brand = agentBrand(agent);
-  const future = agent.agentType !== 'runner';
-  // Table rows with live status (synced runners, READY serving endpoints)
-  // are not "staged" — dashed treatment is only for rollout-pending configs.
-  const staged = agent.source === 'configured' && !['active', 'idle'].includes(agent.status);
-  const statusColor = agent.status === 'active' ? 'var(--ok)' : staged ? 'var(--warn)' : 'var(--tx3)';
-  const sub = future
-    ? (FUTURE_LABEL[agent.agentType] ?? agent.agentType.toUpperCase())
-    : (brand?.label ?? agent.modelProvider ?? 'Runner');
+  const { staged, unreachable, color: statusColor } = spokeState(agent);
+  const sub =
+    agent.role === 'pr-reviewer'
+      ? ROLE_LABEL['pr-reviewer']
+      : (brand?.label ?? TYPE_LABEL[agent.agentType] ?? agent.modelProvider ?? 'Runner');
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.85 }}
@@ -119,7 +126,7 @@ function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number;
           height: 38,
           borderRadius: 9,
           background: 'var(--bg3)',
-          border: staged ? '1px dashed var(--warn)' : '1px solid var(--line2)',
+          border: staged ? '1px dashed var(--warn)' : unreachable ? '1px dashed var(--bad)' : '1px solid var(--line2)',
           display: 'grid',
           placeItems: 'center',
         }}
@@ -164,21 +171,46 @@ function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number;
   );
 }
 
+/** Copy-to-clipboard value chip — used for the MCP URL the agent needs. */
+function CopyField({ label, value, toast }: { label: string; value: string; toast: (msg: string) => void }) {
+  return (
+    <div>
+      <div style={LABEL}>{label}</div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input readOnly value={value} style={{ ...FIELD, ...mono(400, 11), flex: 1 }} onFocus={(e) => e.currentTarget.select()} />
+        <button
+          className="hv-border"
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(value)
+              .then(() => toast('Copied'))
+              .catch(() => toast('Copy failed — select the text instead'));
+          }}
+          style={{ ...mono(500, 9), background: 'none', border: '1px solid var(--line2)', color: 'var(--tx2)', borderRadius: 3, padding: '0 10px', cursor: 'pointer', letterSpacing: '.06em' }}
+        >
+          COPY
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ProjectCluster({
   project,
   agents,
   lead,
-  onDeploy,
+  onNewAgent,
   onSelectAgent,
 }: {
   project: AgentsOverviewProject;
   agents: ProjectAgent[];
   lead: boolean;
-  onDeploy: () => void;
+  onNewAgent: () => void;
   onSelectAgent: (agent: ProjectAgent) => void;
 }) {
-  // Spokes: every agent plus one dashed placeholder for the future node kinds.
-  const count = agents.length + 1;
+  // One spoke per agent; a project with none still gets a single empty slot so
+  // the hub reads as "nothing here yet" rather than a bare box.
+  const count = Math.max(1, agents.length);
   const geom = clusterGeometry(count);
   const spots = Array.from({ length: count }, (_, i) => spokeXY(i, count, geom));
   return (
@@ -186,20 +218,20 @@ function ProjectCluster({
       <svg width={geom.w} height={geom.h} aria-hidden="true" style={{ position: 'absolute', inset: 0 }}>
         {spots.map((p, i) => {
           const agent = agents[i];
-          const ghost = !agent;
-          const staged = agent?.source === 'configured' && !['active', 'idle'].includes(agent?.status ?? '');
+          const empty = !agent;
+          const { staged, unreachable } = agent ? spokeState(agent) : { staged: false, unreachable: false };
           const active = agent?.status === 'active';
           return (
             <line
-              key={agent?.id ?? 'future'}
+              key={agent?.id ?? 'empty'}
               x1={geom.cx}
               y1={geom.cy}
               x2={p.x}
               y2={p.y}
-              stroke={active ? 'var(--agent)' : staged ? 'var(--warn)' : 'var(--line2)'}
+              stroke={active ? 'var(--agent)' : unreachable ? 'var(--bad)' : staged ? 'var(--warn)' : 'var(--line2)'}
               strokeWidth={active ? 1.6 : 1.1}
-              strokeDasharray={ghost || staged ? '4 4' : undefined}
-              opacity={ghost ? 0.55 : 0.9}
+              strokeDasharray={empty || staged || unreachable ? '4 4' : undefined}
+              opacity={empty ? 0.55 : 0.9}
             />
           );
         })}
@@ -208,7 +240,7 @@ function ProjectCluster({
         agents[i] ? (
           <AgentSpoke key={agents[i].id} agent={agents[i]} x={p.x} y={p.y} onSelect={onSelectAgent} />
         ) : (
-          <FutureSpoke key="future" x={p.x} y={p.y} />
+          <EmptySpoke key="empty" x={p.x} y={p.y} lead={lead} />
         ),
       )}
       {/* Hub */}
@@ -242,7 +274,7 @@ function ProjectCluster({
         {lead && (
           <button
             className="hv-border"
-            onClick={onDeploy}
+            onClick={onNewAgent}
             style={{
               ...mono(500, 9),
               marginTop: 3,
@@ -255,7 +287,7 @@ function ProjectCluster({
               letterSpacing: '.08em',
             }}
           >
-            + DEPLOY AGENT
+            + NEW AGENT
           </button>
         )}
       </div>
@@ -275,51 +307,66 @@ const FIELD: React.CSSProperties = {
 
 const LABEL: React.CSSProperties = { ...mono(500, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 4 };
 
-function DeployModal({
+function NewAgentModal({
   project,
   onClose,
-  onDeployed,
+  onCreated,
   toast,
 }: {
   project: AgentsOverviewProject;
   onClose: () => void;
-  onDeployed: () => void;
+  onCreated: () => void;
   toast: (msg: string) => void;
 }) {
   const [name, setName] = useState('');
-  const [agentType, setAgentType] = useState<ProjectAgentType>('runner');
+  const [agentType, setAgentType] = useState<ProjectAgentType>('agentbricks');
+  const [role, setRole] = useState<ProjectAgentRole>('pr-reviewer');
+  const [endpointName, setEndpointName] = useState('');
+  const [description, setDescription] = useState('');
   const [harness, setHarness] = useState('claude-code');
   const [provider, setProvider] = useState('anthropic');
   const [model, setModel] = useState('');
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
+  const endpointBacked = agentType === 'agentbricks' || agentType === 'serving-endpoint';
 
   const submit = () => {
     if (!name.trim()) {
       toast('Give the agent a name');
       return;
     }
-    if (!harness && !provider) {
+    if (endpointBacked && !endpointName.trim()) {
+      toast('Name the workspace serving endpoint this agent runs on');
+      return;
+    }
+    if (!endpointBacked && !harness && !provider) {
       toast('Pick a harness or a model provider');
       return;
     }
     setBusy(true);
     api
-      .deployAgent(project.id, {
+      .createAgent(project.id, {
         name: name.trim(),
         agentType,
-        harness: harness || undefined,
-        modelProvider: provider || undefined,
-        model: model.trim() || undefined,
+        role,
+        endpointName: endpointBacked ? endpointName.trim() : undefined,
+        description: description.trim() || undefined,
+        harness: endpointBacked ? undefined : harness || undefined,
+        modelProvider: endpointBacked ? undefined : provider || undefined,
+        model: endpointBacked ? undefined : model.trim() || undefined,
         notes: notes.trim() || undefined,
       })
       .then(() => {
-        toast(`${name.trim()} configured for ${project.client} — rollout pending`);
-        onDeployed();
+        toast(
+          endpointBacked
+            ? `${name.trim()} registered on ${project.client}`
+            : `${name.trim()} configured for ${project.client} — rollout pending`,
+        );
+        onCreated();
       })
       .catch((e: Error) => {
         setBusy(false);
-        toast(`Deploy failed — ${e.message}`);
+        toast(`Could not add the agent — ${e.message}`);
       });
   };
 
@@ -346,76 +393,129 @@ function DeployModal({
           boxShadow: '0 12px 40px rgba(0,0,0,.5)',
         }}
       >
-        <div style={{ ...mono(500, 11), letterSpacing: '.1em', marginBottom: 2 }}>DEPLOY AGENT — {project.client.toUpperCase()}</div>
+        <div style={{ ...mono(500, 11), letterSpacing: '.1em', marginBottom: 2 }}>NEW AGENT — {project.client.toUpperCase()}</div>
         <div style={{ fontSize: 11.5, color: 'var(--tx3)', marginBottom: 14 }}>
-          Scaffolded flow: the configuration is saved and staged; actual rollout to a runner is a future feature.
+          {endpointBacked
+            ? 'Register an agent you built in the workspace. Status is read live from the serving endpoint; a pr-reviewer agent is invoked when a linked PR opens.'
+            : 'Harness runners are still staged: the configuration is saved, and rollout to a devbox fleet is a future feature.'}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
-            <div style={LABEL}>NAME</div>
-            <input style={FIELD} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. acme-runner-2" maxLength={80} autoFocus />
-          </div>
-          <div>
             <div style={LABEL}>TYPE</div>
             <select style={FIELD} value={agentType} onChange={(e) => setAgentType(e.target.value as ProjectAgentType)}>
+              <option value="agentbricks">Agent Bricks agent</option>
+              <option value="serving-endpoint">Model serving endpoint</option>
               <option value="runner">Agent runner (harness)</option>
-              <option value="serving-endpoint" disabled>
-                Model serving endpoint — coming soon
-              </option>
-              <option value="agentbricks" disabled>
-                AgentBricks — coming soon
-              </option>
               <option value="foundry" disabled>
-                Foundry agent — coming soon
+                Foundry agent — not supported yet
               </option>
             </select>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1 }}>
-              <div style={LABEL}>HARNESS</div>
-              <select
+              <div style={LABEL}>NAME</div>
+              <input
                 style={FIELD}
-                value={harness}
-                onChange={(e) => {
-                  const h = e.target.value;
-                  setHarness(h);
-                  if (h) setProvider(HARNESS_DEFAULT_PROVIDER[h] ?? '');
-                }}
-              >
-                {HARNESS_OPTIONS.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
-                <option value="">None — provider only</option>
-              </select>
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={endpointBacked ? 'e.g. pr-reviewer' : 'e.g. acme-runner-2'}
+                maxLength={80}
+                autoFocus
+              />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={LABEL}>MODEL PROVIDER</div>
-              <select style={FIELD} value={provider} onChange={(e) => setProvider(e.target.value)}>
-                {PROVIDER_OPTIONS.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
-                <option value="">Other / unset</option>
+              <div style={LABEL}>ROLE</div>
+              <select style={FIELD} value={role} onChange={(e) => setRole(e.target.value as ProjectAgentRole)}>
+                <option value="pr-reviewer">PR reviewer — reviews PRs on this project</option>
+                <option value="delivery">Delivery — works tickets</option>
+                <option value="planning">Planning — refines tickets</option>
+                <option value="other">Other</option>
               </select>
             </div>
           </div>
+          {endpointBacked ? (
+            <>
+              <div>
+                <div style={LABEL}>SERVING ENDPOINT NAME</div>
+                <input
+                  style={{ ...FIELD, ...mono(400, 11.5) }}
+                  value={endpointName}
+                  onChange={(e) => setEndpointName(e.target.value)}
+                  placeholder="the endpoint name in Serving, e.g. ka-pr-reviewer"
+                  maxLength={200}
+                />
+                <div style={{ fontSize: 10.5, color: 'var(--tx3)', marginTop: 4 }}>
+                  The app’s service principal needs CAN_QUERY on this endpoint, otherwise the node shows as unreachable.
+                </div>
+              </div>
+              <CopyField label="DELIVERY CONSOLE MCP SERVER (ADD THIS TO THE AGENT)" value={mcpUrl()} toast={toast} />
+              <div style={{ fontSize: 10.5, color: 'var(--tx3)', marginTop: -6 }}>
+                Attach this as a custom MCP server on the agent so it can read tickets and publish its review. The agent’s
+                service principal needs CAN_USE on this app.
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={LABEL}>HARNESS</div>
+                  <select
+                    style={FIELD}
+                    value={harness}
+                    onChange={(e) => {
+                      const h = e.target.value;
+                      setHarness(h);
+                      if (h) setProvider(HARNESS_DEFAULT_PROVIDER[h] ?? '');
+                    }}
+                  >
+                    {HARNESS_OPTIONS.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.label}
+                      </option>
+                    ))}
+                    <option value="">None — provider only</option>
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={LABEL}>MODEL PROVIDER</div>
+                  <select style={FIELD} value={provider} onChange={(e) => setProvider(e.target.value)}>
+                    {PROVIDER_OPTIONS.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.label}
+                      </option>
+                    ))}
+                    <option value="">Other / unset</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <div style={LABEL}>MODEL (OPTIONAL)</div>
+                <input style={FIELD} value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. claude-sonnet-5" maxLength={80} />
+              </div>
+            </>
+          )}
           <div>
-            <div style={LABEL}>MODEL (OPTIONAL)</div>
-            <input style={FIELD} value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. claude-sonnet-5" maxLength={80} />
-          </div>
-          <div>
-            <div style={LABEL}>CONFIGURATION NOTES (OPTIONAL)</div>
+            <div style={LABEL}>DESCRIPTION</div>
             <textarea
-              style={{ ...FIELD, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Anything the rollout needs — repo scope, schedule, constraints…"
+              style={{ ...FIELD, minHeight: 58, resize: 'vertical', fontFamily: 'inherit' }}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What this agent does and when it runs — shown on the map and in the agent’s detail popup."
               maxLength={2000}
             />
           </div>
+          {!endpointBacked && (
+            <div>
+              <div style={LABEL}>CONFIGURATION NOTES (OPTIONAL)</div>
+              <textarea
+                style={{ ...FIELD, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Anything the rollout needs — repo scope, schedule, constraints…"
+                maxLength={2000}
+              />
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
           <button
@@ -440,7 +540,7 @@ function DeployModal({
               opacity: busy ? 0.7 : 1,
             }}
           >
-            {busy ? 'SAVING…' : 'STAGE DEPLOY'}
+            {busy ? 'SAVING…' : endpointBacked ? 'ADD AGENT' : 'STAGE DEPLOY'}
           </button>
         </div>
       </motion.div>
@@ -449,10 +549,25 @@ function DeployModal({
 }
 
 /** Click-through detail for any node on the map (DAT-197 follow-up). */
-function AgentDetailModal({ agent, projectName, onClose }: { agent: ProjectAgent; projectName: string; onClose: () => void }) {
+function AgentDetailModal({
+  agent,
+  projectName,
+  canEdit,
+  onClose,
+  onRemoved,
+  toast,
+}: {
+  agent: ProjectAgent;
+  projectName: string;
+  canEdit: boolean;
+  onClose: () => void;
+  onRemoved: () => void;
+  toast: (msg: string) => void;
+}) {
   const brand = agentBrand(agent);
-  const staged = agent.source === 'configured' && !['active', 'idle'].includes(agent.status);
-  const statusColor = agent.status === 'active' ? 'var(--ok)' : staged ? 'var(--warn)' : 'var(--tx3)';
+  const { staged, unreachable, color: statusColor } = spokeState(agent);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const endpointBacked = agent.agentType === 'agentbricks' || agent.agentType === 'serving-endpoint';
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -462,11 +577,20 @@ function AgentDetailModal({ agent, projectName, onClose }: { agent: ProjectAgent
   }, [onClose]);
   const rows: [string, string][] = [
     ['PROJECT', projectName],
-    ['TYPE', agent.agentType === 'runner' ? 'Runner (devbox harness)' : (FUTURE_LABEL[agent.agentType] ?? agent.agentType)],
-    ['HARNESS', brand?.label ?? agent.harness ?? '—'],
+    ['TYPE', agent.agentType === 'runner' ? 'Runner (devbox harness)' : (TYPE_LABEL[agent.agentType] ?? agent.agentType)],
+    ['ROLE', ROLE_LABEL[agent.role] ?? agent.role],
+    ...(endpointBacked ? ([['ENDPOINT', agent.endpointName ?? '—']] as [string, string][]) : []),
+    ...(endpointBacked ? [] : ([['HARNESS', brand?.label ?? agent.harness ?? '—']] as [string, string][])),
     ['MODEL PROVIDER', agent.modelProvider ?? '—'],
     ['MODEL', agent.model ?? '—'],
-    ['SOURCE', agent.source === 'observed' ? 'Observed — real runner from task history' : staged ? 'Configured — rollout pending' : 'Stored record · live status synced'],
+    [
+      'SOURCE',
+      agent.source === 'observed'
+        ? 'Observed — real runner from task history'
+        : staged
+          ? 'Configured — rollout pending'
+          : 'Stored record · live status synced',
+    ],
     ['TASKS WORKED', agent.source === 'observed' ? `${agent.tasks} total · ${agent.activeTasks} active now` : '—'],
     ['LAST SEEN', agent.lastSeen ? relTime(agent.lastSeen) : '—'],
     ['FIRST SEEN', agent.createdAt ? relTime(agent.createdAt) : '—'],
@@ -534,12 +658,66 @@ function AgentDetailModal({ agent, projectName, onClose }: { agent: ProjectAgent
           </button>
         </div>
         <div style={{ padding: '12px 16px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {unreachable && (
+            <div style={{ border: '1px solid var(--bad)', borderRadius: 3, padding: '7px 9px', fontSize: 11.5, color: 'var(--bad)' }}>
+              Endpoint unreachable — {agent.endpointError ?? 'the workspace did not return its state'}.
+            </div>
+          )}
+          {agent.description && (
+            <div style={{ fontSize: 12.5, color: 'var(--tx2)', lineHeight: 1.5, paddingBottom: 2 }}>{agent.description}</div>
+          )}
           {rows.map(([label, value]) => (
             <div key={label} style={{ display: 'flex', gap: 12, alignItems: 'baseline' }}>
               <span style={{ ...mono(500, 9), color: 'var(--tx3)', letterSpacing: '.08em', width: 118, flex: 'none' }}>{label}</span>
               <span style={{ fontSize: 12.5, color: 'var(--tx)', minWidth: 0, overflowWrap: 'anywhere' }}>{value}</span>
             </div>
           ))}
+          {endpointBacked && (
+            <div style={{ marginTop: 4 }}>
+              <CopyField label="DELIVERY CONSOLE MCP SERVER" value={mcpUrl()} toast={toast} />
+            </div>
+          )}
+          {agent.role === 'pr-reviewer' && (
+            <div style={{ fontSize: 11.5, color: 'var(--tx3)', lineHeight: 1.5, marginTop: 2 }}>
+              Runs when a linked PR opens on this project: the console sends the ticket, its acceptance criteria, the diff and
+              the CI status, then posts the verdict on the PR and the ticket. It never merges.
+            </div>
+          )}
+          {canEdit && agent.recordId !== null && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
+              <button
+                className="hv-border"
+                onClick={() => {
+                  if (!confirmRemove) {
+                    setConfirmRemove(true);
+                    return;
+                  }
+                  api
+                    .deleteAgent(agent.engagementId, agent.recordId ?? 0)
+                    .then(() => {
+                      toast(`${agent.name} removed`);
+                      onRemoved();
+                    })
+                    .catch((e: Error) => {
+                      setConfirmRemove(false);
+                      toast(`Could not remove — ${e.message}`);
+                    });
+                }}
+                style={{
+                  ...mono(500, 9),
+                  background: 'none',
+                  border: `1px solid ${confirmRemove ? 'var(--bad)' : 'var(--line2)'}`,
+                  color: confirmRemove ? 'var(--bad)' : 'var(--tx3)',
+                  borderRadius: 3,
+                  padding: '4px 10px',
+                  cursor: 'pointer',
+                  letterSpacing: '.07em',
+                }}
+              >
+                {confirmRemove ? 'CONFIRM REMOVE' : 'REMOVE AGENT'}
+              </button>
+            </div>
+          )}
         </div>
       </motion.div>
     </>
@@ -549,7 +727,7 @@ function AgentDetailModal({ agent, projectName, onClose }: { agent: ProjectAgent
 export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) => boolean; toast: (msg: string) => void }) {
   const [data, setData] = useState<AgentsOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [deployFor, setDeployFor] = useState<AgentsOverviewProject | null>(null);
+  const [newAgentFor, setNewAgentFor] = useState<AgentsOverviewProject | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<ProjectAgent | null>(null);
 
   const load = useCallback(() => {
@@ -601,9 +779,10 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
       {/* Legend, including the not-yet-live node kinds. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '12px 0 6px' }}>
         {[
-          { label: 'RUNNER — LIVE', dot: 'var(--ok)', dashed: false },
-          { label: 'RUNNER — IDLE', dot: 'var(--tx3)', dashed: false },
+          { label: 'LIVE', dot: 'var(--ok)', dashed: false },
+          { label: 'IDLE', dot: 'var(--tx3)', dashed: false },
           { label: 'CONFIGURED — ROLLOUT PENDING', dot: 'var(--warn)', dashed: true },
+          { label: 'ENDPOINT UNREACHABLE', dot: 'var(--bad)', dashed: true },
         ].map((l) => (
           <span
             key={l.label}
@@ -650,7 +829,7 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
             project={p}
             agents={byProject.get(p.id) ?? []}
             lead={canLead(p.id)}
-            onDeploy={() => setDeployFor(p)}
+            onNewAgent={() => setNewAgentFor(p)}
             onSelectAgent={setSelectedAgent}
           />
         ))}
@@ -662,20 +841,26 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
             key={selectedAgent.id}
             agent={selectedAgent}
             projectName={data?.projects.find((p) => p.id === selectedAgent.engagementId)?.name ?? selectedAgent.engagementId}
+            canEdit={canLead(selectedAgent.engagementId)}
+            toast={toast}
             onClose={() => setSelectedAgent(null)}
+            onRemoved={() => {
+              setSelectedAgent(null);
+              void load();
+            }}
           />
         )}
       </AnimatePresence>
 
       <AnimatePresence>
-        {deployFor && (
-          <DeployModal
-            key={deployFor.id}
-            project={deployFor}
+        {newAgentFor && (
+          <NewAgentModal
+            key={newAgentFor.id}
+            project={newAgentFor}
             toast={toast}
-            onClose={() => setDeployFor(null)}
-            onDeployed={() => {
-              setDeployFor(null);
+            onClose={() => setNewAgentFor(null)}
+            onCreated={() => {
+              setNewAgentFor(null);
               void load();
             }}
           />

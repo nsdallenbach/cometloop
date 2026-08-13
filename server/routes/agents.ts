@@ -3,15 +3,18 @@ import { z } from 'zod';
 import type { Identity } from './roles';
 
 /**
- * Project agents: the entities behind the /agents architecture map. Two kinds
- * of records feed the overview:
+ * Project agents: the entities behind the /agents architecture map. Three
+ * kinds of records feed the overview:
  *
- * - Configured agents (app.project_agents): created through the scaffolded
- *   "Deploy agent" flow. Today the deploy endpoint is a stub — it persists the
- *   submitted configuration as a placeholder record and posts a feed item;
- *   actual rollout to a runner fleet is future work. The table already carries
- *   agent_type values for future node kinds (model serving endpoints,
- *   AgentBricks, Foundry agents) so those can light up without a migration.
+ * - Endpoint-backed agents (app.project_agents, agent_type 'agentbricks' or
+ *   'serving-endpoint'): a workspace endpoint someone built in AgentBricks or
+ *   Model Serving, registered against a project. These are real from the
+ *   moment they are created — status comes from the workspace serving API, and
+ *   an agent with role 'pr-reviewer' is what the PR review gate invokes.
+ *
+ * - Configured runners (agent_type 'runner'): the scaffolded deploy flow.
+ *   Persists the submitted configuration; actual rollout to a devbox fleet is
+ *   still future work, so the record sits at status 'configured'.
  *
  * - Observed runners: derived from app.agent_tasks history — any runner that
  *   ever claimed work on an engagement shows up as a live agent node with its
@@ -38,24 +41,51 @@ export const PROJECT_AGENTS_SCHEMA_SQL = [
   // Upsert identity for the sync pass (observed runners + auto-registered
   // serving endpoints): one row per engagement × agent name.
   `CREATE UNIQUE INDEX IF NOT EXISTS project_agents_eng_name ON app.project_agents (engagement_id, lower(name))`,
+  // DAT-209 columns. The app SP created this table (DAT-203), so boot ALTERs
+  // succeed here — unlike the dev-role tables that need dev-migrate.cjs.
+  `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'delivery'`,
+  `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS endpoint_name TEXT`,
+  `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS description TEXT`,
 ];
 
-/** Node kinds the map renders; only 'runner' has a real deploy path today. */
+/** Node kinds the map renders. 'foundry' is still a placeholder. */
 export const AGENT_TYPES = ['runner', 'serving-endpoint', 'agentbricks', 'foundry'] as const;
+
+/**
+ * What an agent is for. 'pr-reviewer' is wired: a PR opening on the engagement
+ * invokes that agent's endpoint (see pr-review.ts). The rest are labels today.
+ */
+export const AGENT_ROLES = ['delivery', 'pr-reviewer', 'planning', 'other'] as const;
+export type AgentRole = (typeof AGENT_ROLES)[number];
+
+/** Types whose liveness is a workspace serving endpoint rather than a runner. */
+export const ENDPOINT_BACKED: readonly string[] = ['agentbricks', 'serving-endpoint'];
 
 const DeployAgentBody = z
   .object({
     name: z.string().trim().min(1).max(80),
     agentType: z.enum(AGENT_TYPES).default('runner'),
+    role: z.enum(AGENT_ROLES).default('delivery'),
     harness: z.string().trim().max(40).optional(),
     modelProvider: z.string().trim().max(40).optional(),
     model: z.string().trim().max(80).optional(),
     endpointType: z.string().trim().max(40).optional(),
+    endpointName: z.string().trim().max(200).optional(),
+    description: z.string().trim().max(2000).optional(),
     notes: z.string().trim().max(2000).optional(),
   })
   .refine((b) => b.agentType !== 'runner' || b.harness || b.modelProvider, {
     message: 'A runner needs a harness or a model provider',
+  })
+  .refine((b) => !ENDPOINT_BACKED.includes(b.agentType) || Boolean(b.endpointName), {
+    message: 'Name the workspace serving endpoint this agent runs on',
   });
+
+const UpdateAgentBody = z.object({
+  role: z.enum(AGENT_ROLES).optional(),
+  description: z.string().trim().max(2000).optional(),
+  endpointName: z.string().trim().max(200).optional(),
+});
 
 const txt = (v: unknown): string => (typeof v === 'string' ? v : '');
 const num = (v: unknown): number => (typeof v === 'number' ? v : Number(v) || 0);
@@ -93,14 +123,17 @@ export const HARNESS_PROVIDER: Record<string, string> = {
 /** The planning agent IS this endpoint; its name comes from the app resource env. */
 const SERVING_ENDPOINT = process.env.DATABRICKS_SERVING_ENDPOINT_NAME ?? '';
 
-interface ServingState {
+export interface ServingState {
   ready: boolean;
   configUpdate: string;
   task: string | null;
   servedModel: string | null;
+  /** Set when the endpoint could not be read — surfaced on the node so a
+   *  missing CAN_QUERY grant looks like a permission problem, not a dead agent. */
+  error?: string;
 }
 
-let servingCache: { at: number; state: ServingState | null } | null = null;
+const servingCache = new Map<string, { at: number; state: ServingState | null }>();
 const SERVING_CACHE_MS = 60_000;
 
 function workspaceBase(): string | null {
@@ -110,7 +143,7 @@ function workspaceBase(): string | null {
 }
 
 /** M2M token for the app's service principal (Databricks Apps inject the OAuth pair). */
-async function workspaceToken(): Promise<string | null> {
+export async function workspaceToken(): Promise<string | null> {
   const base = workspaceBase();
   const id = process.env.DATABRICKS_CLIENT_ID;
   const secret = process.env.DATABRICKS_CLIENT_SECRET;
@@ -129,19 +162,35 @@ async function workspaceToken(): Promise<string | null> {
   return data.access_token ?? null;
 }
 
-/** Live endpoint state from the workspace serving API, cached ~60s; null = unknown. */
-async function fetchServingState(): Promise<ServingState | null> {
-  if (!SERVING_ENDPOINT) return null;
-  if (servingCache && Date.now() - servingCache.at < SERVING_CACHE_MS) return servingCache.state;
+/**
+ * Live state for any workspace serving endpoint — the planning endpoint, an
+ * AgentBricks agent, anything registered on the map. Cached ~60s per endpoint;
+ * null means "could not read it" (no credentials, no such endpoint, or the app
+ * service principal lacks CAN_QUERY).
+ */
+export async function fetchEndpointState(endpoint: string): Promise<ServingState | null> {
+  if (!endpoint) return null;
+  const hit = servingCache.get(endpoint);
+  if (hit && Date.now() - hit.at < SERVING_CACHE_MS) return hit.state;
   try {
     const base = workspaceBase();
     const token = await workspaceToken();
     if (!base || !token) throw new Error('workspace credentials unavailable');
-    const resp = await fetch(`${base}/api/2.0/serving-endpoints/${encodeURIComponent(SERVING_ENDPOINT)}`, {
+    const resp = await fetch(`${base}/api/2.0/serving-endpoints/${encodeURIComponent(endpoint)}`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!resp.ok) throw new Error(`serving api returned ${resp.status}`);
+    if (!resp.ok) {
+      const state: ServingState = {
+        ready: false,
+        configUpdate: 'UNKNOWN',
+        task: null,
+        servedModel: null,
+        error: resp.status === 403 || resp.status === 401 ? 'no access — grant the app service principal CAN_QUERY' : `serving api returned ${resp.status}`,
+      };
+      servingCache.set(endpoint, { at: Date.now(), state });
+      return state;
+    }
     const d = (await resp.json()) as {
       state?: { ready?: string; config_update?: string };
       task?: string;
@@ -153,11 +202,11 @@ async function fetchServingState(): Promise<ServingState | null> {
       task: d.task ?? null,
       servedModel: d.config?.served_entities?.[0]?.entity_name ?? d.config?.served_entities?.[0]?.name ?? null,
     };
-    servingCache = { at: Date.now(), state };
+    servingCache.set(endpoint, { at: Date.now(), state });
     return state;
   } catch (err) {
-    console.warn('[agents] serving endpoint state fetch failed:', (err as Error).message);
-    servingCache = { at: Date.now(), state: null };
+    console.warn(`[agents] serving endpoint '${endpoint}' state fetch failed:`, (err as Error).message);
+    servingCache.set(endpoint, { at: Date.now(), state: null });
     return null;
   }
 }
@@ -195,37 +244,120 @@ export async function syncProjectAgents(q: Query): Promise<void> {
     );
   }
 
+  // Registered endpoint-backed agents (AgentBricks / model serving): status is
+  // whatever the workspace says right now, per distinct endpoint.
+  const endpointRows = (
+    await q(
+      `SELECT id, endpoint_name FROM app.project_agents
+       WHERE agent_type = ANY($1) AND endpoint_name IS NOT NULL AND endpoint_name <> ''`,
+      [ENDPOINT_BACKED],
+    )
+  ).rows;
+  for (const r of endpointRows) {
+    const endpoint = txt(r.endpoint_name);
+    const state = await fetchEndpointState(endpoint);
+    await q(
+      `UPDATE app.project_agents
+       SET status = $2,
+           config = COALESCE(config, '{}'::jsonb) || $3::jsonb,
+           model = COALESCE(NULLIF(model, ''), $4)
+       WHERE id = $1`,
+      [
+        num(r.id),
+        endpointStatus(state),
+        JSON.stringify({
+          endpoint,
+          servedModel: state?.servedModel ?? null,
+          task: state?.task ?? null,
+          configUpdate: state?.configUpdate ?? null,
+          endpointError: state?.error ?? null,
+          checkedAt: new Date().toISOString(),
+        }),
+        state?.servedModel ?? null,
+      ],
+    );
+  }
+
   if (!SERVING_ENDPOINT) return;
-  const state = await fetchServingState();
-  const status = state === null ? 'configured' : state.ready ? 'active' : 'idle';
+  const state = await fetchEndpointState(SERVING_ENDPOINT);
   const config = JSON.stringify({
     endpoint: SERVING_ENDPOINT,
     servedModel: state?.servedModel ?? null,
     task: state?.task ?? null,
     configUpdate: state?.configUpdate ?? null,
+    endpointError: state?.error ?? null,
     checkedAt: new Date().toISOString(),
   });
   const engagements = (await q('SELECT id FROM app.engagements')).rows;
   for (const e of engagements) {
     await q(
-      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, endpoint_type, status, config, created_by)
-       VALUES ($1,'planning-agent','serving-endpoint',NULL,'databricks',$2,'model-serving',$3,$4,'system:serving')
+      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, endpoint_type, endpoint_name, role, status, config, created_by)
+       VALUES ($1,'planning-agent','serving-endpoint',NULL,'databricks',$2,'model-serving',$5,'planning',$3,$4,'system:serving')
        ON CONFLICT (engagement_id, lower(name))
-       DO UPDATE SET model = $2, status = $3, config = $4`,
-      [txt(e.id), state?.servedModel ?? SERVING_ENDPOINT, status, config],
+       DO UPDATE SET model = $2, status = $3, config = $4, endpoint_name = COALESCE(app.project_agents.endpoint_name, $5)`,
+      [txt(e.id), state?.servedModel ?? SERVING_ENDPOINT, endpointStatus(state), config, SERVING_ENDPOINT],
     );
   }
 }
 
+/**
+ * Invoke a workspace serving endpoint (an AgentBricks agent, a custom model)
+ * with the app's service principal. AgentBricks agents differ in request
+ * schema — chat-style `messages` for supervisor/custom-LLM agents, responses
+ * style `input` for others — so a schema rejection retries the other shape
+ * before giving up. Returns the raw JSON body; extraction is the caller's job.
+ */
+export async function invokeAgentEndpoint(endpoint: string, prompt: string): Promise<unknown> {
+  const base = workspaceBase();
+  const token = await workspaceToken();
+  if (!base || !token) throw new Error('workspace credentials unavailable — cannot reach the agent endpoint');
+  const url = `${base}/serving-endpoints/${encodeURIComponent(endpoint)}/invocations`;
+  const shapes: Record<string, unknown>[] = [
+    { messages: [{ role: 'user', content: prompt }] },
+    { input: [{ role: 'user', content: prompt }] },
+  ];
+  let lastError = 'agent endpoint call failed';
+  for (const body of shapes) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(AGENT_INVOKE_TIMEOUT_MS),
+    });
+    if (resp.ok) return await resp.json();
+    const text = (await resp.text().catch(() => '')).slice(0, 400);
+    lastError = `endpoint returned ${resp.status}${text ? `: ${text}` : ''}`;
+    // Only a schema complaint is worth retrying with the other request shape.
+    if (resp.status !== 400 && resp.status !== 422) break;
+  }
+  throw new Error(lastError);
+}
+
+/** Agent turns are long — a reviewer reads a diff and may call MCP tools. */
+const AGENT_INVOKE_TIMEOUT_MS = 300_000;
+
+/** READY → active, reachable-but-not-ready → idle, unreadable → 'unreachable'. */
+function endpointStatus(state: ServingState | null): string {
+  if (state === null) return 'unreachable';
+  if (state.error) return 'unreachable';
+  return state.ready ? 'active' : 'idle';
+}
+
 export interface OverviewAgent {
   id: string;
+  /** Numeric project_agents.id for stored records; null for observed runners. */
+  recordId: number | null;
   engagementId: string;
   name: string;
   agentType: string;
+  role: string;
+  description: string | null;
   harness: string | null;
   modelProvider: string | null;
   model: string | null;
   endpointType: string | null;
+  endpointName: string | null;
+  endpointError: string | null;
   status: string;
   source: 'configured' | 'observed';
   tasks: number;
@@ -267,13 +399,18 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
     })();
     return {
       id: `cfg-${num(r.id)}`,
+      recordId: num(r.id),
       engagementId: txt(r.engagement_id),
       name: txt(r.name),
       agentType: txt(r.agent_type) || 'runner',
+      role: txt(r.role) || 'delivery',
+      description: r.description == null ? null : txt(r.description),
       harness: r.harness == null ? null : txt(r.harness),
       modelProvider: r.model_provider == null ? null : txt(r.model_provider),
       model: r.model == null ? null : txt(r.model),
       endpointType: r.endpoint_type == null ? null : txt(r.endpoint_type),
+      endpointName: r.endpoint_name == null ? null : txt(r.endpoint_name),
+      endpointError: typeof cfg.endpointError === 'string' ? cfg.endpointError : null,
       status: txt(r.status) || 'configured',
       source: 'configured' as const,
       tasks: num(cfg.tasks),
@@ -301,13 +438,18 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
     const harness = inferHarness(name);
     return {
       id: `run-${txt(r.engagement_id)}-${name}`,
+      recordId: null,
       engagementId: txt(r.engagement_id),
       name,
       agentType: 'runner',
+      role: 'delivery',
+      description: null,
       harness,
       modelProvider: HARNESS_PROVIDER[harness] ?? null,
       model: null,
       endpointType: null,
+      endpointName: null,
+      endpointError: null,
       status: num(r.active_tasks) > 0 ? 'active' : 'idle',
       source: 'observed' as const,
       tasks: num(r.tasks),
@@ -346,10 +488,11 @@ export function setupProjectAgentRoutes(
   });
 
   /**
-   * Scaffolded deploy endpoint: validates and persists the submitted agent
-   * configuration as a placeholder record. Full deployment (provisioning a
-   * devbox runner with this config) is intentionally out of scope — the
-   * record's 'configured' status is what the map renders as "not live yet".
+   * Register an agent on a project. Endpoint-backed agents (AgentBricks, model
+   * serving) are live records: the endpoint already exists in the workspace, so
+   * the row is created and its status resolved against the serving API right
+   * away. Harness runners remain scaffolded — the record is saved at
+   * 'configured' and the map renders it as staged until fleet rollout lands.
    */
   app.post('/api/projects/:id/agents', async (req, res) => {
     const parsed = DeployAgentBody.safeParse(req.body);
@@ -366,37 +509,133 @@ export function setupProjectAgentRoutes(
       }
       const who = await requireLead(req, res, engId);
       if (!who) return;
-      const { name, agentType, harness, modelProvider, model, endpointType, notes } = parsed.data;
-      if (agentType !== 'runner') {
-        // Future node types are visible in the picker but not deployable yet.
-        res.status(422).json({ error: 'Only harness runners can be configured today — endpoint types are coming soon' });
+      const { name, agentType, role, harness, modelProvider, model, endpointType, endpointName, description, notes } = parsed.data;
+      if (agentType === 'foundry') {
+        res.status(422).json({ error: 'Foundry agents are not supported yet — register an AgentBricks or model serving endpoint' });
         return;
       }
+      const dup = (await q('SELECT id FROM app.project_agents WHERE engagement_id = $1 AND lower(name) = lower($2)', [engId, name])).rows[0];
+      if (dup) {
+        res.status(409).json({ error: `This project already has an agent named ${name}` });
+        return;
+      }
+      const endpointBacked = ENDPOINT_BACKED.includes(agentType);
+      // Resolve liveness at creation so the node shows real state immediately
+      // (and a missing CAN_QUERY grant is visible now, not at first review).
+      const state = endpointBacked && endpointName ? await fetchEndpointState(endpointName) : null;
+      const status = endpointBacked ? endpointStatus(state) : 'configured';
+      const config: Record<string, unknown> = notes ? { notes } : {};
+      if (endpointBacked) {
+        Object.assign(config, {
+          endpoint: endpointName,
+          servedModel: state?.servedModel ?? null,
+          task: state?.task ?? null,
+          configUpdate: state?.configUpdate ?? null,
+          endpointError: state?.error ?? null,
+          checkedAt: new Date().toISOString(),
+        });
+      }
       const inserted = await q(
-        `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, endpoint_type, config, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        `INSERT INTO app.project_agents
+           (engagement_id, name, agent_type, role, description, harness, model_provider, model, endpoint_type, endpoint_name, status, config, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
         [
           engId,
           name,
           agentType,
+          role,
+          description ?? null,
           harness ?? null,
-          modelProvider ?? null,
-          model ?? null,
-          endpointType ?? null,
-          JSON.stringify(notes ? { notes } : {}),
+          modelProvider ?? (endpointBacked ? 'databricks' : null),
+          model ?? state?.servedModel ?? null,
+          endpointType ?? (endpointBacked ? 'model-serving' : null),
+          endpointName ?? null,
+          status,
+          JSON.stringify(config),
           who.email,
         ],
       );
-      console.log(`[agents] configured agent '${name}' (${harness ?? modelProvider ?? agentType}) for ${engId} — deployment stubbed`);
+      const what = endpointBacked ? `${agentType} endpoint '${endpointName ?? ''}'` : (harness ?? modelProvider ?? agentType);
+      console.log(`[agents] registered agent '${name}' (${what}, role ${role}) for ${engId} — status ${status}`);
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
          VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
-        [engId, `Configured agent ${name}${harness ? ` (${harness})` : ''} — deployment pending rollout.`],
+        [
+          engId,
+          endpointBacked
+            ? `Registered ${agentType === 'agentbricks' ? 'AgentBricks' : 'serving endpoint'} agent ${name} (${endpointName ?? ''}) as ${role} — endpoint ${status}.`
+            : `Configured agent ${name}${harness ? ` (${harness})` : ''} — deployment pending rollout.`,
+        ],
       );
-      res.status(201).json(inserted.rows[0]);
+      res.status(201).json({ ...inserted.rows[0], endpointError: state?.error ?? null });
     } catch (err) {
-      console.error('deploy agent failed:', err);
+      console.error('register agent failed:', err);
       res.status(500).json({ error: 'Failed to save the agent configuration' });
+    }
+  });
+
+  /** Edit the mutable parts of a stored agent: what it is for, and where it lives. */
+  app.patch('/api/projects/:id/agents/:agentId', async (req, res) => {
+    const parsed = UpdateAgentBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid agent update' });
+      return;
+    }
+    try {
+      const engId = req.params.id;
+      const who = await requireLead(req, res, engId);
+      if (!who) return;
+      const row = (await q('SELECT * FROM app.project_agents WHERE id = $1 AND engagement_id = $2', [Number(req.params.agentId), engId]))
+        .rows[0];
+      if (!row) {
+        res.status(404).json({ error: 'Agent not found on this project' });
+        return;
+      }
+      const { role, description, endpointName } = parsed.data;
+      const updated = await q(
+        `UPDATE app.project_agents
+         SET role = COALESCE($2, role), description = COALESCE($3, description), endpoint_name = COALESCE($4, endpoint_name)
+         WHERE id = $1 RETURNING *`,
+        [num(row.id), role ?? null, description ?? null, endpointName ?? null],
+      );
+      res.json(updated.rows[0]);
+    } catch (err) {
+      console.error('update agent failed:', err);
+      res.status(500).json({ error: 'Failed to update the agent' });
+    }
+  });
+
+  /**
+   * Remove a stored agent. Observed runners are not stored records and cannot
+   * be deleted here — they disappear when their task history does.
+   */
+  app.delete('/api/projects/:id/agents/:agentId', async (req, res) => {
+    try {
+      const engId = req.params.id;
+      const who = await requireLead(req, res, engId);
+      if (!who) return;
+      const row = (await q('SELECT name, created_by FROM app.project_agents WHERE id = $1 AND engagement_id = $2', [
+        Number(req.params.agentId),
+        engId,
+      ])).rows[0];
+      if (!row) {
+        res.status(404).json({ error: 'Agent not found on this project' });
+        return;
+      }
+      if (txt(row.created_by).startsWith('system:')) {
+        res.status(409).json({ error: 'System-synced agents cannot be removed — they re-register on the next sync' });
+        return;
+      }
+      await q('DELETE FROM app.project_agents WHERE id = $1', [Number(req.params.agentId)]);
+      await q(
+        `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
+         VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
+        [engId, `Removed agent ${txt(row.name)} from the project.`],
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('delete agent failed:', err);
+      res.status(500).json({ error: 'Failed to remove the agent' });
     }
   });
 }
