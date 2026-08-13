@@ -191,8 +191,11 @@ const MIGRATIONS = [
     lead_email TEXT,
     UNIQUE (connection_id, pr_number)
   )` },
-  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_ticket ON app.pr_review_escalations (ticket_key)` },
-  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_stage ON app.pr_review_escalations (stage)` },
+  // On environments where boot created this SP-owned table first, the dev
+  // role cannot add its optional indexes. Do not block required owner-role
+  // migrations (such as repo_prs columns) on that harmless ownership split.
+  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_ticket ON app.pr_review_escalations (ticket_key)`, bestEffort: true },
+  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_stage ON app.pr_review_escalations (stage)`, bestEffort: true },
   { sql: `CREATE TABLE IF NOT EXISTS app.ticket_attachments (
     id TEXT PRIMARY KEY,
     ticket_key TEXT NOT NULL REFERENCES app.tickets(key) ON DELETE CASCADE,
