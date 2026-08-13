@@ -138,6 +138,12 @@ that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
 - **Be chatty**: progress note at claim, at plan, and before pushing;
   silent heartbeat at least every 2 minutes during long runs; raise a flag
   (`/flag`) when stuck instead of guessing or dying quietly.
+- Environment is per project, not per runner: the Config tab's base image and
+  preferred libraries ride along in the claim payload as `runnerConfig`, and
+  the runner provisions from it before launching the agent. Entries are
+  validated when a lead saves them, so a provisioning failure means the
+  environment is broken (network, registry, missing wheel) — flag and fail the
+  task rather than working in a half-built environment.
 - **Be readable**: comment bodies render as markdown in the drawer, so notes,
   flags and completion summaries use short paragraphs, bullets once there are
   three or more items, and `code` for files and identifiers. The rules are a

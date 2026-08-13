@@ -135,8 +135,43 @@ disabled mid-run can always close out cleanly.
 
 The response contains `task` (note `task.id` and `task.instructions`),
 `ticket` (with `description` and `ac` acceptance criteria), `engagement`,
-`comments`, `repo`, `contextFiles`, and `attachments` (context files and
-attachments each carry a relative `url` to download through the app).
+`comments`, `repo`, `contextFiles`, `attachments` (context files and
+attachments each carry a relative `url` to download through the app), and
+`runnerConfig` (see below).
+
+### Runner environment (`runnerConfig`)
+
+The project's **Config** tab sets the base image and preferred libraries for
+its agent sessions; the claim response carries them already validated and
+resolved:
+
+```json
+{
+  "baseImage": "python-3.12",
+  "image": "ghcr.io/datavail-solutions/runner-base:python-3.12",
+  "label": "Python 3.12 (default)",
+  "libraries": [{ "manager": "pip", "name": "pandas", "spec": "pandas==2.2.1" }],
+  "installCommands": [
+    { "manager": "pip", "argv": ["python3", "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "pandas==2.2.1"] }
+  ]
+}
+```
+
+Provision before launching the agent, and note two contracts:
+
+- **`installCommands` are argv arrays, never shell strings.** Spawn them
+  directly (`execFile`, not `exec`). Package names are allowlist-validated at
+  save time, so nothing here needs quoting — and nothing here should be given
+  a shell that could interpret it.
+- **A provisioning failure is a delivery failure.** Flag the task and complete
+  it `failed` with the installer's error, rather than handing the agent a
+  half-built environment. The bundled runner does exactly this.
+
+Base images can't be swapped by a VM that is already running, so a runner
+declares what it provides via `RUNNER_BASE_IMAGE` and reports a mismatch in
+its progress note; set `RUNNER_IMAGE_STRICT=1` to fail the task instead of
+delivering work from the wrong environment. Projects that never open the
+Config tab get the default image and no extra libraries.
 
 ### Progress
 

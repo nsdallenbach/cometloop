@@ -10,6 +10,7 @@ import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
+import { runnerConfigForWorkPackage } from './project-config';
 import { humanDuration, recordRunnerPoll } from './fleet';
 import { checkAgentAction, enforceAgentAction } from './agent-security';
 import { runnerCanClaim } from './runner-load-balancing';
@@ -303,6 +304,9 @@ export function setupAgentRoutes(
       null;
     const contextFiles = await listContextFiles(files, engagementId);
     const attachments = await listTicketAttachments(q, ticketKey).catch(() => []);
+    // The project's Config tab, resolved to a base image plus ready-to-spawn
+    // install argv — the runner provisions from this before the agent starts.
+    const runnerConfig = await runnerConfigForWorkPackage(q, engagementId);
     // Prior review rejections ride along so a re-claimed ticket arrives with the
     // reviewer's feedback instead of a cold re-read (DAT-217).
     const rejections = await loadRejections(q, ticketKey).catch(() => []);
@@ -314,6 +318,7 @@ export function setupAgentRoutes(
       repo,
       contextFiles,
       attachments,
+      runnerConfig,
       rejections,
       prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, comments, attachments, rejections),
     };

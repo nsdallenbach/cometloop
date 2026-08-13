@@ -19,6 +19,7 @@ import { PR_ESCALATION_SCHEMA_SQL, setupPrEscalationRoutes, startEscalationPolli
 import { setupContextFileRoutes } from './context-files';
 import { ATTACHMENT_SCHEMA_SQL, deleteAttachmentFiles, setupTicketAttachmentRoutes } from './ticket-attachments';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
+import { PROJECT_CONFIG_SCHEMA_SQL, setupProjectConfigRoutes } from './project-config';
 import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
 import {
   NEEDS_ESTIMATE_TAG,
@@ -227,6 +228,7 @@ async function initSchema(appkit: AppKitServices) {
     ...PR_ESCALATION_SCHEMA_SQL,
     ...PLANNING_REVIEW_SCHEMA_SQL,
     ...TICKET_REVIEW_SCHEMA_SQL,
+    ...PROJECT_CONFIG_SCHEMA_SQL,
   ]) {
     try {
       await appkit.lakebase.query(sql);
@@ -2181,6 +2183,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead, refineFromFile);
     setupFileLibraryRoutes(app, q, appkit.files('files'), requireLead, refineFromFile);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
+    setupProjectConfigRoutes(app, q, requireLead);
     setupLlmHealthRoutes(app, appkit.serving.bind(appkit));
 
     app.post('/api/tickets/:key/comments', async (req, res) => {

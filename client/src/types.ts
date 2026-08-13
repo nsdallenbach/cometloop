@@ -561,6 +561,46 @@ export interface RepoDetail {
   commits: RepoCommit[];
 }
 
+// ---- project runner config (Config tab) ----
+
+export type PackageManager = 'pip' | 'npm' | 'apt';
+
+/** One entry from the server's base-image allowlist — projects can't name their own. */
+export interface RunnerBaseImage {
+  id: string;
+  label: string;
+  image: string;
+  defaultManager: PackageManager;
+  managers: PackageManager[];
+  description: string;
+}
+
+/** A validated library entry: `spec` is what the runner installs. */
+export interface RunnerLibrary {
+  manager: PackageManager;
+  name: string;
+  spec: string;
+}
+
+/** A save-time validation failure, anchored to the field (and line) that caused it. */
+export interface RunnerConfigIssue {
+  field: 'baseImage' | 'libraries';
+  index?: number;
+  value?: string;
+  message: string;
+}
+
+export interface ProjectRunnerConfig {
+  baseImage: string;
+  libraries: RunnerLibrary[];
+  /** False until a lead saves for the first time — the project is on the defaults. */
+  configured: boolean;
+  updatedBy: string;
+  updatedAt: string | null;
+  images: RunnerBaseImage[];
+  maxLibraries: number;
+}
+
 export interface TicketDev {
   prs: RepoPr[];
   commits: RepoCommit[];

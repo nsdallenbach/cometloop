@@ -29,6 +29,14 @@
 //   MAX_RUN_MINUTES   watchdog: kill the agent and fail the task after this
 //                     many minutes (default 180; "0" disables)
 //   ONCE              "1" = run a single task then exit (local testing)
+//   RUNNER_BASE_IMAGE   base image id this runner actually provides (see the
+//                       console's Config tab allowlist). Unset = unknown, and
+//                       image mismatches are reported but not enforced.
+//   RUNNER_IMAGE_STRICT "1" = fail the task when the project asks for a base
+//                       image this runner does not provide, instead of running
+//                       on the wrong one
+//   SKIP_PROVISION      "1" = skip library installs entirely (local dev)
+//   PROVISION_MINUTES   per-install-command timeout (default 10)
 //   DENIED_COOLDOWN_MS  pause after the console refuses a claim on agent-security
 //                     grounds, so a disabled runner idles instead of spinning
 //                     (default 120000)
@@ -47,6 +55,10 @@ const WORK_ROOT = process.env.WORK_ROOT ?? path.join(os.homedir(), 'agent-work')
 const HARNESS = getHarness(process.env.HARNESS);
 const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES ?? 180);
 const ONCE = process.env.ONCE === '1';
+const RUNNER_BASE_IMAGE = process.env.RUNNER_BASE_IMAGE ?? null;
+const RUNNER_IMAGE_STRICT = process.env.RUNNER_IMAGE_STRICT === '1';
+const SKIP_PROVISION = process.env.SKIP_PROVISION === '1';
+const PROVISION_MINUTES = Number(process.env.PROVISION_MINUTES ?? 10);
 /** Pause after the console refuses a claim on security grounds (DAT-212). */
 const DENIED_COOLDOWN_MS = Number(process.env.DENIED_COOLDOWN_MS ?? 120_000);
 
@@ -123,6 +135,70 @@ function fallbackPrompt(pkg) {
     'If GIT_TOKEN is set, push and open the PR with it; otherwise use local credentials.',
     'Before finishing, write RESULT.md here (not in the repo): 2–4 sentences on what you did plus the PR URL.',
   ].join('\n');
+}
+
+/** A provisioning step failed — the task fails before the agent ever starts. */
+class ProvisionError extends Error {}
+
+/**
+ * Apply the project's runner config (console Config tab) before the agent
+ * starts: check the base image, then install the preferred libraries.
+ *
+ * The config arrives already validated and resolved — `installCommands` are
+ * argv arrays, never shell strings, so nothing a user typed into the console
+ * can turn into a command. A bad package name is impossible here: it was
+ * rejected on save.
+ *
+ * Base images are a claim-time concern, not something a running VM can change
+ * for itself. So the runner declares what it provides via RUNNER_BASE_IMAGE
+ * and only reports a mismatch — unless RUNNER_IMAGE_STRICT is set, in which
+ * case a project asking for an image this runner cannot provide fails the task
+ * loudly instead of silently delivering work from the wrong environment.
+ */
+function provision(pkg, dir) {
+  const cfg = pkg.runnerConfig ?? null;
+  if (!cfg) return { notes: [], env: {} };
+  const notes = [];
+  const env = { RUNNER_PROJECT_BASE_IMAGE: String(cfg.baseImage ?? ''), RUNNER_PROJECT_IMAGE: String(cfg.image ?? '') };
+
+  if (RUNNER_BASE_IMAGE && cfg.baseImage && RUNNER_BASE_IMAGE !== cfg.baseImage) {
+    const msg = `project asks for base image "${cfg.baseImage}" but this runner provides "${RUNNER_BASE_IMAGE}"`;
+    if (RUNNER_IMAGE_STRICT) throw new ProvisionError(`Base image mismatch — ${msg}.`);
+    log(`provisioning: ${msg} — continuing (set RUNNER_IMAGE_STRICT=1 to fail instead)`);
+    notes.push(`⚠ ${msg} — the run continued on the runner's image.`);
+  } else if (cfg.baseImage) {
+    log(`provisioning: base image ${cfg.baseImage} (${cfg.image})`);
+  }
+
+  const commands = Array.isArray(cfg.installCommands) ? cfg.installCommands : [];
+  if (commands.length === 0) return { notes, env };
+  if (SKIP_PROVISION) {
+    log(`provisioning: SKIP_PROVISION=1 — skipping ${commands.length} install command(s)`);
+    notes.push(`⚠ Library installs skipped (SKIP_PROVISION=1 on ${os.hostname()}).`);
+    return { notes, env };
+  }
+
+  for (const cmd of commands) {
+    const [bin, ...args] = cmd.argv ?? [];
+    if (!bin) continue;
+    log(`provisioning: ${cmd.manager} install — ${args.slice(-8).join(' ')}`);
+    try {
+      execFileSync(bin, args, { cwd: dir, stdio: 'pipe', timeout: Math.max(1, PROVISION_MINUTES) * 60_000 });
+    } catch (e) {
+      // stderr carries the real reason (missing wheel, 404, no network); the
+      // tail of it is what a human needs on the ticket, not the exit code.
+      const detail = String(e.stderr ?? '')
+        .trim()
+        .split('\n')
+        .slice(-4)
+        .join(' ')
+        .slice(0, 600);
+      throw new ProvisionError(`${cmd.manager} install failed${detail ? `: ${detail}` : ` (${e.message})`}`);
+    }
+  }
+  const count = (cfg.libraries ?? []).length;
+  notes.push(`Provisioned ${cfg.baseImage ?? 'the default image'} with ${count} preferred librar${count === 1 ? 'y' : 'ies'}.`);
+  return { notes, env };
 }
 
 /**
@@ -419,19 +495,45 @@ async function runTask(pkg) {
         )
       : null;
 
+  // Provision the project's runner environment before the agent starts. A
+  // failure here is a delivery failure, not a code failure: the ticket goes
+  // back to the backlog flagged, with the reason on the ticket, rather than
+  // handing the agent a half-built environment and letting it flail.
+  let provisioned;
+  try {
+    provisioned = provision(pkg, dir);
+  } catch (e) {
+    if (!(e instanceof ProvisionError)) throw e;
+    clearInterval(heartbeat);
+    if (watchdog) clearTimeout(watchdog);
+    log(`provisioning failed: ${e.message}`);
+    await call('POST', `/api/agent/work/${id}/flag`, { agent: AGENT, reason: `Runner provisioning failed — ${e.message}` }).catch(() => {});
+    await call('POST', `/api/agent/work/${id}/complete`, {
+      agent: AGENT,
+      outcome: 'failed',
+      summary: [
+        `Runner provisioning failed on ${os.hostname()} before the agent started, so no work was attempted.`,
+        e.message,
+        "Check the project's Config tab — base image and preferred libraries — then re-queue the ticket.",
+      ].join('\n\n'),
+    }).catch(() => {});
+    return;
+  }
+
   await call('POST', `/api/agent/work/${id}/progress`, {
     agent: AGENT,
-    note: `Claimed on ${os.hostname()}; starting ${HARNESS.name} run.`,
+    note: [`Claimed on ${os.hostname()}; starting ${HARNESS.name} run.`, ...provisioned.notes].join(' '),
   }).catch(() => {});
 
   const prompt = pkg.prompt ?? fallbackPrompt(pkg);
   const tools = new ToolCallStream(id);
-  // Process harnesses get the token in their environment; a hosted agent cannot
-  // read our environment, so the adapter has to hand it over in the submission.
+  // Process harnesses get the token and the project's provisioned environment
+  // in their env; a hosted agent cannot read our environment, so the adapter
+  // has to hand the token over in the submission.
   const code =
     HARNESS.mode === 'service'
       ? await runService(prompt, dir, gitToken, tools, run, pkg)
-      : await runAgent(prompt, dir, gitToken ? { GIT_TOKEN: gitToken } : {}, tools, run);
+      : await runAgent(prompt, dir, { ...provisioned.env, ...(gitToken ? { GIT_TOKEN: gitToken } : {}) }, tools, run);
   await tools.flush(); // drain the tail of the feed before completing
   clearInterval(heartbeat);
   if (watchdog) clearTimeout(watchdog);
