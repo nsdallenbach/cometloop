@@ -147,6 +147,23 @@ const AGENTBRICKS_MARK = (size: number): ReactNode => (
   </svg>
 );
 
+/**
+ * Omnigent: a hub with four orbiting nodes — the "omni" fan-out of one hosted
+ * service dispatching many agents. Drawn in the agent token so it reads as
+ * fleet software rather than a vendor logo, and stays legible at 20px because
+ * the nodes sit on the axes rather than clustering.
+ */
+const OMNIGENT_MARK = (size: number): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    <circle cx="12" cy="12" r="7.4" fill="none" stroke="var(--agent)" strokeWidth={1.5} opacity={0.55} />
+    <circle cx="12" cy="12" r="3" fill="var(--agent)" />
+    <circle cx="12" cy="2.9" r="2.1" fill="var(--agent)" />
+    <circle cx="21.1" cy="12" r="2.1" fill="var(--agent)" />
+    <circle cx="12" cy="21.1" r="2.1" fill="var(--agent)" />
+    <circle cx="2.9" cy="12" r="2.1" fill="var(--agent)" />
+  </svg>
+);
+
 /** Codex reuses the OpenAI knot; the harness has no distinct mark. */
 const HARNESSES: Record<string, AgentBrand> = {
   'claude-code': CLAUDE_CODE,
@@ -154,6 +171,7 @@ const HARNESSES: Record<string, AgentBrand> = {
   gemini: { label: 'Gemini CLI', mark: GEMINI_MARK },
   copilot: { label: 'GitHub Copilot', mark: COPILOT_MARK },
   cursor: { label: 'Cursor', mark: CURSOR_MARK },
+  omnigent: { label: 'Omnigent', mark: OMNIGENT_MARK },
 };
 
 /** Anysphere (Cursor's maker) reuses the Cursor cube; it ships no separate mark. */
@@ -164,6 +182,9 @@ const PROVIDERS: Record<string, AgentBrand> = {
   microsoft: { label: 'Microsoft', mark: MICROSOFT_MARK },
   anysphere: { label: 'Anysphere', mark: CURSOR_MARK },
   databricks: { label: 'Databricks', mark: DATABRICKS_MARK },
+  // Omnigent is its own provider (hosted service, vendor-chosen model), so the
+  // harness and provider marks are the same — as with Cursor/Anysphere.
+  omnigent: { label: 'Omnigent', mark: OMNIGENT_MARK },
 };
 
 /** Node-kind marks: an Agent Bricks agent is branded by what it runs on. */
@@ -184,6 +205,7 @@ export const HARNESS_DEFAULT_PROVIDER: Record<string, string> = {
   gemini: 'google',
   copilot: 'microsoft',
   cursor: 'anysphere',
+  omnigent: 'omnigent',
 };
 
 const norm = (v: string) => v.trim().toLowerCase().replace(/[\s_]+/g, '-');

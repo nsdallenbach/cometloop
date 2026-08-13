@@ -102,6 +102,7 @@ export function inferHarness(agentName: string): string {
   if (n.includes('gemini')) return 'gemini';
   if (n.includes('copilot')) return 'copilot';
   if (n.includes('cursor')) return 'cursor';
+  if (n.includes('omnigent')) return 'omnigent';
   return 'claude-code';
 }
 
@@ -116,6 +117,10 @@ export const HARNESS_PROVIDER: Record<string, string> = {
   gemini: 'google',
   copilot: 'microsoft',
   cursor: 'anysphere',
+  // Omnigent is a hosted service rather than a CLI over someone else's model, so
+  // it is its own provider — the model behind a run is the vendor's business
+  // (DAT-221, docs/omnigent-runner-architecture.md).
+  omnigent: 'omnigent',
 };
 
 // ---------- live model-serving state (DAT-203) ----------
