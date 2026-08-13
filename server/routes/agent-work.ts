@@ -9,6 +9,7 @@ import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
+import { runnerCanClaim } from './runner-load-balancing';
 import { loadRejections, rejectionPromptSection, type TicketRejection } from './ticket-review';
 import { commentStyleSection } from './comment-style';
 
@@ -491,7 +492,7 @@ export function setupAgentRoutes(
       const { agent, engagement, ticket } = parsed.data;
       const identity = await resolveIdentity(req);
       const filters: string[] = [`state = 'queued'`];
-      const params: unknown[] = [agent, identity.email];
+      const params: unknown[] = [];
       if (engagement) {
         params.push(engagement);
         filters.push(`engagement_id = $${params.length}`);
@@ -500,18 +501,23 @@ export function setupAgentRoutes(
         params.push(ticket);
         filters.push(`ticket_key = $${params.length}`);
       }
-      // SKIP LOCKED keeps concurrent runners from claiming the same task.
-      const claimed = (
-        await q(
-          `UPDATE app.agent_tasks SET state = 'claimed', agent = $1, agent_identity = $2,
-             claimed_at = NOW(), last_heartbeat = NOW(), updated_at = NOW()
-           WHERE id = (
-             SELECT id FROM app.agent_tasks WHERE ${filters.join(' AND ')}
-             ORDER BY priority DESC, id LIMIT 1 FOR UPDATE SKIP LOCKED
-           ) RETURNING *`,
-          params,
-        )
-      ).rows[0];
+      const candidates = (await q(`SELECT id, engagement_id FROM app.agent_tasks WHERE ${filters.join(' AND ')} ORDER BY priority DESC, id`, params)).rows;
+      let claimed: Record<string, unknown> | undefined;
+      const eligibility = new Map<string, boolean>();
+      for (const candidate of candidates) {
+        const candidateEngagement = String(candidate.engagement_id);
+        if (!eligibility.has(candidateEngagement)) eligibility.set(candidateEngagement, await runnerCanClaim(q, candidateEngagement, agent));
+        if (!eligibility.get(candidateEngagement)) continue;
+        claimed = (
+          await q(
+            `UPDATE app.agent_tasks SET state = 'claimed', agent = $1, agent_identity = $2,
+               claimed_at = NOW(), last_heartbeat = NOW(), updated_at = NOW()
+             WHERE id = $3 AND state = 'queued' RETURNING *`,
+            [agent, identity.email, candidate.id],
+          )
+        ).rows[0];
+        if (claimed) break;
+      }
       if (!claimed) {
         res.status(404).json({ error: 'No queued work matches' });
         return;
