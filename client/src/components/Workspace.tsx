@@ -7,6 +7,7 @@ import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util
 import { runnerBrand } from './RunnerLogo';
 import { dropBoardTicket, laneOf } from '../lib/board-order';
 import { needsEstimate } from '../lib/ticket-hours';
+import { PLANNING_REVIEW_LABEL, planningReviewTitle } from '../lib/planning-review';
 import { Analytics } from './Analytics';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
@@ -250,6 +251,24 @@ export function Workspace({
         <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>{t.key}</span>
         {t.agent && (
           <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◆ AGENT</span>
+        )}
+        {/* DAT-218: the planning agent is rewriting this ticket right now. Per
+            ticket, so several cards can pulse independently. */}
+        {t.planningReview && (
+          <span
+            title={planningReviewTitle(t.planningReview)}
+            style={{
+              ...mono(500, 9),
+              background: 'var(--agentsoft)',
+              color: 'var(--agent)',
+              border: '1px solid var(--agent)',
+              borderRadius: 2,
+              padding: '1px 4px',
+              animation: 'eec-pulse 2.4s infinite',
+            }}
+          >
+            {PLANNING_REVIEW_LABEL}
+          </span>
         )}
         {(() => {
           if (!at) return null;

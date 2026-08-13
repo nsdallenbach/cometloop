@@ -118,6 +118,21 @@ export interface Ticket {
   escalationStage: EscalationStage | null;
   /** PR the escalation is about, when one is live. */
   escalationPr: number | null;
+  /** The planning agent's review pass on this ticket right now (DAT-218);
+   *  null whenever no pass is running. Server-side state, so every ticket
+   *  reports its own — several can be under review at once. */
+  planningReview: PlanningReview | null;
+}
+
+/** Which planning pass is running: the first plan for a chatbox ticket, an
+ *  on-demand re-plan, or a rework triggered by a comment. */
+export type PlanningReviewFlow = 'plan' | 'refine' | 'comment-rework';
+
+/** A live planning-agent review pass, as the board and drawer show it. */
+export interface PlanningReview {
+  flow: PlanningReviewFlow;
+  /** When the pass started; null if the server sent no timestamp. */
+  startedAt: string | null;
 }
 
 /** Stage of a PR review-SLA escalation (DAT-201); cleared rows are never sent. */

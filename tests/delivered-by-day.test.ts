@@ -37,6 +37,7 @@ function ticket(
     activePr: null,
     escalationStage: null,
     escalationPr: null,
+    planningReview: null,
     ...overrides,
   };
 }
