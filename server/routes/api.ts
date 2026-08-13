@@ -6,10 +6,12 @@ import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
 import { PROJECT_AGENTS_SCHEMA_SQL, setupProjectAgentRoutes } from './agents';
+import { projectAccessGuard } from './project-access';
 import { COORDINATION_SCHEMA_SQL, setupCoordinationRoutes } from './coordination';
 import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
 import { PR_REVIEW_SCHEMA_SQL, setupPrReviewRoutes } from './pr-review';
+import { PR_REQUEUE_SCHEMA_SQL } from './pr-requeue';
 import { PR_ESCALATION_SCHEMA_SQL, setupPrEscalationRoutes, startEscalationPolling } from './pr-escalation';
 import { setupContextFileRoutes } from './context-files';
 import { ATTACHMENT_SCHEMA_SQL, deleteAttachmentFiles, setupTicketAttachmentRoutes } from './ticket-attachments';
@@ -25,8 +27,10 @@ import {
 } from './ticket-hours';
 import { invokeModel, setupLlmHealthRoutes } from './llm-health';
 import { normalizeTags } from './ticket-tags';
+import { REPO_CONNECTED_JOIN, doneBlockedReason, gateInputFromRow, loadDeployGates } from './deploy-gate';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
 import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes } from './ticket-consolidate';
+import { commentStyleBrief } from './comment-style';
 import { setupMcpRoutes } from './mcp';
 import { extractText, refinePlan, refineTicketWithBoard, type RefinedPlan, type ScopingAction } from './scoping-agent';
 import {
@@ -141,10 +145,12 @@ const SCHEMA_SQL = [
   `CREATE TABLE IF NOT EXISTS app.team_members (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
+    email TEXT,
     role TEXT NOT NULL,
     skills JSONB NOT NULL DEFAULT '[]',
     load INT NOT NULL DEFAULT 0
   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS team_members_email_unique ON app.team_members (LOWER(email)) WHERE email IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS app.suggestions (
     id TEXT PRIMARY KEY,
     ticket TEXT NOT NULL,
@@ -191,7 +197,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL, ...PR_REVIEW_SCHEMA_SQL, ...PR_ESCALATION_SCHEMA_SQL, ...PLANNING_REVIEW_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL, ...PR_REVIEW_SCHEMA_SQL, ...PR_REQUEUE_SCHEMA_SQL, ...PR_ESCALATION_SCHEMA_SQL, ...PLANNING_REVIEW_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -348,9 +354,10 @@ function activeRoadmapItem(phasesRaw: unknown): string | null {
  * Comment-driven refinement: while no runner has ever picked up a ticket, a
  * new comment is treated as feedback on the plan. The ticket is re-planned
  * with the feedback applied and the planning agent replies in the thread —
- * tagging the commenter, 1-2 plain sentences on what changed. Runs in the
- * background after the comment posts; any failure leaves the comment as a
- * plain comment.
+ * tagging the commenter, then a short markdown note on what changed (DAT-204:
+ * bulleted once there are three or more changes, so the reply is skimmable in
+ * the drawer). Runs in the background after the comment posts; any failure
+ * leaves the comment as a plain comment.
  */
 async function applyCommentFeedback(appkit: AppKitServices, key: string, author: string, feedback: string): Promise<void> {
   const q = (text: string, params?: unknown[]) => appkit.lakebase.query(text, params);
@@ -397,7 +404,13 @@ async function reworkFromComment(
         content: [
           'You are the delivery-planning agent for a consulting delivery board. A team member left feedback on a planned ticket that no agent has started yet. Update the ticket to incorporate the feedback.',
           'Respond with ONLY a JSON object, no code fences:',
-          '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "reply": "1-2 short plain sentences telling the commenter what you changed — no jargon, no filler"}',
+          '{"title": "concise title, max 10 words, plain text", "description": "markdown", "acceptance_criteria": ["testable outcome", ...], "reply": "markdown telling the commenter what you changed — no jargon, no filler"}',
+          [
+            'The reply is posted straight into the ticket thread and rendered as markdown, so a reader has to be able to skim it.',
+            commentStyleBrief(),
+            'One change → one sentence, no bullets. Three or more changes → a one-line lead-in, then one bullet each. Escape the newlines, so as a JSON string value that reads:',
+            '"reply": "Tightened the scope to the staging config.\\n\\n- **Dropped** the production rollout step\\n- Added an AC for `staging.yaml` validation\\n- Kept the rollback plan as-is"',
+          ].join('\n'),
           'Keep the description in the planned format (## Context / ## Approach / ## Dependencies). If the current description contains an "## Original request" section, keep it verbatim at the end. If it contains a ```mermaid diagram, keep it — updated to reflect the reworked plan — unless the feedback removes the need for it. Change only what the feedback calls for; keep everything else as-is.',
           'Current title:',
           asText(t.title),
@@ -421,7 +434,9 @@ async function reworkFromComment(
   const ac = Array.isArray(plan.acceptance_criteria)
     ? plan.acceptance_criteria.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).slice(0, 10)
     : existingAc;
-  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? clipText(plan.reply.trim(), 600) : 'Updated the ticket based on your comment.';
+  // 1200, not 600: a bulleted reply needs the headroom, and clipping mid-list
+  // item is exactly the unreadable output DAT-204 set out to remove.
+  const reply = typeof plan.reply === 'string' && plan.reply.trim() ? clipText(plan.reply.trim(), 1200) : 'Updated the ticket based on your comment.';
 
   console.log(`[api] comment feedback applied to ${key} — plan updated (${ac.length} AC)`);
   await q(`UPDATE app.tickets SET title = $2, description = $3, ac = $4, updated_at = NOW() WHERE key = $1`, [key, title, description, JSON.stringify(ac)]);
@@ -552,7 +567,11 @@ const CreateEngagementBody = z.object({
 
 const MembersBody = z.object({ memberIds: z.array(z.number().int()).max(50) });
 
-const NewMemberBody = z.object({ name: z.string().min(1).max(80), role: z.string().min(1).max(80) });
+const NewMemberBody = z.object({
+  name: z.string().min(1).max(80),
+  email: z.string().email().max(254),
+  role: z.string().min(1).max(80),
+});
 
 const CommentBody = z.object({ body: z.string().min(1).max(4000) });
 
@@ -653,6 +672,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     res.status(403).json({ error: 'Engagement lead access required' });
     return null;
   };
+  const requireProjectAccess = projectAccessGuard(q, resolveIdentity);
 
   const ticketEngagement = async (key: string): Promise<string | null> => {
     const { rows } = await q('SELECT engagement_id FROM app.tickets WHERE key = $1', [key]);
@@ -670,7 +690,15 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const leadOf = (await q('SELECT engagement_id FROM app.engagement_leads WHERE LOWER(email) = LOWER($1)', [id.email])).rows.map(
           (r) => String(r.engagement_id),
         );
-        res.json({ ...id, leadOf });
+        const memberOf = (
+          await q(
+            `SELECT em.engagement_id FROM app.engagement_members em
+             JOIN app.team_members tm ON tm.id = em.member_id
+             WHERE LOWER(tm.email) = LOWER($1)`,
+            [id.email],
+          )
+        ).rows.map((r) => String(r.engagement_id));
+        res.json({ ...id, leadOf, memberOf });
       } catch (err) {
         console.error('me failed:', err);
         res.status(500).json({ error: 'Failed to resolve identity' });
@@ -700,9 +728,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         // escalation stage (DAT-201) so a breached PR review flags the card,
         // and the live planning-agent review pass (DAT-218) so a card shows
         // that the plan is being rewritten right now.
+        // repo_connected completes the deploy gate's inputs (DAT-213) — with
+        // it alongside the PR and deploy joins above, every card can carry the
+        // reason it cannot move to Done without a second round trip.
         const tickets = (
           await q(
-            `SELECT t.*, d.deploy_state, d.deploy_url,
+            `SELECT t.*, d.deploy_state, d.deploy_url, (conn.present IS NOT NULL) AS repo_connected,
                     p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url,
                     ba.branch_name AS active_branch,
                     esc.stage AS escalation_stage, esc.pr_number AS escalation_pr,
@@ -735,10 +766,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                ORDER BY (e.stage = 'flagged') DESC, e.id DESC LIMIT 1
              ) esc ON true
              ${planningReviewJoin('t')}
+             ${REPO_CONNECTED_JOIN}
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
             [id],
           )
-        ).rows;
+        ).rows.map((r) => ({ ...r, done_blocked_reason: doneBlockedReason(gateInputFromRow(r)) }));
         const sources = (await q('SELECT * FROM app.sources WHERE engagement_id = $1 ORDER BY id', [id])).rows;
         const feed = (await q('SELECT * FROM app.feed_items WHERE engagement_id = $1 AND NOT reverted ORDER BY id', [id])).rows;
         const team = (
@@ -881,6 +913,16 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             review = { engagementId: String(current.engagement_id), from: String(current.status) };
           }
           enteredReview = status === 'review' && String(current.status) !== 'review';
+          // DAT-213: Done means shipped. A move into Done needs the ticket's
+          // linked work actually deployed; tickets already in Done, exempt
+          // tickets and repo-less engagements pass straight through.
+          if (status === 'done' && String(current.status) !== 'done') {
+            const blocked = (await loadDeployGates(q, [req.params.key])).get(req.params.key);
+            if (blocked) {
+              res.status(409).json({ error: blocked });
+              return;
+            }
+          }
         }
         const sets: string[] = [];
         const params: unknown[] = [req.params.key];
@@ -1304,6 +1346,24 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             : targets.filter((t) => reviewStates.includes(String(t.status)));
           for (const engagementId of new Set(gated.map((t) => String(t.engagement_id)))) {
             if (!(await requireLead(req, res, engagementId))) return;
+          }
+          // DAT-213: same deploy gate as the single-ticket PATCH. A bulk move
+          // is all-or-nothing — moving the passing subset silently would leave
+          // the user guessing which tickets actually closed.
+          if (patch.status === 'done') {
+            const blocked: { key: string; reason: string }[] = [];
+            for (const [key, reason] of await loadDeployGates(q, keys)) {
+              if (reason !== null) blocked.push({ key, reason });
+            }
+            if (blocked.length > 0) {
+              res.status(409).json({
+                error:
+                  blocked.length === 1
+                    ? blocked[0].reason
+                    : `${String(blocked.length)} tickets are not deployed yet and can't move to Done: ${blocked.map((b) => b.key).join(', ')}. ${blocked[0].reason}`,
+              });
+              return;
+            }
           }
           await q(
             `UPDATE app.tickets SET status = $1,
@@ -1779,13 +1839,36 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       try {
         if (!(await requireAdmin(req, res))) return;
         const result = await q(
-          `INSERT INTO app.team_members (name, role, skills, load) VALUES ($1,$2,'[0,0,0,0,0,0]',0) RETURNING *`,
-          [parsed.data.name.trim(), parsed.data.role.trim().toUpperCase()],
+          `INSERT INTO app.team_members (name, email, role, skills, load) VALUES ($1,LOWER($2),$3,'[0,0,0,0,0,0]',0) RETURNING *`,
+          [parsed.data.name.trim(), parsed.data.email, parsed.data.role.trim().toUpperCase()],
         );
         res.status(201).json(result.rows[0]);
       } catch (err) {
         console.error('add member failed:', err);
         res.status(500).json({ error: 'Failed to add team member' });
+      }
+    });
+
+    app.put('/api/team-members/:id/email', async (req, res) => {
+      const parsed = z.object({ email: z.string().email().max(254) }).safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'A valid workspace email is required' });
+        return;
+      }
+      try {
+        if (!(await requireAdmin(req, res))) return;
+        const updated = await q('UPDATE app.team_members SET email = LOWER($2) WHERE id = $1 RETURNING *', [
+          Number(req.params.id),
+          parsed.data.email,
+        ]);
+        if (updated.rows.length === 0) {
+          res.status(404).json({ error: 'Member not found' });
+          return;
+        }
+        res.json(updated.rows[0]);
+      } catch (err) {
+        console.error('update member email failed:', err);
+        res.status(500).json({ error: 'Failed to update workspace email' });
       }
     });
 
@@ -1849,8 +1932,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupTicketOrderRoutes(app, q);
     setupVelocityRoutes(app, q);
     setupGithubAppRoutes(app);
-    setupAgentRoutes(app, q, appkit.files('files'), requireLead, telemetry);
-    setupProjectAgentRoutes(app, q, requireLead);
+    setupAgentRoutes(app, q, appkit.files('files'), requireProjectAccess, telemetry);
+    setupProjectAgentRoutes(app, q, requireLead, resolveIdentity);
     setupToolCallRoutes(app, q);
     setupCoordinationRoutes(app, q);
     setupPrConflictRoutes(app, q);

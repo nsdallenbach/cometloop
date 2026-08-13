@@ -74,6 +74,7 @@ export function TicketDrawer({
   ticket,
   team,
   lead,
+  runnerAccess,
   agentTask,
   allTickets,
   onOpenTicket,
@@ -93,6 +94,7 @@ export function TicketDrawer({
   ticket: Ticket;
   team: string[];
   lead: boolean;
+  runnerAccess: boolean;
   agentTask: AgentTask | null;
   allTickets: Ticket[];
   onOpenTicket: (key: string) => void;
@@ -132,7 +134,7 @@ export function TicketDrawer({
   const [queueOpen, setQueueOpen] = useState(false);
   const [instructions, setInstructions] = useState('');
   const agentActive = agentTask !== null && ['queued', 'claimed', 'working'].includes(agentTask.state);
-  const canQueue = lead && !agentActive && ['backlog', 'progress'].includes(ticket.status);
+  const canQueue = runnerAccess && !agentActive && ['backlog', 'progress'].includes(ticket.status);
   const [refining, setRefining] = useState(false);
   const [loaded, setLoaded] = useState<{ key: string; list: TicketComment[] | null; error: boolean } | null>(null);
   const [dev, setDev] = useState<{ key: string; data: TicketDev | null } | null>(null);
@@ -644,6 +646,14 @@ export function TicketDrawer({
                 ))}
               </select>
             </div>
+            {/* Deploy gate (DAT-213): the board refuses a drop into Done while
+                this is set, so the drawer spells out what is missing. */}
+            {ticket.doneBlockedReason !== null && (
+              <div style={{ gridColumn: '1 / -1', border: '1px solid var(--warn)', borderRadius: 3, padding: '8px 11px' }}>
+                <div style={{ ...mono(400, 9), color: 'var(--warn)', letterSpacing: '.08em', marginBottom: 3 }}>⛔ BLOCKED FROM DONE</div>
+                <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>{ticket.doneBlockedReason}</div>
+              </div>
+            )}
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>◆ AGENT ESTIMATE (H)</div>
               <input
@@ -1093,7 +1103,7 @@ export function TicketDrawer({
                           {agentTask.agent}
                         </span>
                       )}
-                      {agentActive && lead && (
+                      {agentActive && runnerAccess && (
                         <button
                           className="hv-bad"
                           onClick={onCancelAgent}

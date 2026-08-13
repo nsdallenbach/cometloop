@@ -204,3 +204,4 @@ See:
 
 - [docs/devbox-integration.md](docs/devbox-integration.md) -- the HTTP contract: authentication, endpoints, and a minimal runner loop
 - [devbox-runner/README.md](devbox-runner/README.md) -- the reference runner implementation and how to run it
+- [docs/omnigent-runner-architecture.md](docs/omnigent-runner-architecture.md) -- running a **hosted** agent as a runner: the service-adapter seam, task handoff, polling, credentials and open vendor questions

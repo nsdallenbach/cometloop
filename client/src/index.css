@@ -271,6 +271,14 @@ tr.hv-row td {
   animation: eec-fadeUp 0.2s ease both;
 }
 
+/* Agent-map zoom controls — dimmed at the min/max scale bound. The disabled
+   state is set imperatively from a MotionValue subscription (so zooming never
+   re-renders the map), which is why the look lives here and not inline. */
+.eec-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .eec *,
   .eec *::before,
@@ -616,4 +624,50 @@ tr.hv-row:hover td {
 .hv-lift:hover {
   transform: translateY(-2px);
   filter: brightness(1.06);
+}
+
+/* ============ Landing page layout ============
+   The landing page is otherwise inline-styled like the rest of the client;
+   these two grids live here because they need breakpoints, which inline
+   styles cannot express. Feature rows alternate sides via an inline
+   `direction: rtl`, so the stacked layout has to override it. */
+.lp-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 40px;
+  align-items: center;
+}
+.lp-feature {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(28px, 5vw, 72px);
+  align-items: center;
+  padding: 54px 0;
+}
+
+/* Tablet and below: one column, text first, visuals underneath. */
+@media (max-width: 900px) {
+  .lp-hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 36px;
+    padding: 64px 0 48px;
+  }
+  .lp-feature {
+    grid-template-columns: minmax(0, 1fr);
+    direction: ltr !important;
+    gap: 26px;
+    padding: 40px 0;
+  }
+}
+
+/* Phones: tighter rhythm, and the hero ticket sits closer to the copy. */
+@media (max-width: 560px) {
+  .lp-hero {
+    gap: 28px;
+    padding: 52px 0 40px;
+  }
+  .lp-feature {
+    gap: 22px;
+    padding: 34px 0;
+  }
 }

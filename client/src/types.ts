@@ -90,6 +90,13 @@ export interface Ticket {
   tags: string[];
   deployState: DeployState | null;
   deployUrl: string | null;
+  /**
+   * Why this ticket cannot move to Done yet (DAT-213) — null when the move is
+   * allowed, and always null for tickets already in Done, exempt tickets and
+   * engagements with no repo connected. Only the board detail payload carries
+   * it; the cross-project ticket reads leave it null.
+   */
+  doneBlockedReason: string | null;
   /** Roadmap item (phase name) this ticket is linked to; null = unscheduled. */
   roadmapItem: string | null;
   /** Git branch for the work: manual value, else the branch a runner announced
@@ -169,6 +176,7 @@ export interface ContextSource {
 export interface TeamMember {
   id: number;
   name: string;
+  email: string | null;
   role: string;
   skills: number[];
   load: number;
@@ -377,6 +385,7 @@ export interface Me {
   email: string;
   role: Role;
   leadOf: string[];
+  memberOf: string[];
 }
 
 export interface TicketComment {

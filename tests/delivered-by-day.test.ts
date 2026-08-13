@@ -28,6 +28,7 @@ function ticket(
     tags: [],
     deployState: null,
     deployUrl: null,
+    doneBlockedReason: null,
     roadmapItem: null,
     branch: null,
     runner: null,
