@@ -25,6 +25,7 @@ const STATUS_ORDER: [string, string][] = [
   ['backlog', 'BACKLOG'],
   ['progress', 'IN PROGRESS'],
   ['review', 'REVIEW'],
+  ['deploying', 'DEPLOYING'],
   ['done', 'DONE'],
 ];
 
@@ -71,7 +72,7 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
   const statusData = useMemo(
     () =>
       STATUS_ORDER.map(([key, name]) => ({ name, count: tickets.filter((t) => t.status === key).length })).filter(
-        (d) => d.count > 0 || ['BACKLOG', 'REVIEW', 'DONE'].includes(d.name),
+        (d) => d.count > 0 || ['BACKLOG', 'REVIEW', 'DEPLOYING', 'DONE'].includes(d.name),
       ),
     [tickets],
   );

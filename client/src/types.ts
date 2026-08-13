@@ -1,5 +1,8 @@
 export type Health = 'ok' | 'risk' | 'off';
-export type TicketStatus = 'backlog' | 'progress' | 'review' | 'done' | 'proposed' | 'dismissed';
+/** Board pipeline: backlog → progress → review → deploying → done, plus the
+ *  two off-board agent-proposal states. 'deploying' (DAT-222) is the lane an
+ *  approved ticket sits in while its merge ships — Done means deployed. */
+export type TicketStatus = 'backlog' | 'progress' | 'review' | 'deploying' | 'done' | 'proposed' | 'dismissed';
 export type TicketActivity = 'refinement_in_progress' | 'planning_response_in_progress';
 
 export interface Phase {

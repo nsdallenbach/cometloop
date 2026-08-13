@@ -46,6 +46,10 @@ describe('laneOf', () => {
     expect(laneOf(ticket('T', 'review'))).toBe('review');
     expect(laneOf(ticket('T', 'done', NOW))).toBe('done');
   });
+
+  it('gives Deploying its own lane between Review and Done (DAT-222)', () => {
+    expect(laneOf(ticket('T', 'deploying'))).toBe('deploying');
+  });
 });
 
 describe('dropBoardTicket', () => {
@@ -98,6 +102,20 @@ describe('dropBoardTicket', () => {
     const r = dropBoardTicket(board, 'A', 'done', [], 0, NOW);
     expect(keys(r!.tickets)).toEqual(['B', 'C', 'R', 'A']);
     expect(r!.statusChanged).toBe(true);
+  });
+
+  it('moves an approved ticket into the Deploying lane without stamping doneAt', () => {
+    const r = dropBoardTicket(board, 'R', 'deploying', [], 0, NOW);
+    const moved = r!.tickets.find((t) => t.key === 'R')!;
+    expect(r!.statusChanged).toBe(true);
+    expect(moved.status).toBe('deploying');
+    expect(moved.doneAt).toBeNull();
+  });
+
+  it('clears doneAt when a Done ticket is pulled back into Deploying', () => {
+    const done = [ticket('D', 'done', NOW), ...board];
+    const out = dropBoardTicket(done, 'D', 'deploying', [], 0, NOW);
+    expect(out!.tickets.find((t) => t.key === 'D')!.doneAt).toBeNull();
   });
 
   it('returns null for unknown keys', () => {

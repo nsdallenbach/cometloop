@@ -90,9 +90,14 @@ export interface TicketLifecycle {
   startedAt: string | null;
   /** Last transition into done, while currently done. */
   doneAt: string | null;
-  /** Completed review passes: entered → left, with whether it exited straight to done. */
-  reviews: { enteredAt: string; leftAt: string; toDone: boolean }[];
+  /** Completed review passes: entered → left, with whether the pass was a pass —
+   *  i.e. the ticket moved forward (approved into Deploying, or straight to
+   *  Done) rather than being bounced back for rework. */
+  reviews: { enteredAt: string; leftAt: string; approved: boolean }[];
 }
+
+/** Leaving Review for one of these means the reviewer approved the work. */
+const APPROVED_EXITS = new Set(['deploying', 'done']);
 
 export function replayLifecycles(events: VelocityEvent[]): Map<string, TicketLifecycle> {
   const map = new Map<string, TicketLifecycle>();
@@ -106,7 +111,7 @@ export function replayLifecycles(events: VelocityEvent[]): Map<string, TicketLif
     if (t.startedAt === null && (ev.toStatus === 'progress' || ev.toStatus === 'review')) t.startedAt = ev.createdAt;
     const reviewEntered = inReview.get(ev.ticketKey);
     if (reviewEntered !== undefined && ev.toStatus !== 'review') {
-      t.reviews.push({ enteredAt: reviewEntered, leftAt: ev.createdAt, toDone: ev.toStatus === 'done' });
+      t.reviews.push({ enteredAt: reviewEntered, leftAt: ev.createdAt, approved: APPROVED_EXITS.has(ev.toStatus) });
       inReview.delete(ev.ticketKey);
     }
     if (ev.toStatus === 'review' && reviewEntered === undefined) inReview.set(ev.ticketKey, ev.createdAt);
@@ -123,7 +128,7 @@ export function weekStart(iso: string): string {
   return monday.toISOString().slice(0, 10);
 }
 
-const OPEN_STATUSES = new Set(['backlog', 'progress', 'review']);
+const OPEN_STATUSES = new Set(['backlog', 'progress', 'review', 'deploying']);
 
 function openSeries(events: VelocityEvent[], nowIso: string, days: number): { date: string; open: number }[] {
   if (events.length === 0) return [];
@@ -191,15 +196,15 @@ export function computeVelocity(
   const decisionCur: number[] = [];
   const decisionPrev: number[] = [];
   let reviewPasses = 0;
-  let reviewToDone = 0;
+  let reviewApproved = 0;
   const reviewAll: number[] = [];
   for (const t of life.values()) {
     for (const r of t.reviews) {
       const dwell = hoursBetween(r.enteredAt, r.leftAt);
       reviewAll.push(dwell);
       reviewPasses++;
-      if (r.toDone) {
-        reviewToDone++;
+      if (r.approved) {
+        reviewApproved++;
         if (inWindow(r.leftAt)) decisionCur.push(dwell);
         else if (inPrev(r.leftAt)) decisionPrev.push(dwell);
       }
@@ -298,7 +303,7 @@ export function computeVelocity(
     leadTimeHrs: { current: median(leadCur), previous: median(leadPrev), samples: leadCur.length },
     cycleTimeHrs: { current: median(cycleCur), previous: median(cyclePrev), samples: cycleCur.length },
     decisionTimeHrs: { current: median(decisionCur), previous: median(decisionPrev), samples: decisionCur.length },
-    reviewPassRate: reviewPasses > 0 ? Math.round((reviewToDone / reviewPasses) * 100) : null,
+    reviewPassRate: reviewPasses > 0 ? Math.round((reviewApproved / reviewPasses) * 100) : null,
     stages: [
       { key: 'queue', label: 'Queue wait (deploy → agent claims)', medianHrs: median(queueWaits), samples: queueWaits.length },
       { key: 'build', label: 'Build (work start → review)', medianHrs: median(buildTimes), samples: buildTimes.length },

@@ -7,9 +7,18 @@ import type { Ticket, TicketStatus } from '../types';
  * lane at a given slot.
  */
 
+/** The status lanes the kanban renders, in pipeline order. */
+export type BoardLane = Extract<TicketStatus, 'backlog' | 'review' | 'deploying' | 'done'>;
+
 /** Which board lane a ticket renders in (In Progress folds into Backlog). */
-export function laneOf(t: Ticket): Extract<TicketStatus, 'backlog' | 'review' | 'done'> {
-  return t.status === 'done' ? 'done' : t.status === 'review' ? 'review' : 'backlog';
+export function laneOf(t: Ticket): BoardLane {
+  return t.status === 'done'
+    ? 'done'
+    : t.status === 'deploying'
+      ? 'deploying'
+      : t.status === 'review'
+        ? 'review'
+        : 'backlog';
 }
 
 /**
@@ -23,7 +32,7 @@ export function laneOf(t: Ticket): Extract<TicketStatus, 'backlog' | 'review' | 
 export function dropBoardTicket(
   tickets: Ticket[],
   key: string,
-  lane: Extract<TicketStatus, 'backlog' | 'review' | 'done'>,
+  lane: BoardLane,
   laneList: Ticket[],
   idx: number,
   nowIso: string,

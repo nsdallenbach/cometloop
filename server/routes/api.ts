@@ -46,6 +46,7 @@ import {
   withPlanningReview,
 } from './planning-review';
 import { setupTicketOrderRoutes } from './ticket-order';
+import { setupTicketDecisionRoutes } from './ticket-decision';
 import { clipText, installUtf8BodyRecovery } from './utf8-body';
 import { setupVelocityRoutes } from './velocity';
 import {
@@ -623,7 +624,7 @@ const ProposalPlanSchema = z.object({
 
 // Exported for the required-estimates unit tests (DAT-195).
 export const PatchTicketBody = z.object({
-  status: z.enum(['backlog', 'progress', 'review', 'done', 'proposed', 'dismissed']).optional(),
+  status: z.enum(['backlog', 'progress', 'review', 'deploying', 'done', 'proposed', 'dismissed']).optional(),
   assignee: z.string().optional(),
   // Matches the ceiling refined plans can reach; the description doubles as
   // the agent prompt, so edits keep the raw markdown untouched.
@@ -2159,6 +2160,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupTicketConsolidateRoutes(app, q, requireLead);
     setupMcpRoutes(app, q);
     setupTicketOrderRoutes(app, q);
+    setupTicketDecisionRoutes(app, q);
     setupVelocityRoutes(app, q);
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireProjectAccess, telemetry);

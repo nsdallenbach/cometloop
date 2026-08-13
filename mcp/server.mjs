@@ -151,7 +151,7 @@ tool(
   {
     engagement_id: z.string(),
     query: z.string().optional().describe('Keywords to match in title or description; omit to list the board'),
-    status: z.enum(['backlog', 'proposed', 'progress', 'review', 'done']).optional(),
+    status: z.enum(['backlog', 'proposed', 'progress', 'review', 'deploying', 'done']).optional(),
     limit: z.number().int().min(1).max(100).optional().describe('Max results (default 30)'),
   },
   async ({ engagement_id, query, status, limit }) => {
@@ -223,8 +223,8 @@ tool(
 
 tool(
   'move_ticket',
-  'Move a ticket to a board status. Done requires the ticket\'s linked PR to be merged and deployed — otherwise the move is rejected with the reason (tag the ticket "no-deploy" if it ships nothing deployable).',
-  { key: z.string(), status: z.enum(['backlog', 'progress', 'review', 'done']) },
+  'Move a ticket to a board status. "deploying" is the lane between review sign-off and Done — approved work whose merge is shipping. Done requires the linked PR to be merged and deployed; otherwise the move is rejected with the reason (tag the ticket "no-deploy" if it ships nothing deployable).',
+  { key: z.string(), status: z.enum(['backlog', 'progress', 'review', 'deploying', 'done']) },
   async ({ key, status }) => trimTicket(await call('PATCH', `/api/tickets/${encodeURIComponent(key)}`, { status })),
 );
 

@@ -376,6 +376,15 @@ export const api = {
     return http(`/api/tickets/${key}`, { method: 'PATCH', ...json(patch) });
   },
 
+  /**
+   * Record a review decision (DAT-222): approve moves the ticket into the
+   * Deploying lane, reject sends it back to Backlog and needs a note — the
+   * server refuses a blank one, so the drawer never has to guess.
+   */
+  decideTicket(key: string, decision: 'approve' | 'reject', note?: string): Promise<{ ok: boolean; status: TicketStatus }> {
+    return http(`/api/tickets/${encodeURIComponent(key)}/decision`, { method: 'POST', ...json({ decision, note }) });
+  },
+
   saveRoadmapSettings(engId: string, settings: RoadmapSettings): Promise<RoadmapSettings> {
     return http<RoadmapSettings>(`/api/engagements/${engId}/roadmap-settings`, { method: 'PATCH', ...json(settings) });
   },

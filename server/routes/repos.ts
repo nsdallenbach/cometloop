@@ -613,22 +613,24 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
       prOpenedHook?.(conn.engagement_id, ticketKey, p.number);
     } else if (p.state === 'merged' && status && status !== 'done' && status !== 'dismissed') {
       if (prev) {
-        // Live merge transition: hold in Review and watch the deploy pipeline.
+        // Live merge transition: the ticket parks in Deploying while the
+        // pipeline runs (DAT-222) — the merge is the sign-off, whether or not
+        // a reviewer pressed Approve first, and Done still waits for green.
         await q(
           `UPDATE app.repo_prs SET deploy_state = 'pending', deploy_started_at = NOW()
            WHERE connection_id = $1 AND number = $2 AND deploy_state IS NULL`,
           [conn.id, p.number]
         );
-        if (status === 'backlog' || status === 'progress') {
-          await setTicketStatus(q, ticketKey, 'review');
-          ticketStatus.set(ticketKey, 'review');
+        if (status !== 'deploying') {
+          await setTicketStatus(q, ticketKey, 'deploying');
+          ticketStatus.set(ticketKey, 'deploying');
           const ticket = ticketsByKey.get(ticketKey);
           if (ticket)
             await createNotification(q, {
               recipient: String(ticket.assignee),
               type: 'repo_status',
-              title: `${ticketKey} moved to Review`,
-              message: `PR #${p.number} merged and deployment is pending`,
+              title: `${ticketKey} moved to Deploying`,
+              message: `PR #${p.number} merged and the pipeline is running`,
               ticketKey,
               engagementId: conn.engagement_id,
             });
@@ -636,11 +638,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
            VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
-          [
-            conn.engagement_id,
-            `PR #${p.number} merged — ${ticketKey} holds in Review while the deploy pipeline runs.`,
-            conn.repo_name,
-          ]
+          [conn.engagement_id, `PR #${p.number} merged — ${ticketKey} moved to Deploying while the pipeline runs.`, conn.repo_name],
         );
       } else {
         // First sight of an already-merged PR (initial sync of a connection):
@@ -773,11 +771,7 @@ async function settleDeploy(
     await q(
       `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
        VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
-      [
-        conn.engagement_id,
-        `⚠ Deploy pipeline failed for PR #${prNumber} — ${ticketKey} stays in Review.`,
-        conn.repo_name,
-      ]
+      [conn.engagement_id, `⚠ Deploy pipeline failed for PR #${prNumber} — ${ticketKey} stays in Deploying until a passing run.`, conn.repo_name],
     );
     return;
   }
@@ -1084,13 +1078,15 @@ export function setupRepoRoutes(
          WHERE connection_id = $1 AND number = $2`,
         [conn.id, number, sha]
       );
-      if (['backlog', 'progress'].includes(String(ticket.status))) {
-        await setTicketStatus(q, key, 'review');
+      // Merging from the drawer is the sign-off: the ticket lands in Deploying
+      // and stays there until the pipeline goes green (DAT-222).
+      if (!['deploying', 'done', 'dismissed'].includes(String(ticket.status))) {
+        await setTicketStatus(q, key, 'deploying');
         await createNotification(q, {
           recipient: String(ticket.assignee),
           type: 'repo_status',
-          title: `${key} moved to Review`,
-          message: `PR #${number} merged and deployment is pending`,
+          title: `${key} moved to Deploying`,
+          message: `PR #${number} merged and the pipeline is running`,
           ticketKey: key,
           engagementId,
         });
@@ -1098,11 +1094,7 @@ export function setupRepoRoutes(
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
          VALUES ($1, 'YOU', $2, 'JUST NOW', $3, false)`,
-        [
-          engagementId,
-          `Merged PR #${number} for ${key} — holding in Review until the deploy pipeline succeeds.`,
-          conn.repo_name,
-        ]
+        [engagementId, `Merged PR #${number} for ${key} — Deploying until the pipeline succeeds.`, conn.repo_name],
       );
       // Immediate first check so fast pipelines register without waiting for the poller.
       await checkDeployments(q, conn).catch(() => {});

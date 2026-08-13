@@ -130,7 +130,7 @@ sequenceDiagram
     L->>G: review + merge (human gate)
     G->>CI: push to main → typecheck, lint, build, bundle deploy
     C->>C: deploy watch polls Actions for the merge SHA
-    C-->>L: pipeline green → ticket to Done (red → stays in Review, feed warning)
+    C-->>L: pipeline green → ticket to Done (red → stays in Deploying, feed warning)
 ```
 
 The queue is plain Postgres (`app.agent_tasks`): runners long-poll a wait
@@ -204,12 +204,13 @@ never strands a run mid-flight. Stopping a live run is a board cancel.
 
 Ticket keys are the join key for everything: a `DAT-nnn` in a branch name or
 PR title auto-links commits and PRs to the ticket. Automation then drives
-the board: PR opened → Review; PR merged → deploy watch (the ticket holds in
-Review while Actions runs for the merge SHA) → Done on green, stays with a
-warning on red. The same deploy fact gates the manual path: a user, API or
-MCP move into Done is rejected until the linked PR is merged and its pipeline
-has succeeded, so Done always means shipped (tickets already in Done, tickets
-tagged `no-deploy`, and engagements with no repo connected are exempt).
+the board: PR opened → Review; PR merged → Deploying, the lane between
+sign-off and Done where the ticket waits while Actions runs for the merge SHA
+→ Done on green, stays in Deploying with a warning on red. A reviewer can put
+a ticket in Deploying by hand too: the drawer's Review bar approves in one
+click (or rejects with a required note, which sends the ticket back to Backlog
+and saves the note to its history) and then loads the next ticket in Review,
+so a queue of sign-offs is worked without returning to the board.
 Merging is possible from the ticket drawer itself
 (lead-only, click-to-confirm). Conflict tooling gives agents a safe path:
 report conflicts, auto-resolve only trivial ones, escalate anything that
