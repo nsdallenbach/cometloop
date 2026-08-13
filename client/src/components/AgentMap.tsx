@@ -4,6 +4,7 @@ import { api } from '../api';
 import type { AgentsOverview, AgentsOverviewProject, ProjectAgent, ProjectAgentRole, ProjectAgentType } from '../types';
 import { HEALTH_COLOR, mono } from '../util';
 import { agentBrand, HARNESS_DEFAULT_PROVIDER, HARNESS_OPTIONS, PROVIDER_OPTIONS } from './AgentLogos';
+import { MAP_LINKS_CLASS, MAP_MARK_CLASS, MapViewport } from './MapViewport';
 
 /**
  * /agents — the agent architecture map. Every project renders as a central hub
@@ -81,7 +82,10 @@ function EmptySpoke({ x, y, lead }: { x: number; y: number; lead: boolean }) {
     <div
       style={{ position: 'absolute', left: x - 62, top: y - 30, width: 124, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, opacity: 0.75 }}
     >
-      <div style={{ width: 38, height: 38, borderRadius: 9, border: '1px dashed var(--line2)', display: 'grid', placeItems: 'center', color: 'var(--tx3)', fontSize: 15 }}>
+      <div
+        className={MAP_MARK_CLASS}
+        style={{ width: 38, height: 38, borderRadius: 9, border: '1px dashed var(--line2)', display: 'grid', placeItems: 'center', color: 'var(--tx3)', fontSize: 15 }}
+      >
         ◇
       </div>
       <div style={{ ...mono(400, 8), color: 'var(--tx3)', letterSpacing: '.08em', textAlign: 'center' }}>
@@ -120,6 +124,7 @@ function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number;
       style={{ position: 'absolute', left: x - 62, top: y - 30, width: 124, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, cursor: 'pointer' }}
     >
       <div
+        className={MAP_MARK_CLASS}
         style={{
           position: 'relative',
           width: 38,
@@ -216,25 +221,29 @@ function ProjectCluster({
   return (
     <div style={{ position: 'relative', width: geom.w, height: geom.h, flex: 'none' }}>
       <svg width={geom.w} height={geom.h} aria-hidden="true" style={{ position: 'absolute', inset: 0 }}>
-        {spots.map((p, i) => {
-          const agent = agents[i];
-          const empty = !agent;
-          const { staged, unreachable } = agent ? spokeState(agent) : { staged: false, unreachable: false };
-          const active = agent?.status === 'active';
-          return (
-            <line
-              key={agent?.id ?? 'empty'}
-              x1={geom.cx}
-              y1={geom.cy}
-              x2={p.x}
-              y2={p.y}
-              stroke={active ? 'var(--agent)' : unreachable ? 'var(--bad)' : staged ? 'var(--warn)' : 'var(--line2)'}
-              strokeWidth={active ? 1.6 : 1.1}
-              strokeDasharray={empty || staged || unreachable ? '4 4' : undefined}
-              opacity={empty ? 0.55 : 0.9}
-            />
-          );
-        })}
+        {/* One group per cluster so a zoom settle can lift the whole spoke
+            bundle with anime.js in a single animation, not one per line. */}
+        <g className={MAP_LINKS_CLASS}>
+          {spots.map((p, i) => {
+            const agent = agents[i];
+            const empty = !agent;
+            const { staged, unreachable } = agent ? spokeState(agent) : { staged: false, unreachable: false };
+            const active = agent?.status === 'active';
+            return (
+              <line
+                key={agent?.id ?? 'empty'}
+                x1={geom.cx}
+                y1={geom.cy}
+                x2={p.x}
+                y2={p.y}
+                stroke={active ? 'var(--agent)' : unreachable ? 'var(--bad)' : staged ? 'var(--warn)' : 'var(--line2)'}
+                strokeWidth={active ? 1.6 : 1.1}
+                strokeDasharray={empty || staged || unreachable ? '4 4' : undefined}
+                opacity={empty ? 0.55 : 0.9}
+              />
+            );
+          })}
+        </g>
       </svg>
       {spots.map((p, i) =>
         agents[i] ? (
@@ -245,6 +254,7 @@ function ProjectCluster({
       )}
       {/* Hub */}
       <div
+        className={MAP_MARK_CLASS}
         style={{
           position: 'absolute',
           left: geom.cx - 78,
@@ -762,8 +772,14 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
   }, [data]);
 
   return (
-    <div className="tab-pane" style={{ flex: 1, overflowY: 'auto', padding: '18px 22px 30px' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
+    // Column layout with the pane itself clipped: the constellation lives in a
+    // zoomable viewport that owns the remaining height, so the page must not
+    // scroll underneath it and fight the wheel gesture.
+    <div
+      className="tab-pane"
+      style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '18px 22px 18px' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap', flex: 'none' }}>
         <span style={{ ...mono(700, 13), letterSpacing: '.12em' }}>AGENT MAP</span>
         {data && (
           <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
@@ -777,7 +793,7 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
       </div>
 
       {/* Legend, including the not-yet-live node kinds. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '12px 0 6px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '12px 0 8px', flex: 'none' }}>
         {[
           { label: 'LIVE', dot: 'var(--ok)', dashed: false },
           { label: 'IDLE', dot: 'var(--tx3)', dashed: false },
@@ -816,18 +832,22 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
         </div>
       )}
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-        {data?.projects.map((p) => (
-          <ProjectCluster
-            key={p.id}
-            project={p}
-            agents={byProject.get(p.id) ?? []}
-            lead={canLead(p.id)}
-            onNewAgent={() => setNewAgentFor(p)}
-            onSelectAgent={setSelectedAgent}
-          />
-        ))}
-      </div>
+      {data && data.projects.length > 0 && (
+        <MapViewport>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {data.projects.map((p) => (
+              <ProjectCluster
+                key={p.id}
+                project={p}
+                agents={byProject.get(p.id) ?? []}
+                lead={canLead(p.id)}
+                onNewAgent={() => setNewAgentFor(p)}
+                onSelectAgent={setSelectedAgent}
+              />
+            ))}
+          </div>
+        </MapViewport>
+      )}
 
       <AnimatePresence>
         {selectedAgent && (
