@@ -967,7 +967,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       SELECT t.*, e.client, e.name AS engagement_name,
              p.branch AS pr_branch, ba.branch_name AS active_branch, ag.agent AS task_agent,
              esc.stage AS escalation_stage, esc.pr_number AS escalation_pr,
-             COALESCE(act.activities, '[]'::jsonb) AS activities
+             COALESCE(act.activities, '[]'::jsonb) AS activities,
              ${PLANNING_REVIEW_COLUMNS_SQL}
       FROM app.tickets t
       JOIN app.engagements e ON e.id = t.engagement_id
