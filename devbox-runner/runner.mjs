@@ -94,7 +94,13 @@ async function call(method, apiPath, body, timeoutMs = 30_000) {
 }
 
 async function waitForWork() {
-  const qs = ENGAGEMENT ? `?engagement=${encodeURIComponent(ENGAGEMENT)}` : '';
+  // The agent id turns this poll into the fleet liveness ping (DAT-224): an
+  // idle runner is only distinguishable from an exited one because this
+  // request keeps arriving every ~70s. No extra traffic — the console stamps
+  // last_polled_at on the long-poll the runner was making anyway.
+  const params = new URLSearchParams({ agent: AGENT });
+  if (ENGAGEMENT) params.set('engagement', ENGAGEMENT);
+  const qs = `?${params.toString()}`;
   for (;;) {
     try {
       const hit = await call('GET', `/api/agent/work/wait${qs}`, undefined, 70_000);

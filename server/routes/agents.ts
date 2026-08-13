@@ -1,6 +1,7 @@
 import type express from 'express';
 import { z } from 'zod';
 import type { Identity } from './roles';
+import { loadRunnerPolls, runnerStatus } from './fleet';
 import { AGENT_SECURITY_SCHEMA_SQL, type AgentSecuritySettings, baselineSecurity, parseSecuritySettings } from './agent-security';
 import { accessibleProjectIds } from './project-access';
 
@@ -21,6 +22,9 @@ import { accessibleProjectIds } from './project-access';
  * - Observed runners: derived from app.agent_tasks history — any runner that
  *   ever claimed work on an engagement shows up as a live agent node with its
  *   task counts and last-seen time. This is the "real data" half of the map.
+ *   Their status is not task counts alone: a runner is 'idle' only while it is
+ *   still polling the queue, and 'offline' once it stops (DAT-224), because
+ *   task history alone cannot tell a waiting runner from a dead one.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -94,6 +98,14 @@ const UpdateAgentBody = z.object({
 const txt = (v: unknown): string => (typeof v === 'string' ? v : '');
 const num = (v: unknown): number => (typeof v === 'number' ? v : Number(v) || 0);
 const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString() : typeof v === 'string' ? v : null);
+
+/** Timestamp column → epoch ms, or null when absent/unparseable. */
+const at = (v: unknown): number | null => {
+  const s = iso(v);
+  if (s === null) return null;
+  const t = new Date(s).getTime();
+  return Number.isFinite(t) ? t : null;
+};
 
 /**
  * Every runner in the fleet today is a Claude Code instance (see
@@ -239,11 +251,18 @@ export async function syncProjectAgents(q: Query): Promise<void> {
        GROUP BY engagement_id, agent`,
     )
   ).rows;
+  const polls = await loadRunnerPolls(q);
   for (const r of observed) {
     const name = txt(r.agent);
     const harness = inferHarness(name);
-    const status = num(r.active_tasks) > 0 ? 'active' : 'idle';
-    const config = JSON.stringify({ tasks: num(r.tasks), activeTasks: num(r.active_tasks), lastSeen: iso(r.last_seen) });
+    const lastPolled = polls.get(name) ?? null;
+    const status = runnerStatus(num(r.active_tasks), lastPolled, at(r.last_seen));
+    const config = JSON.stringify({
+      tasks: num(r.tasks),
+      activeTasks: num(r.active_tasks),
+      lastSeen: iso(r.last_seen),
+      lastPolled: lastPolled === null ? null : new Date(lastPolled).toISOString(),
+    });
     // security_settings is written on insert only — a sync must never overwrite
     // a scope a lead has set on the panel (DAT-212).
     await q(
@@ -444,7 +463,9 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
   const storedByKey = new Map(storedRows.map((r) => [`${txt(r.engagement_id)} ${txt(r.name).toLowerCase()}`, r]));
 
   // Real runner history: one node per (engagement, runner) that has ever
-  // claimed work there. Active = currently holding a claimed/working task.
+  // claimed work there. Active = currently holding a claimed/working task,
+  // idle = still polling with nothing to do, offline = stopped reaching us.
+  const runnerPolls = await loadRunnerPolls(q);
   const observed: OverviewAgent[] = (
     await q(
       `SELECT engagement_id, agent,
@@ -477,7 +498,7 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
       endpointType: null,
       endpointName: null,
       endpointError: null,
-      status: num(r.active_tasks) > 0 ? 'active' : 'idle',
+      status: runnerStatus(num(r.active_tasks), runnerPolls.get(name) ?? null, at(r.last_seen)),
       source: 'observed' as const,
       tasks: num(r.tasks),
       activeTasks: num(r.active_tasks),

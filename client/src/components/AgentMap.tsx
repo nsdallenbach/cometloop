@@ -110,24 +110,27 @@ function EmptySpoke({ x, y, lead }: { x: number; y: number; lead: boolean }) {
   );
 }
 
-/** Dashed = staged (a runner config awaiting rollout) or an unreachable endpoint. */
+/**
+ * Dashed = staged (a runner config awaiting rollout) or an unreachable
+ * endpoint. 'offline' is amber rather than the neutral grey 'idle' wears: a
+ * runner that has stopped polling is a fact worth seeing, not a resting state
+ * (DAT-224). A security-disabled agent reads as blocked wherever it appears —
+ * it is the one state that overrides "looks healthy" (DAT-212).
+ */
 function spokeState(agent: ProjectAgent): { staged: boolean; unreachable: boolean; disabled: boolean; color: string } {
   const unreachable = agent.status === 'unreachable';
-  const staged = agent.source === 'configured' && !['active', 'idle', 'unreachable'].includes(agent.status);
-  // A security-disabled agent reads as blocked wherever it appears — it is the
-  // one state that overrides "looks healthy" (DAT-212).
+  const staged = agent.source === 'configured' && !['active', 'idle', 'offline', 'unreachable'].includes(agent.status);
   const disabled = !agent.security.enabled;
   return {
     staged,
     unreachable,
     disabled,
-    color: disabled
-      ? 'var(--bad)'
-      : unreachable
+    color:
+      disabled || unreachable
         ? 'var(--bad)'
         : agent.status === 'active'
           ? 'var(--ok)'
-          : staged
+          : agent.status === 'offline' || staged
             ? 'var(--warn)'
             : 'var(--tx3)',
   };

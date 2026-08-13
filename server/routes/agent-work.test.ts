@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderPrompt } from './agent-work';
+import { blockedByRun, renderPrompt } from './agent-work';
 import { COMMENT_STYLE_RULES } from './comment-style';
 
 const task = { id: 7, ticket_key: 'DAT-146', agent: 'devbox-1', instructions: '' };
@@ -45,6 +45,31 @@ describe('renderPrompt ticket comments', () => {
   it('tells the agent to re-read comments mid-run via get_ticket', () => {
     const prompt = renderPrompt(task, ticket, engagement, null, [], []);
     expect(prompt).toContain('get_ticket (key DAT-146)');
+  });
+});
+
+describe('blockedByRun', () => {
+  const NOW = Date.UTC(2026, 7, 13, 12, 0, 0);
+
+  it('says a queued ticket is simply already queued', () => {
+    expect(blockedByRun({ id: 4, state: 'queued' }, NOW)).toBe('This ticket is already queued for agent work');
+  });
+
+  it('names the holder, how long it has been silent, and how to clear it', () => {
+    // The zombie case: GET /api/agent/work showed nothing for the ticket, but
+    // queueing it returned a bare 409 with no way to discover the block.
+    const msg = blockedByRun(
+      { id: 42, state: 'working', agent: 'devbox-2', last_heartbeat: new Date(NOW - 8 * 60 * 60_000) },
+      NOW,
+    );
+    expect(msg).toContain('devbox-2');
+    expect(msg).toContain('run 42');
+    expect(msg).toContain('8h ago');
+    expect(msg).toContain('Recall it first');
+  });
+
+  it('handles a claim that never heartbeated', () => {
+    expect(blockedByRun({ id: 42, state: 'claimed', agent: 'devbox-2', last_heartbeat: null }, NOW)).toContain('never heartbeated');
   });
 });
 

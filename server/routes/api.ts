@@ -6,6 +6,7 @@ import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
 import { PROJECT_AGENTS_SCHEMA_SQL, setupProjectAgentRoutes } from './agents';
+import { FLEET_SCHEMA_SQL, loadFleetStatus, startFleetWatch } from './fleet';
 import { setupAgentSecurityRoutes } from './agent-security';
 import { RUNNER_LOAD_BALANCING_SCHEMA_SQL, setupRunnerLoadBalancingRoutes } from './runner-load-balancing';
 import { projectAccessGuard } from './project-access';
@@ -208,6 +209,7 @@ async function initSchema(appkit: AppKitServices) {
     ...REPO_SCHEMA_SQL,
     ...AGENT_SCHEMA_SQL,
     ...PROJECT_AGENTS_SCHEMA_SQL,
+    ...FLEET_SCHEMA_SQL,
     ...RUNNER_LOAD_BALANCING_SCHEMA_SQL,
     ...TOOL_CALL_SCHEMA_SQL,
     ...COORDINATION_SCHEMA_SQL,
@@ -895,10 +897,17 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             [id]
           )
         ).rows;
-        const agentTasks = (
-          await q('SELECT * FROM app.agent_tasks WHERE engagement_id = $1 ORDER BY id DESC LIMIT 50', [id])
-        ).rows;
-        res.json({ tickets, sources, feed, team, suggestions, agentTasks });
+        const agentTasks = (await q('SELECT * FROM app.agent_tasks WHERE engagement_id = $1 ORDER BY id DESC LIMIT 50', [id])).rows;
+        // Fleet liveness (DAT-224) rides the board poll: whether anything is
+        // actually online to claim queued work. Read-only here — the feed entry
+        // and orphan recovery belong to the background watch, which has to run
+        // whether or not anyone has the board open. A failure must not blank
+        // the board: the fleet warning is the least important thing on it.
+        const fleet = await loadFleetStatus(q, id).catch((err: Error) => {
+          console.warn('[fleet] status unavailable:', err.message);
+          return null;
+        });
+        res.json({ tickets, sources, feed, team, suggestions, agentTasks, fleet });
       } catch (err) {
         console.error('engagement detail failed:', err);
         res.status(500).json({ error: 'Failed to load engagement detail' });
@@ -2213,6 +2222,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   // Review-SLA watch (DAT-201): the thresholds are 24h and 48h, so a 5-minute
   // sweep is ample — and PRs inside the first 24h cost no provider calls.
   startEscalationPolling(q, 5 * 60_000);
+  // Fleet watch (DAT-224): release work orphaned by a dead runner and record a
+  // stranded queue on the feed. A minute is fine — the windows are 15 minutes
+  // (orphan) and 10 (stranded queue), and a quiet fleet costs three cheap
+  // queries.
+  startFleetWatch(q, 60_000);
   // DAT-218: reap planning-review flags whose owning pass died without
   // clearing them. Reads already ignore expired rows, so this is housekeeping
   // (and the log line that tells us a pass went missing).
