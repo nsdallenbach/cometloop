@@ -1,6 +1,7 @@
 import type express from 'express';
 import { z } from 'zod';
 import { invokeAgentEndpoint } from './agents';
+import { checkAgentAction } from './agent-security';
 import { connectionToken, githubHeaders, githubPath, jsonFetch, loadConnection, onPrOpened, type Connection } from './repos';
 import type { Identity } from './roles';
 import type { ScopingToolDef } from './scoping-tools';
@@ -468,6 +469,13 @@ export async function runPrReview(
 ): Promise<RunReviewResult> {
   const reviewer = await findReviewer(q, engagementId);
   if (!reviewer) return { state: 'skipped', reason: 'no pr-reviewer agent registered for this project' };
+
+  // Security gate (DAT-212): a disabled reviewer, or one without the pr_review
+  // scope, is skipped before the endpoint is invoked. Skipped (not failed) —
+  // this is a deliberate configuration, and the PR is left for a human either
+  // way; the denial is already logged and on the engagement feed.
+  const gate = await checkAgentAction(q, { engagementId, agent: reviewer.name, action: 'pr_review', detail: `${ticketKey} PR #${String(prNumber)}` });
+  if (!gate.allowed) return { state: 'skipped', reason: gate.reason };
 
   const conn = await loadConnection(q, engagementId);
   if (!conn) return { state: 'skipped', reason: 'no repository connection' };

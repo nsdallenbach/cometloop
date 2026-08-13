@@ -9,6 +9,7 @@ import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
+import { checkAgentAction, enforceAgentAction } from './agent-security';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -195,6 +196,7 @@ export function renderPrompt(
     '- If delivery-console MCP tools are available, post report_agent_progress at plan time and before pushing, and raise flag_agent_work if you get blocked instead of guessing.',
     `- Steering via comments: leads may post new ticket comments while you work. If delivery-console MCP tools are available, re-read the comments with get_ticket (key ${key}) before pushing and apply any new guidance; your own progress notes also appear there — ignore those.`,
     '- Before finishing, write RESULT.md in the working directory (not the repo): 2–4 sentences on what you did, plus the PR URL on its own line. The runner reports this as your completion summary.',
+    '- Your agent identity carries security settings a lead controls on the agent map. If an action comes back 403 with a security reason (claiming work, vending a git credential, posting coordination messages), that is a deliberate restriction, not a bug: do not retry it in a loop or work around it — raise a flag saying which scope you need and stop. Reporting progress and completing the task you already hold are never blocked.',
     '',
     '## Coordinating with other agents',
     `Other agents may be working other branches of the same repo right now. Your agent id is "${txt(task.agent) || 'agent'}". Use the delivery-console MCP coordination tools (or the /api/agent/coordination REST endpoints) to avoid colliding with them:`,
@@ -494,6 +496,24 @@ export function setupAgentRoutes(
         return;
       }
       const key = String(claimed.ticket_key);
+      // Security gate (DAT-212). The claim is atomic and the engagement is only
+      // known once it lands, so a denied agent has its claim released here — the
+      // ticket returns to 'queued' untouched, without ever moving to progress.
+      const decision = await checkAgentAction(q, {
+        engagementId: String(claimed.engagement_id),
+        agent,
+        action: 'claim_work',
+        detail: key,
+      });
+      if (!decision.allowed) {
+        await q(
+          `UPDATE app.agent_tasks SET state = 'queued', agent = NULL, agent_identity = NULL, claimed_at = NULL,
+             last_heartbeat = NULL, updated_at = NOW() WHERE id = $1`,
+          [claimed.id],
+        );
+        res.status(403).json({ error: decision.reason, action: 'claim_work', agent });
+        return;
+      }
       console.log(`[agent] ${agent} claimed task ${String(claimed.id)} (${key}) — ticket moved to progress`);
       await setTicketStatus(q, key, 'progress', { assignee: agent });
       await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work.`);
@@ -544,6 +564,15 @@ export function setupAgentRoutes(
         res.status(409).json({ error: `Task is claimed by ${String(task.agent)}` });
         return;
       }
+      // Repo write access is the most privileged thing the console hands an
+      // agent — gate it before minting anything (DAT-212).
+      const allowed = await enforceAgentAction(res, q, {
+        engagementId: String(task.engagement_id),
+        agent: parsed.data.agent,
+        action: 'git_credential',
+        detail: String(task.ticket_key),
+      });
+      if (!allowed) return;
       const conn = await loadConnection(q, String(task.engagement_id));
       if (!conn) {
         res.status(404).json({ error: 'No repository connected to this engagement' });

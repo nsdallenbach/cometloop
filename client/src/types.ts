@@ -203,6 +203,28 @@ export type ProjectAgentType = 'runner' | 'serving-endpoint' | 'agentbricks' | '
 /** What an agent is for. 'pr-reviewer' is wired to the PR review gate. */
 export type ProjectAgentRole = 'delivery' | 'pr-reviewer' | 'planning' | 'other';
 
+/** Gateable agent actions (DAT-212) — mirrors AGENT_ACTIONS server-side. */
+export type AgentAction = 'claim_work' | 'git_credential' | 'coordination' | 'pr_review';
+
+export type AgentAccessLevel = 'restricted' | 'standard' | 'elevated' | 'custom';
+
+/** One agent's security controls, enforced at action-execution time. */
+export interface AgentSecuritySettings {
+  /** Master switch — a disabled agent may only wind down a task it already holds. */
+  enabled: boolean;
+  accessLevel: AgentAccessLevel;
+  allowedActions: AgentAction[];
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
+/** Action ids, labels and preset scopes, served from the security catalog endpoint. */
+export interface AgentSecurityCatalog {
+  actions: { id: AgentAction; label: string }[];
+  accessLevels: AgentAccessLevel[];
+  presets: Record<Exclude<AgentAccessLevel, 'custom'>, AgentAction[]>;
+}
+
 /** One agent node on the /agents architecture map. */
 export interface ProjectAgent {
   id: string;
@@ -230,6 +252,8 @@ export interface ProjectAgent {
   activeTasks: number;
   lastSeen: string | null;
   createdAt: string | null;
+  /** Per-agent security controls, editable by leads from the agent's panel. */
+  security: AgentSecuritySettings;
 }
 
 /** Latest automated review for a PR, as shown next to the PR on a ticket. */
