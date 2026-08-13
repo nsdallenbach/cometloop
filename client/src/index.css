@@ -271,6 +271,14 @@ tr.hv-row td {
   animation: eec-fadeUp 0.2s ease both;
 }
 
+/* Agent-map zoom controls — dimmed at the min/max scale bound. The disabled
+   state is set imperatively from a MotionValue subscription (so zooming never
+   re-renders the map), which is why the look lives here and not inline. */
+.eec-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .eec *,
   .eec *::before,
