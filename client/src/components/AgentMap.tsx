@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { api } from '../api';
-import type { AgentsOverview, AgentsOverviewProject, ProjectAgent, ProjectAgentRole, ProjectAgentType } from '../types';
+import type { AgentsOverview, AgentsOverviewProject, ProjectAgent, ProjectAgentRole, ProjectAgentType, RunnerLoadBalance } from '../types';
 import { HEALTH_COLOR, mono } from '../util';
 import { agentBrand, HARNESS_DEFAULT_PROVIDER, HARNESS_OPTIONS, PROVIDER_OPTIONS } from './AgentLogos';
 
@@ -55,6 +55,10 @@ const ROLE_LABEL: Record<string, string> = {
   planning: 'PLANNING',
   other: 'AGENT',
 };
+
+const GENERAL_CODING_MODELS = new Set(['claude-code', 'codex', 'omnigent', 'gemini', 'copilot', 'cursor']);
+const isGeneralCodingAgent = (agent: Pick<ProjectAgent, 'agentType' | 'harness'>) =>
+  agent.agentType === 'runner' && Boolean(agent.harness && GENERAL_CODING_MODELS.has(agent.harness.toLowerCase()));
 
 /** The console's own MCP server — what an AgentBricks agent attaches to. */
 const mcpUrl = () => `${window.location.origin}/api/mcp`;
@@ -115,7 +119,7 @@ function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number;
       animate={{ opacity: 1, scale: 1 }}
       whileHover={{ scale: 1.05 }}
       transition={{ type: 'spring', visualDuration: 0.3, bounce: 0.25 }}
-      title={`${agent.name} — click for details`}
+      title={`${agent.name} — click for ${isGeneralCodingAgent(agent) ? 'load balancing' : 'details'}`}
       onClick={() => onSelect(agent)}
       style={{ position: 'absolute', left: x - 62, top: y - 30, width: 124, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, cursor: 'pointer' }}
     >
@@ -548,6 +552,64 @@ function NewAgentModal({
   );
 }
 
+function LoadBalancingModal({ agent, canEdit, onClose, toast }: { agent: ProjectAgent; canEdit: boolean; onClose: () => void; toast: (message: string) => void }) {
+  const modelType = agent.harness ?? '';
+  const [runners, setRunners] = useState<RunnerLoadBalance[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    api.runnerLoadBalancing(agent.engagementId, modelType)
+      .then((data) => setRunners(data.runners))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+    return () => window.removeEventListener('keydown', onKey);
+  }, [agent.engagementId, modelType, onClose]);
+  const update = (name: string, values: Partial<RunnerLoadBalance>) => setRunners((rows) => rows.map((r) => (r.name === name ? { ...r, ...values } : r)));
+  const totalWeight = runners.reduce((sum, runner) => sum + runner.weight, 0);
+  const save = () => {
+    if (runners.some((r) => !Number.isInteger(r.weight) || r.weight < 0 || r.weight > 100)) return setError('Weights must be whole numbers from 0 to 100.');
+    if (totalWeight === 0) return setError('At least one runner must have a positive weight.');
+    if (runners.some((r) => r.cap !== null && (!Number.isInteger(r.cap) || r.cap < 1 || r.cap > 100))) return setError('Caps must be blank or a whole number from 1 to 100.');
+    setBusy(true);
+    setError(null);
+    api.saveRunnerLoadBalancing(agent.engagementId, modelType, runners.map(({ name, weight, cap }) => ({ name, weight, cap })))
+      .then(() => { toast(`Load balancing saved for ${modelType}`); onClose(); })
+      .catch((e: Error) => { setError(e.message); setBusy(false); });
+  };
+  return (
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 54 }} />
+      <motion.div initial={{ opacity: 0, transform: 'translate(-50%,-48%) scale(.97)' }} animate={{ opacity: 1, transform: 'translate(-50%,-50%) scale(1)' }} role="dialog" aria-label={`Load balancing for ${agent.name}`} style={{ position: 'fixed', left: '50%', top: '50%', width: 520, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 50px)', overflowY: 'auto', background: 'var(--bg2)', border: '1px solid var(--line)', borderRadius: 6, padding: 18, zIndex: 55, boxShadow: '0 12px 40px rgba(0,0,0,.5)' }}>
+        <div style={{ display: 'flex', alignItems: 'start', gap: 10 }}>
+          <div><div style={{ ...mono(600, 11), letterSpacing: '.1em' }}>RUNNER LOAD BALANCING</div><div style={{ fontSize: 11.5, color: 'var(--tx3)', marginTop: 3 }}>{agent.name} · {modelType}. Weights are relative; caps limit concurrent tasks per runner.</div></div>
+          <button onClick={onClose} aria-label="Close" style={{ marginLeft: 'auto', border: 0, background: 'none', color: 'var(--tx3)', cursor: 'pointer', fontSize: 18 }}>×</button>
+        </div>
+        {loading ? <div style={{ color: 'var(--tx3)', fontSize: 12, padding: '24px 0' }}>Loading available runners…</div> : runners.length === 0 ? <div style={{ color: 'var(--tx3)', fontSize: 12, padding: '24px 0' }}>No live or idle runners are currently available for this model type.</div> : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16 }}>
+            {runners.map((runner) => <div key={runner.name} style={{ border: '1px solid var(--line2)', borderRadius: 4, padding: '10px 11px' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}><span style={{ ...mono(600, 10.5), flex: 1 }}>{runner.name}</span><span style={{ ...mono(400, 8.5), color: runner.status === 'active' ? 'var(--ok)' : 'var(--tx3)', letterSpacing: '.07em' }}>{runner.status.toUpperCase()} · {runner.activeTasks} ACTIVE</span></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 64px 86px', gap: 8, alignItems: 'center' }}>
+                <input aria-label={`${runner.name} weight slider`} type="range" min={0} max={100} value={runner.weight} disabled={!canEdit} onChange={(e) => update(runner.name, { weight: Number(e.target.value) })} />
+                <input aria-label={`${runner.name} weight`} type="number" min={0} max={100} step={1} value={runner.weight} disabled={!canEdit} onChange={(e) => update(runner.name, { weight: Number(e.target.value) })} style={{ ...FIELD, padding: '5px 6px' }} />
+                <input aria-label={`${runner.name} concurrency cap`} type="number" min={1} max={100} step={1} value={runner.cap ?? ''} disabled={!canEdit} placeholder="No cap" onChange={(e) => update(runner.name, { cap: e.target.value === '' ? null : Number(e.target.value) })} style={{ ...FIELD, padding: '5px 6px' }} />
+              </div>
+              <div style={{ ...mono(400, 8.5), color: 'var(--tx3)', marginTop: 5 }}>{totalWeight > 0 ? `${Math.round((runner.weight / totalWeight) * 100)}% TARGET SHARE` : '0% TARGET SHARE'}</div>
+            </div>)}
+          </div>
+        )}
+        {error && <div role="alert" style={{ color: 'var(--bad)', fontSize: 11.5, marginTop: 12 }}>{error}</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button onClick={onClose} style={{ ...mono(500, 9.5), background: 'none', border: '1px solid var(--line2)', color: 'var(--tx3)', borderRadius: 3, padding: '6px 11px', cursor: 'pointer' }}>CANCEL</button>
+          {canEdit && <button onClick={save} disabled={busy || loading || runners.length === 0} style={{ ...mono(500, 9.5), background: 'var(--agent)', border: '1px solid var(--agent)', color: '#fff', borderRadius: 3, padding: '6px 12px', cursor: busy ? 'wait' : 'pointer', opacity: busy || loading || runners.length === 0 ? .6 : 1 }}>{busy ? 'SAVING…' : 'SAVE'}</button>}
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
 /** Click-through detail for any node on the map (DAT-197 follow-up). */
 function AgentDetailModal({
   agent,
@@ -729,6 +791,7 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
   const [error, setError] = useState<string | null>(null);
   const [newAgentFor, setNewAgentFor] = useState<AgentsOverviewProject | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<ProjectAgent | null>(null);
+  const [loadBalanceAgent, setLoadBalanceAgent] = useState<ProjectAgent | null>(null);
 
   const load = useCallback(() => {
     return api
@@ -830,7 +893,7 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
             agents={byProject.get(p.id) ?? []}
             lead={canLead(p.id)}
             onNewAgent={() => setNewAgentFor(p)}
-            onSelectAgent={setSelectedAgent}
+            onSelectAgent={(agent) => isGeneralCodingAgent(agent) ? setLoadBalanceAgent(agent) : setSelectedAgent(agent)}
           />
         ))}
       </div>
@@ -849,6 +912,9 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
               void load();
             }}
           />
+        )}
+        {loadBalanceAgent && (
+          <LoadBalancingModal key={loadBalanceAgent.id} agent={loadBalanceAgent} canEdit={canLead(loadBalanceAgent.engagementId)} onClose={() => setLoadBalanceAgent(null)} toast={toast} />
         )}
       </AnimatePresence>
 

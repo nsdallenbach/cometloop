@@ -99,6 +99,7 @@ const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString() 
 export function inferHarness(agentName: string): string {
   const n = agentName.toLowerCase();
   if (n.includes('codex')) return 'codex';
+  if (n.includes('omnigent')) return 'omnigent';
   if (n.includes('gemini')) return 'gemini';
   if (n.includes('copilot')) return 'copilot';
   if (n.includes('cursor')) return 'cursor';

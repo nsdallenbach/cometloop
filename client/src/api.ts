@@ -25,6 +25,7 @@ import type {
   RepoDetail,
   RepoPr,
   RoadmapSettings,
+  RunnerLoadBalancing,
   Suggestion,
   TeamMember,
   Ticket,
@@ -558,6 +559,24 @@ export const api = {
         createdAt: r.createdAt == null ? null : s(r.createdAt),
       })),
     };
+  },
+
+  async runnerLoadBalancing(projectId: string, modelType: string): Promise<RunnerLoadBalancing> {
+    const d = await http<{ modelType: unknown; runners?: Row[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/runner-load-balancing/${encodeURIComponent(modelType)}`,
+    );
+    return {
+      modelType: s(d.modelType),
+      runners: (d.runners ?? []).map((r) => ({
+        name: s(r.name), status: s(r.status), weight: n(r.weight), cap: r.cap == null ? null : n(r.cap), activeTasks: n(r.activeTasks),
+      })),
+    };
+  },
+
+  saveRunnerLoadBalancing(projectId: string, modelType: string, runners: { name: string; weight: number; cap: number | null }[]): Promise<RunnerLoadBalancing> {
+    return http(`/api/projects/${encodeURIComponent(projectId)}/runner-load-balancing/${encodeURIComponent(modelType)}`, {
+      method: 'PUT', ...json({ runners }),
+    });
   },
 
   /** Register an agent on a project. Endpoint-backed agents (AgentBricks, model

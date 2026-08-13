@@ -257,6 +257,19 @@ export interface AgentsOverview {
   agents: ProjectAgent[];
 }
 
+export interface RunnerLoadBalance {
+  name: string;
+  status: string;
+  weight: number;
+  cap: number | null;
+  activeTasks: number;
+}
+
+export interface RunnerLoadBalancing {
+  modelType: string;
+  runners: RunnerLoadBalance[];
+}
+
 /** One tool invocation streamed from an agent run (live feed in the ticket drawer). */
 export interface ToolCall {
   id: number;
