@@ -31,6 +31,12 @@ the context handed to agent runners.
   (typecheck → lint → build) and only then deploys. A red Actions run means
   the merge shipped nothing — check the Actions tab or the ticket's deploy
   badge before believing a feature is live.
+- **Done means deployed.** The board refuses a move into Done until the
+  ticket's linked PR is merged and its deploy pipeline has succeeded (DAT-213)
+  — by hand, over the API, or through MCP. The rule is not retroactive and
+  never applies to tickets already in Done. Work that ships nothing deployable
+  (docs, spikes, meetings) carries the `no-deploy` tag to opt out, and
+  engagements with no repo connected are outside the rule entirely.
 - **Deploys blink.** Each deploy restarts the app (~1 minute of 502s). Batch
   merges between agent runs rather than mid-run, and never diagnose a 502 as
   a code bug until the Actions run has settled.
@@ -92,6 +98,10 @@ that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
   never fail the user's action.
 - Preserve human words: refinement flows keep the original request verbatim
   under `## Original request`.
+- Any prompt whose output becomes a ticket comment renders the shared style
+  rules from `server/routes/comment-style.ts` — `commentStyleSection()` when
+  the model's output *is* the comment, `commentStyleBrief()` when the comment
+  is one field of a JSON contract. Do not restate the rules inline; they drift.
 - Model calls go through `invokeModel()` (`server/routes/llm-health.ts`),
   never `serving('default').invoke` directly — that is what retries transient
   errors, counts failures per flow, and posts the ⚠ feed item when a call
@@ -116,10 +126,24 @@ that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
 
 - Lifecycle: long-poll `/api/agent/work/wait` → atomic claim → work →
   complete `done` (→ Review) or `failed` (→ Backlog). Never leave a claim
-  hanging — that is what the STALLED detector exists to catch.
+  hanging — that is what the STALLED detector exists to catch. A claim that
+  goes silent for 15 minutes is reclaimed by the fleet watch and requeued for
+  someone else; treat a `404` from heartbeat or complete as "this run is no
+  longer mine" and abandon it, which the bundled runner already does.
+- **Identify yourself on the poll** (`/api/agent/work/wait?agent=<name>`).
+  Runner liveness is that stamp: no poll inside the grace window means
+  `offline`, not `idle`, and queued work with zero online runners raises
+  FLEET DOWN on the board. A runner that polls anonymously looks dead while
+  idle — and, worse, a dead fleet looks fine (DAT-224).
 - **Be chatty**: progress note at claim, at plan, and before pushing;
   silent heartbeat at least every 2 minutes during long runs; raise a flag
   (`/flag`) when stuck instead of guessing or dying quietly.
+- **Be readable**: comment bodies render as markdown in the drawer, so notes,
+  flags and completion summaries use short paragraphs, bullets once there are
+  three or more items, and `code` for files and identifiers. The rules are a
+  single source of truth in `server/routes/comment-style.ts` and are rendered
+  into every prompt that writes a comment — add new comment-writing flows
+  there rather than restating the style inline.
 - Auth: mint workspace tokens via the CLI, cache no longer than 10 minutes,
   and treat any 401 as "refresh and retry once" — long-lived daemons that
   cache tokens without a 401 path will eventually replay a dead token forever.

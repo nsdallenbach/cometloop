@@ -29,11 +29,14 @@
 //   MAX_RUN_MINUTES   watchdog: kill the agent and fail the task after this
 //                     many minutes (default 180; "0" disables)
 //   ONCE              "1" = run a single task then exit (local testing)
+//   DENIED_COOLDOWN_MS  pause after the console refuses a claim on agent-security
+//                     grounds, so a disabled runner idles instead of spinning
+//                     (default 120000)
 import { execFileSync, spawn } from 'child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { getHarness, toolLabel } from './harnesses.mjs';
+import { getHarness, normalizeState, toolLabel } from './harnesses.mjs';
 
 const APP = (process.env.APP_URL ?? 'https://delivery-console-7474645607548631.aws.databricksapps.com').replace(/\/+$/, '');
 const HOST = process.env.DATABRICKS_HOST ?? 'https://dbc-96494b8f-6b86.cloud.databricks.com';
@@ -44,6 +47,8 @@ const WORK_ROOT = process.env.WORK_ROOT ?? path.join(os.homedir(), 'agent-work')
 const HARNESS = getHarness(process.env.HARNESS);
 const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES ?? 180);
 const ONCE = process.env.ONCE === '1';
+/** Pause after the console refuses a claim on security grounds (DAT-212). */
+const DENIED_COOLDOWN_MS = Number(process.env.DENIED_COOLDOWN_MS ?? 120_000);
 
 const log = (msg) => console.log(`[${new Date().toISOString()}] ${msg}`);
 
@@ -89,7 +94,13 @@ async function call(method, apiPath, body, timeoutMs = 30_000) {
 }
 
 async function waitForWork() {
-  const qs = ENGAGEMENT ? `?engagement=${encodeURIComponent(ENGAGEMENT)}` : '';
+  // The agent id turns this poll into the fleet liveness ping (DAT-224): an
+  // idle runner is only distinguishable from an exited one because this
+  // request keeps arriving every ~70s. No extra traffic — the console stamps
+  // last_polled_at on the long-poll the runner was making anyway.
+  const params = new URLSearchParams({ agent: AGENT });
+  if (ENGAGEMENT) params.set('engagement', ENGAGEMENT);
+  const qs = `?${params.toString()}`;
   for (;;) {
     try {
       const hit = await call('GET', `/api/agent/work/wait${qs}`, undefined, 70_000);
@@ -175,8 +186,19 @@ function makeEmit(tools) {
  * watchdog expiry). On Windows the spawn goes through a shell, so the pid is
  * the wrapper's — taskkill /T takes down the whole tree; elsewhere a SIGTERM
  * with a SIGKILL chaser is enough.
+ *
+ * A service harness has no child: the vendor run is aborted through the adapter
+ * and the poll loop exits on run.abandoned, which every caller sets first.
  */
 function killAgent(run, why) {
+  if (HARNESS.mode === 'service') {
+    if (!run.handle) return;
+    log(`cancelling ${HARNESS.name} run: ${why}`);
+    Promise.resolve()
+      .then(() => HARNESS.cancel(run.handle, run.ctx))
+      .catch((e) => log(`${HARNESS.name} cancel failed (${e.message}) — the vendor run may still be charging`));
+    return;
+  }
   const child = run.child;
   if (!child || child.exitCode !== null || child.killed) return;
   log(`terminating ${HARNESS.name} run: ${why}`);
@@ -234,6 +256,97 @@ function runAgent(prompt, cwd, extraEnv, tools, run) {
   });
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Drive a hosted agent (mode: 'service') through submit → poll → result, and
+ * return a process-style exit code so the rest of runTask is shared with the
+ * process harnesses.
+ *
+ * Two rules carry most of the weight here:
+ *
+ * - A failed *poll* is not a failed *run*. Vendor 5xx/429/network blips are
+ *   retried with backoff; only a run of consecutive failures gives up, because
+ *   binning three hours of finished work over one dropped HTTP call is far worse
+ *   than waiting. The MAX_RUN_MINUTES watchdog is the real backstop.
+ * - The bridge writes RESULT.md, since a hosted agent cannot reach this workdir.
+ *   An empty summary deliberately produces no file, so the existing delivery
+ *   contract in runTask ("a clean exit is not done without RESULT.md") still
+ *   sends an empty run back to the backlog instead of parking it in Review.
+ */
+async function runService(prompt, cwd, git, tools, run, pkg) {
+  const emit = makeEmit(tools);
+  const ctx = { agent: AGENT, log, call };
+  run.ctx = ctx;
+  const pollMs = Math.max(1000, Number(HARNESS.config?.pollMs) || 5000);
+
+  try {
+    run.handle = await HARNESS.submit({ pkg, prompt, workdir: cwd, git }, ctx);
+  } catch (e) {
+    log(`${HARNESS.name} submit failed: ${e.message}`);
+    return 1; // nothing started, so nothing is stranded vendor-side
+  }
+
+  let misses = 0;
+  let state = null;
+  for (;;) {
+    // Backoff on consecutive poll failures; reset to the base interval on success.
+    // Jittered, so a fleet that all hit the same vendor blip doesn't retry in lockstep.
+    await sleep(misses ? Math.min(pollMs * 2 ** misses, 60_000) * (0.5 + Math.random()) : pollMs);
+    if (run.abandoned) return 1; // cancelled or watchdog — killAgent already aborted the vendor run
+
+    let tick;
+    try {
+      tick = await HARNESS.poll(run.handle, ctx);
+      misses = 0;
+    } catch (e) {
+      if (++misses >= 5) {
+        log(`${HARNESS.name} poll failed ${misses}× — giving up: ${e.message}`);
+        return 1;
+      }
+      log(`${HARNESS.name} poll hiccup (${misses}/5): ${e.message}`);
+      continue;
+    }
+
+    // Same sink the process harnesses emit into, so the live tool feed, the
+    // terminal rendering and the archived telemetry are identical everywhere.
+    for (const ev of tick?.events ?? []) {
+      if (ev?.kind === 'tool') emit.tool(ev.name ?? 'tool', ev.input ?? {});
+      else if (ev?.text) emit.print(String(ev.text));
+    }
+
+    state = normalizeState(tick?.state);
+    if (state === null) {
+      log(`${HARNESS.name} reported an unrecognized state "${tick?.state}" — still waiting`);
+      continue;
+    }
+    if (state !== 'running') break;
+  }
+
+  if (state === 'cancelled') {
+    run.abandoned ??= 'cancelled';
+    return 1;
+  }
+  if (state === 'failed') {
+    log(`${HARNESS.name} run failed vendor-side`);
+    return 1;
+  }
+
+  try {
+    const res = await HARNESS.fetchResult(run.handle, ctx);
+    const summary = String(res?.summary ?? '').trim();
+    if (!summary) {
+      log(`${HARNESS.name} reported success but returned no summary — treating as undelivered`);
+      return 1;
+    }
+    writeFileSync(path.join(cwd, 'RESULT.md'), `${summary}\n`);
+    return 0;
+  } catch (e) {
+    log(`${HARNESS.name} result fetch failed: ${e.message}`);
+    return 1;
+  }
+}
+
 async function runTask(pkg) {
   const id = pkg.task.id;
   const key = String(pkg.task.ticket_key);
@@ -284,7 +397,7 @@ async function runTask(pkg) {
   // console no longer wants this run — kill the agent child and abandon,
   // instead of sitting wedged behind a dead run until it exits on its own.
   // Anything else (network blips, 5xx) is transient and never kills a run.
-  const run = { child: null, abandoned: null };
+  const run = { child: null, handle: null, ctx: null, abandoned: null };
   const heartbeat = setInterval(() => {
     call('POST', `/api/agent/work/${id}/heartbeat`, { agent: AGENT }).catch((e) => {
       if (e.status === 404 || e.status === 409) {
@@ -313,7 +426,12 @@ async function runTask(pkg) {
 
   const prompt = pkg.prompt ?? fallbackPrompt(pkg);
   const tools = new ToolCallStream(id);
-  const code = await runAgent(prompt, dir, gitToken ? { GIT_TOKEN: gitToken } : {}, tools, run);
+  // Process harnesses get the token in their environment; a hosted agent cannot
+  // read our environment, so the adapter has to hand it over in the submission.
+  const code =
+    HARNESS.mode === 'service'
+      ? await runService(prompt, dir, gitToken, tools, run, pkg)
+      : await runAgent(prompt, dir, gitToken ? { GIT_TOKEN: gitToken } : {}, tools, run);
   await tools.flush(); // drain the tail of the feed before completing
   clearInterval(heartbeat);
   if (watchdog) clearTimeout(watchdog);
@@ -362,6 +480,14 @@ for (;;) {
   try {
     pkg = await call('POST', '/api/agent/work/claim', { agent: AGENT, ...(ENGAGEMENT ? { engagement: ENGAGEMENT } : {}) });
   } catch (e) {
+    // 403 = this runner's security settings forbid claiming (DAT-212). The
+    // work stays queued, so waiting would answer instantly and spin — back off
+    // until a lead re-enables the agent.
+    if (e.status === 403) {
+      log(`claim refused by the console's agent security settings: ${e.message} — pausing ${DENIED_COOLDOWN_MS / 1000}s`);
+      await new Promise((r) => setTimeout(r, DENIED_COOLDOWN_MS));
+      continue;
+    }
     if (e.status !== 404) log(`claim failed: ${e.message}`);
     continue; // another runner got there first — go back to waiting
   }

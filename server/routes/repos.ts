@@ -3,6 +3,7 @@ import express from 'express';
 import type { Identity } from './roles';
 import { githubAppConfigured, installationToken, verifyWebhookSignature, WEBHOOK_SECRET } from './github-app';
 import { setTicketStatus } from './ticket-events';
+import { createNotification } from './notifications';
 
 /**
  * Git repository integration: one repo per engagement, GitHub or Azure DevOps.
@@ -152,13 +153,17 @@ interface Provider {
 export class ProviderHttpError extends Error {
   constructor(
     message: string,
-    readonly status: number,
+    readonly status: number
   ) {
     super(message);
   }
 }
 
-export async function jsonFetch(url: string, headers: Record<string, string>, init?: { method?: string; body?: unknown }): Promise<unknown> {
+export async function jsonFetch(
+  url: string,
+  headers: Record<string, string>,
+  init?: { method?: string; body?: unknown }
+): Promise<unknown> {
   const resp = await fetch(url, {
     method: init?.method ?? 'GET',
     headers: init?.body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' },
@@ -215,7 +220,7 @@ const github: Provider = {
     const since = sinceIso ? `&since=${encodeURIComponent(sinceIso)}` : '';
     const list = (await jsonFetch(
       `https://api.github.com/repos/${githubPath(conn)}/commits?sha=${encodeURIComponent(conn.default_branch)}&per_page=50${since}`,
-      githubHeaders(conn.token),
+      githubHeaders(conn.token)
     )) as { sha: string; html_url: string; commit: { message: string; author?: { name?: string; date?: string } } }[];
     return list.map((c) => ({
       sha: c.sha,
@@ -228,7 +233,7 @@ const github: Provider = {
   async prs(conn) {
     const list = (await jsonFetch(
       `https://api.github.com/repos/${githubPath(conn)}/pulls?state=all&sort=updated&direction=desc&per_page=50`,
-      githubHeaders(conn.token),
+      githubHeaders(conn.token)
     )) as {
       number: number;
       title: string;
@@ -257,7 +262,10 @@ const github: Provider = {
   async merge(conn, number) {
     const url = `https://api.github.com/repos/${githubPath(conn)}/pulls/${number}/merge`;
     const attempt = (method?: string) =>
-      jsonFetch(url, githubHeaders(conn.token), { method: 'PUT', body: method ? { merge_method: method } : {} }) as Promise<{
+      jsonFetch(url, githubHeaders(conn.token), {
+        method: 'PUT',
+        body: method ? { merge_method: method } : {},
+      }) as Promise<{
         sha?: string;
         merged?: boolean;
       }>;
@@ -275,7 +283,7 @@ const github: Provider = {
   async pipeline(conn, sha) {
     const data = (await jsonFetch(
       `https://api.github.com/repos/${githubPath(conn)}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=20`,
-      githubHeaders(conn.token),
+      githubHeaders(conn.token)
     )) as { workflow_runs?: { status: string; conclusion: string | null; html_url?: string }[] };
     const runs = data.workflow_runs ?? [];
     if (runs.length === 0) return { state: 'none', url: null };
@@ -330,8 +338,10 @@ const ado: Provider = {
     const since = sinceIso ? `&searchCriteria.fromDate=${encodeURIComponent(sinceIso)}` : '';
     const data = (await jsonFetch(
       `${adoApi(conn.repo_url)}/commits?searchCriteria.itemVersion.version=${encodeURIComponent(conn.default_branch)}&searchCriteria.$top=50${since}&api-version=7.1`,
-      adoHeaders(conn.token),
-    )) as { value?: { commitId: string; comment: string; author?: { name?: string; date?: string }; remoteUrl?: string }[] };
+      adoHeaders(conn.token)
+    )) as {
+      value?: { commitId: string; comment: string; author?: { name?: string; date?: string }; remoteUrl?: string }[];
+    };
     return (data.value ?? []).map((c) => ({
       sha: c.commitId,
       message: c.comment,
@@ -343,7 +353,7 @@ const ado: Provider = {
   async prs(conn) {
     const data = (await jsonFetch(
       `${adoApi(conn.repo_url)}/pullrequests?searchCriteria.status=all&$top=50&api-version=7.1`,
-      adoHeaders(conn.token),
+      adoHeaders(conn.token)
     )) as {
       value?: {
         pullRequestId: number;
@@ -360,7 +370,12 @@ const ado: Provider = {
       number: p.pullRequestId,
       title: p.title,
       author: p.createdBy?.displayName ?? '',
-      state: p.status === 'active' ? ('open' as const) : p.status === 'completed' ? ('merged' as const) : ('closed' as const),
+      state:
+        p.status === 'active'
+          ? ('open' as const)
+          : p.status === 'completed'
+            ? ('merged' as const)
+            : ('closed' as const),
       branch: (p.sourceRefName ?? '').replace(/^refs\/heads\//, ''),
       url: `${conn.repo_url}/pullrequest/${p.pullRequestId}`,
       updatedAt: p.closedDate ?? p.creationDate ?? null,
@@ -391,8 +406,10 @@ const ado: Provider = {
   async pipeline(conn, sha) {
     const data = (await jsonFetch(
       `${adoProjectApi(conn.repo_url)}/build/builds?$top=50&queryOrder=queueTimeDescending&api-version=7.1`,
-      adoHeaders(conn.token),
-    )) as { value?: { sourceVersion?: string; status?: string; result?: string; _links?: { web?: { href?: string } } }[] };
+      adoHeaders(conn.token)
+    )) as {
+      value?: { sourceVersion?: string; status?: string; result?: string; _links?: { web?: { href?: string } } }[];
+    };
     const builds = (data.value ?? []).filter((b) => b.sourceVersion === sha);
     if (builds.length === 0) return { state: 'none', url: null };
     const url = builds[0]._links?.web?.href ?? null;
@@ -418,6 +435,45 @@ export function findTicketKey(...texts: string[]): string | null {
     if (m) return m[0];
   }
   return null;
+}
+
+/**
+ * Pull requests referenced by URL in free text. Completion comments commonly
+ * contain only the PR URL, so this gives a later repository sync a durable
+ * fallback when the PR was not linkable when it was first observed.
+ */
+export function extractPullRequestNumbers(text: string, conn: Pick<Connection, 'provider' | 'repo_url'>): number[] {
+  const out = new Set<number>();
+  const expected = new URL(conn.repo_url);
+  const expectedPath = expected.pathname.replace(/\.git\/?$/i, '').replace(/\/$/, '').toLowerCase();
+  for (const match of text.matchAll(/https?:\/\/[^\s<>()\]]+/gi)) {
+    const candidate = match[0].replace(/[.,;:!?`'"}]+$/, '');
+    try {
+      const url = new URL(candidate);
+      if (url.host.toLowerCase() !== expected.host.toLowerCase()) continue;
+      const path = url.pathname.replace(/\/$/, '');
+      const suffix = conn.provider === 'github' ? '/pull/' : '/pullrequest/';
+      if (!path.toLowerCase().startsWith(`${expectedPath}${suffix}`)) continue;
+      const number = Number(path.slice(expectedPath.length + suffix.length).split('/')[0]);
+      if (Number.isSafeInteger(number) && number > 0) out.add(number);
+    } catch {
+      // Ignore malformed prose URLs; repository sync must remain best-effort.
+    }
+  }
+  return [...out];
+}
+
+export function matchPullRequestTicket(
+  pr: Pick<PrItem, 'number' | 'branch' | 'title'>,
+  knownTickets: ReadonlySet<string>,
+  commentPrTickets: ReadonlyMap<number, ReadonlySet<string>>,
+): string | null {
+  const direct = findTicketKey(pr.branch, pr.title);
+  if (direct && knownTickets.has(direct)) return direct;
+  const mentionedBy = commentPrTickets.get(pr.number);
+  if (mentionedBy?.size !== 1) return null;
+  const [commentTicket] = mentionedBy;
+  return knownTickets.has(commentTicket) ? commentTicket : null;
 }
 
 function maskToken(token: string): string {
@@ -448,13 +504,42 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
   const impl = conn.provider === 'github' ? github : ado;
 
   // Only tickets of this engagement are linkable.
-  const ticketRows = (await q('SELECT key, status FROM app.tickets WHERE engagement_id = $1', [conn.engagement_id])).rows;
+  const ticketRows = (
+    await q('SELECT key, status, assignee, title FROM app.tickets WHERE engagement_id = $1', [conn.engagement_id])
+  ).rows;
   const ticketStatus = new Map(ticketRows.map((r) => [String(r.key), String(r.status)]));
+  const knownTickets = new Set(ticketStatus.keys());
+
+  // A completion comment can be written before the provider has exposed the
+  // PR (or while a webhook/sync is failing). Re-read those durable references
+  // on every sync so the association is eventually backfilled.
+  const commentRows = (
+    await q(
+      `SELECT c.ticket_key, c.body FROM app.ticket_comments c
+       JOIN app.tickets t ON t.key = c.ticket_key WHERE t.engagement_id = $1`,
+      [conn.engagement_id],
+    )
+  ).rows;
+  const commentPrTickets = new Map<number, Set<string>>();
+  for (const row of commentRows) {
+    const ticketKey = String(row.ticket_key);
+    const body = typeof row.body === 'string' ? row.body : '';
+    for (const number of extractPullRequestNumbers(body, conn)) {
+      const keys = commentPrTickets.get(number) ?? new Set<string>();
+      keys.add(ticketKey);
+      commentPrTickets.set(number, keys);
+    }
+  }
+  const ticketsByKey = new Map(ticketRows.map((r) => [String(r.key), r]));
 
   const lastSync = (await q('SELECT last_sync_at FROM app.repo_connections WHERE id = $1', [conn.id])).rows[0];
   const rawSince = lastSync?.last_sync_at;
   const sinceIso =
-    rawSince instanceof Date ? rawSince.toISOString() : typeof rawSince === 'string' && rawSince ? new Date(rawSince).toISOString() : null;
+    rawSince instanceof Date
+      ? rawSince.toISOString()
+      : typeof rawSince === 'string' && rawSince
+        ? new Date(rawSince).toISOString()
+        : null;
 
   const [commits, prs] = await Promise.all([impl.commits(conn, sinceIso), impl.prs(conn)]);
 
@@ -465,15 +550,14 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
     const inserted = await q(
       `INSERT INTO app.repo_commits (sha, connection_id, message, author, committed_at, url, ticket_key)
        VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (connection_id, sha) DO NOTHING RETURNING sha`,
-      [c.sha, conn.id, c.message.slice(0, 4000), c.author, c.date, c.url, ticketKey],
+      [c.sha, conn.id, c.message.slice(0, 4000), c.author, c.date, c.url, ticketKey]
     );
     if (inserted.rows.length > 0) newCommits++;
   }
 
   let changedPrs = 0;
   for (const p of prs) {
-    const key = findTicketKey(p.branch, p.title);
-    const ticketKey = key && ticketStatus.has(key) ? key : null;
+    const ticketKey = matchPullRequestTicket(p, knownTickets, commentPrTickets);
     const prev = (
       await q('SELECT state FROM app.repo_prs WHERE connection_id = $1 AND number = $2', [conn.id, p.number])
     ).rows[0];
@@ -484,7 +568,19 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
        DO UPDATE SET title = $3, author = $4, state = $5, branch = $6, url = $7, ticket_key = $8, updated_at = $9,
                      merge_sha = COALESCE(EXCLUDED.merge_sha, app.repo_prs.merge_sha),
                      opened_at = COALESCE(app.repo_prs.opened_at, EXCLUDED.opened_at)`,
-      [conn.id, p.number, p.title.slice(0, 500), p.author, p.state, p.branch, p.url, ticketKey, p.updatedAt, p.mergeSha, p.createdAt],
+      [
+        conn.id,
+        p.number,
+        p.title.slice(0, 500),
+        p.author,
+        p.state,
+        p.branch,
+        p.url,
+        ticketKey,
+        p.updatedAt,
+        p.mergeSha,
+        p.createdAt,
+      ]
     );
     const prevState = prev ? String(prev.state) : null;
     if (prevState === p.state) continue;
@@ -497,10 +593,20 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
     if (p.state === 'open' && (status === 'backlog' || status === 'progress')) {
       await setTicketStatus(q, ticketKey, 'review');
       ticketStatus.set(ticketKey, 'review');
+      const ticket = ticketsByKey.get(ticketKey);
+      if (ticket)
+        await createNotification(q, {
+          recipient: String(ticket.assignee),
+          type: 'repo_status',
+          title: `${ticketKey} moved to Review`,
+          message: `PR #${p.number} opened — ${String(ticket.title)}`,
+          ticketKey,
+          engagementId: conn.engagement_id,
+        });
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
          VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
-        [conn.engagement_id, `PR #${p.number} opened for ${ticketKey} — moved to Review.`, conn.repo_name],
+        [conn.engagement_id, `PR #${p.number} opened for ${ticketKey} — moved to Review.`, conn.repo_name]
       );
       // Review gate: fire-and-forget so a slow or unhappy reviewer never
       // stalls (or fails) the sync pass that moved the ticket.
@@ -513,11 +619,21 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
         await q(
           `UPDATE app.repo_prs SET deploy_state = 'pending', deploy_started_at = NOW()
            WHERE connection_id = $1 AND number = $2 AND deploy_state IS NULL`,
-          [conn.id, p.number],
+          [conn.id, p.number]
         );
         if (status !== 'deploying') {
           await setTicketStatus(q, ticketKey, 'deploying');
           ticketStatus.set(ticketKey, 'deploying');
+          const ticket = ticketsByKey.get(ticketKey);
+          if (ticket)
+            await createNotification(q, {
+              recipient: String(ticket.assignee),
+              type: 'repo_status',
+              title: `${ticketKey} moved to Deploying`,
+              message: `PR #${p.number} merged and the pipeline is running`,
+              ticketKey,
+              engagementId: conn.engagement_id,
+            });
         }
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
@@ -529,16 +645,29 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
         // history, not a live event — keep the old straight-to-Done behavior.
         await setTicketStatus(q, ticketKey, 'done');
         ticketStatus.set(ticketKey, 'done');
+        const ticket = ticketsByKey.get(ticketKey);
+        if (ticket)
+          await createNotification(q, {
+            recipient: String(ticket.assignee),
+            type: 'repo_status',
+            title: `${ticketKey} moved to Done`,
+            message: `PR #${p.number} was merged`,
+            ticketKey,
+            engagementId: conn.engagement_id,
+          });
         await q(
           `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
            VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
-          [conn.engagement_id, `PR #${p.number} merged — ${ticketKey} moved to Done.`, conn.repo_name],
+          [conn.engagement_id, `PR #${p.number} merged — ${ticketKey} moved to Done.`, conn.repo_name]
         );
       }
     }
   }
 
-  await q(`UPDATE app.repo_connections SET status = 'connected', last_error = NULL, last_sync_at = NOW() WHERE id = $1`, [conn.id]);
+  await q(
+    `UPDATE app.repo_connections SET status = 'connected', last_error = NULL, last_sync_at = NOW() WHERE id = $1`,
+    [conn.id]
+  );
   await checkDeployments(q, conn);
   return { commits: newCommits, prs: changedPrs };
 }
@@ -563,7 +692,7 @@ export async function checkDeployments(q: Query, rawConn: Connection): Promise<v
        JOIN app.tickets t ON t.key = pr.ticket_key
        WHERE pr.connection_id = $1 AND pr.deploy_state IN ('pending','running','failed')
          AND t.status NOT IN ('done','dismissed')`,
-      [rawConn.id],
+      [rawConn.id]
     )
   ).rows;
   if (pending.length === 0) return;
@@ -577,7 +706,11 @@ export async function checkDeployments(q: Query, rawConn: Connection): Promise<v
     if (!sha) continue; // the next sync pass backfills the merge commit
     const rawStarted = row.deploy_started_at;
     const started =
-      rawStarted instanceof Date ? rawStarted.getTime() : typeof rawStarted === 'string' && rawStarted ? new Date(rawStarted).getTime() : 0;
+      rawStarted instanceof Date
+        ? rawStarted.getTime()
+        : typeof rawStarted === 'string' && rawStarted
+          ? new Date(rawStarted).getTime()
+          : 0;
     const graceOver = Date.now() - started > NO_PIPELINE_GRACE_MS;
     try {
       const p = await impl.pipeline(conn, sha);
@@ -585,19 +718,22 @@ export async function checkDeployments(q: Query, rawConn: Connection): Promise<v
         await q(
           `UPDATE app.repo_prs SET deploy_state = 'running', deploy_url = COALESCE($3, deploy_url)
            WHERE connection_id = $1 AND number = $2`,
-          [conn.id, number, p.url],
+          [conn.id, number, p.url]
         );
       } else if (p.state === 'success' || p.state === 'failed') {
         await q(
           `UPDATE app.repo_prs SET deploy_state = $3, deploy_url = COALESCE($4, deploy_url)
            WHERE connection_id = $1 AND number = $2`,
-          [conn.id, number, p.state, p.url],
+          [conn.id, number, p.state, p.url]
         );
         // Feed the failure once, not on every re-check of a still-failed run.
         if (p.state !== prevDeploy) await settleDeploy(q, conn, number, ticketKey, p.state);
       } else {
         if (graceOver) {
-          await q(`UPDATE app.repo_prs SET deploy_state = 'none' WHERE connection_id = $1 AND number = $2`, [conn.id, number]);
+          await q(`UPDATE app.repo_prs SET deploy_state = 'none' WHERE connection_id = $1 AND number = $2`, [
+            conn.id,
+            number,
+          ]);
           await settleDeploy(q, conn, number, ticketKey, 'none');
         }
       }
@@ -609,7 +745,10 @@ export async function checkDeployments(q: Query, rawConn: Connection): Promise<v
       // stuck on DEPLOYING — settle the ticket instead and say why in the feed.
       const status = err instanceof ProviderHttpError ? err.status : null;
       if ((status === 401 || status === 403) && graceOver) {
-        await q(`UPDATE app.repo_prs SET deploy_state = 'none' WHERE connection_id = $1 AND number = $2`, [conn.id, number]);
+        await q(`UPDATE app.repo_prs SET deploy_state = 'none' WHERE connection_id = $1 AND number = $2`, [
+          conn.id,
+          number,
+        ]);
         await settleDeploy(q, conn, number, ticketKey, 'unreadable');
       }
     }
@@ -621,10 +760,10 @@ async function settleDeploy(
   conn: Connection,
   prNumber: number,
   ticketKey: string | null,
-  outcome: 'success' | 'failed' | 'none' | 'unreadable',
+  outcome: 'success' | 'failed' | 'none' | 'unreadable'
 ): Promise<void> {
   if (!ticketKey) return;
-  const ticket = (await q('SELECT status FROM app.tickets WHERE key = $1', [ticketKey])).rows[0];
+  const ticket = (await q('SELECT status, assignee, title FROM app.tickets WHERE key = $1', [ticketKey])).rows[0];
   if (!ticket) return;
   const status = String(ticket.status);
   if (status === 'done' || status === 'dismissed') return;
@@ -643,10 +782,18 @@ async function settleDeploy(
       : outcome === 'unreadable'
         ? `⚠ Pipeline status for PR #${prNumber} is not readable with the connected credentials — ${ticketKey} moved to Done without deploy verification. Grant the GitHub App "Actions: Read" (or the ADO PAT "Build: Read") to enable deploy tracking.`
         : `PR #${prNumber} merged (no deploy pipeline detected) — ${ticketKey} moved to Done.`;
+  await createNotification(q, {
+    recipient: String(ticket.assignee),
+    type: 'repo_status',
+    title: `${ticketKey} moved to Done`,
+    message: text,
+    ticketKey,
+    engagementId: conn.engagement_id,
+  });
   await q(
     `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
      VALUES ($1, 'AGENT', $2, 'JUST NOW', $3, false)`,
-    [conn.engagement_id, text, conn.repo_name],
+    [conn.engagement_id, text, conn.repo_name]
   );
 }
 
@@ -686,7 +833,7 @@ const AppConnectBody = z.object({
 export function setupRepoRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>
 ) {
   app.post('/api/engagements/:id/repo', async (req, res) => {
     // Two connect modes: GitHub App (installation pick, no stored secret) or
@@ -725,7 +872,8 @@ export function setupRepoRoutes(
         const provider = providerFor(url);
         if (!provider) {
           res.status(400).json({
-            error: 'Unsupported repository URL — use https://github.com/owner/repo or https://dev.azure.com/org/project/_git/repo',
+            error:
+              'Unsupported repository URL — use https://github.com/owner/repo or https://dev.azure.com/org/project/_git/repo',
           });
           return;
         }
@@ -739,7 +887,17 @@ export function setupRepoRoutes(
       const inserted = await q(
         `INSERT INTO app.repo_connections (engagement_id, provider, repo_url, repo_name, default_branch, token, auth_type, installation_id, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-        [engagementId, providerKey, url, info.name, info.defaultBranch, stored.token, stored.authType, stored.installationId, lead.email],
+        [
+          engagementId,
+          providerKey,
+          url,
+          info.name,
+          info.defaultBranch,
+          stored.token,
+          stored.authType,
+          stored.installationId,
+          lead.email,
+        ]
       );
       const conn = toConnection(inserted.rows[0]);
       let sync = { commits: 0, prs: 0 };
@@ -755,7 +913,7 @@ export function setupRepoRoutes(
           engagementId,
           `Connected ${providerKey === 'github' ? 'GitHub' : 'Azure DevOps'} repository ${info.name}${stored.authType === 'app' ? ' via GitHub App' : ''}.`,
           info.name,
-        ],
+        ]
       );
       res.status(201).json({ connection: publicConnection(inserted.rows[0]), sync });
     } catch (err) {
@@ -789,12 +947,15 @@ export function setupRepoRoutes(
         return;
       }
       const prs = (
-        await q('SELECT number, title, author, state, branch, url, ticket_key, deploy_state, deploy_url, updated_at FROM app.repo_prs WHERE connection_id = $1 ORDER BY updated_at DESC NULLS LAST LIMIT 25', [conn.id])
+        await q(
+          'SELECT number, title, author, state, branch, url, ticket_key, deploy_state, deploy_url, updated_at FROM app.repo_prs WHERE connection_id = $1 ORDER BY updated_at DESC NULLS LAST LIMIT 25',
+          [conn.id]
+        )
       ).rows;
       const commits = (
         await q(
           'SELECT sha, message, author, committed_at, url, ticket_key FROM app.repo_commits WHERE connection_id = $1 ORDER BY committed_at DESC NULLS LAST LIMIT 25',
-          [conn.id],
+          [conn.id]
         )
       ).rows;
       res.json({ connection: publicConnection(conn), prs, commits });
@@ -843,7 +1004,9 @@ export function setupRepoRoutes(
         return;
       }
       const event = String(req.headers['x-github-event'] ?? '');
-      const payload = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : raw) as { repository?: { full_name?: string } };
+      const payload = JSON.parse(Buffer.isBuffer(raw) ? raw.toString('utf8') : raw) as {
+        repository?: { full_name?: string };
+      };
       const fullName = payload.repository?.full_name;
       if (!fullName || !['push', 'pull_request'].includes(event)) {
         res.json({ ok: true, ignored: true });
@@ -854,9 +1017,13 @@ export function setupRepoRoutes(
         res.json({ ok: true, duplicate: true });
         return;
       }
-      const { rows } = await q(`SELECT * FROM app.repo_connections WHERE provider = 'github' AND repo_name = $1`, [fullName]);
+      const { rows } = await q(`SELECT * FROM app.repo_connections WHERE provider = 'github' AND repo_name = $1`, [
+        fullName,
+      ]);
       for (const row of rows) {
-        await syncConnection(q, toConnection(row)).catch((err) => console.warn('[repos] webhook sync failed:', (err as Error).message));
+        await syncConnection(q, toConnection(row)).catch((err) =>
+          console.warn('[repos] webhook sync failed:', (err as Error).message)
+        );
       }
       res.json({ ok: true, synced: rows.length });
     } catch (err) {
@@ -888,7 +1055,12 @@ export function setupRepoRoutes(
         res.status(404).json({ error: 'No repository connected' });
         return;
       }
-      const prRow = (await q('SELECT state, ticket_key FROM app.repo_prs WHERE connection_id = $1 AND number = $2', [conn.id, number])).rows[0];
+      const prRow = (
+        await q('SELECT state, ticket_key FROM app.repo_prs WHERE connection_id = $1 AND number = $2', [
+          conn.id,
+          number,
+        ])
+      ).rows[0];
       if (!prRow || String(prRow.ticket_key) !== key) {
         res.status(404).json({ error: 'That PR is not linked to this ticket' });
         return;
@@ -904,12 +1076,20 @@ export function setupRepoRoutes(
         `UPDATE app.repo_prs
          SET state = 'merged', merge_sha = COALESCE($3, merge_sha), deploy_state = 'pending', deploy_started_at = NOW(), updated_at = NOW()
          WHERE connection_id = $1 AND number = $2`,
-        [conn.id, number, sha],
+        [conn.id, number, sha]
       );
       // Merging from the drawer is the sign-off: the ticket lands in Deploying
       // and stays there until the pipeline goes green (DAT-222).
       if (!['deploying', 'done', 'dismissed'].includes(String(ticket.status))) {
         await setTicketStatus(q, key, 'deploying');
+        await createNotification(q, {
+          recipient: String(ticket.assignee),
+          type: 'repo_status',
+          title: `${key} moved to Deploying`,
+          message: `PR #${number} merged and the pipeline is running`,
+          ticketKey: key,
+          engagementId,
+        });
       }
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
@@ -921,7 +1101,7 @@ export function setupRepoRoutes(
       const updated = (
         await q(
           'SELECT number, title, author, state, branch, url, ticket_key, deploy_state, deploy_url FROM app.repo_prs WHERE connection_id = $1 AND number = $2',
-          [conn.id, number],
+          [conn.id, number]
         )
       ).rows[0];
       res.json({ ok: true, pr: updated });
@@ -937,9 +1117,10 @@ export function setupRepoRoutes(
   app.get('/api/tickets/:key/dev', async (req, res) => {
     try {
       const inflight = (
-        await q(`SELECT DISTINCT connection_id FROM app.repo_prs WHERE ticket_key = $1 AND deploy_state IN ('pending','running','failed')`, [
-          req.params.key,
-        ])
+        await q(
+          `SELECT DISTINCT connection_id FROM app.repo_prs WHERE ticket_key = $1 AND deploy_state IN ('pending','running','failed')`,
+          [req.params.key]
+        )
       ).rows;
       for (const r of inflight) {
         const connId = Number(r.connection_id);
@@ -951,13 +1132,14 @@ export function setupRepoRoutes(
       const prs = (
         await q(
           'SELECT number, title, author, state, branch, url, ticket_key, deploy_state, deploy_url FROM app.repo_prs WHERE ticket_key = $1 ORDER BY updated_at DESC NULLS LAST',
-          [req.params.key],
+          [req.params.key]
         )
       ).rows;
       const commits = (
-        await q('SELECT sha, message, author, committed_at, url FROM app.repo_commits WHERE ticket_key = $1 ORDER BY committed_at DESC NULLS LAST LIMIT 15', [
-          req.params.key,
-        ])
+        await q(
+          'SELECT sha, message, author, committed_at, url FROM app.repo_commits WHERE ticket_key = $1 ORDER BY committed_at DESC NULLS LAST LIMIT 15',
+          [req.params.key]
+        )
       ).rows;
       res.json({ prs, commits });
     } catch (err) {
@@ -987,9 +1169,9 @@ export function startRepoPolling(q: Query, intervalMs = 90_000, hotIntervalMs = 
             `SELECT DISTINCT pr.connection_id FROM app.repo_prs pr
              JOIN app.tickets t ON t.key = pr.ticket_key
              WHERE t.status NOT IN ('done','dismissed')
-               AND (pr.state = 'open' OR pr.deploy_state IN ('pending','running','failed'))`,
+               AND (pr.state = 'open' OR pr.deploy_state IN ('pending','running','failed'))`
           )
-        ).rows.map((r) => Number(r.connection_id)),
+        ).rows.map((r) => Number(r.connection_id))
       );
       for (const row of rows) {
         const conn = toConnection(row);
@@ -1001,9 +1183,10 @@ export function startRepoPolling(q: Query, intervalMs = 90_000, hotIntervalMs = 
         } catch (err) {
           const msg = (err as Error).message;
           console.warn(`[repos] poll sync failed for ${conn.repo_name}:`, msg);
-          await q(`UPDATE app.repo_connections SET status = 'error', last_error = $2 WHERE id = $1`, [conn.id, msg.slice(0, 500)]).catch(
-            () => {},
-          );
+          await q(`UPDATE app.repo_connections SET status = 'error', last_error = $2 WHERE id = $1`, [
+            conn.id,
+            msg.slice(0, 500),
+          ]).catch(() => {});
         }
       }
     } catch (err) {
