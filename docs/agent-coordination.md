@@ -84,6 +84,12 @@ Fetch returns `{ messages, next_since_id }`; pass `next_since_id` back on the
 next call. With `agent` set, a fetch returns broadcasts plus messages
 addressed to that agent, excluding its own.
 
+Posting and announcing additionally require the sender's `coordination` scope
+in its per-agent security settings (DAT-212), checked against the engagement of
+the claim it is working. A denied write answers 403 with the reason; reads are
+never gated. See the per-agent security section in
+[architecture.md](./architecture.md).
+
 ## Protocol
 
 - **Announce before you work.** When a run starts, the agent checks

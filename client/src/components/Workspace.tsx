@@ -1,12 +1,13 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/react';
 import { Plus, Rocket } from 'lucide-react';
 import { api } from '../api';
-import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
+import type { AgentTask, ContextFile, Engagement, EngagementDetail, FileLibrary, RepoDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { dropBoardTicket, laneOf } from '../lib/board-order';
 import { needsEstimate } from '../lib/ticket-hours';
+import { PLANNING_REVIEW_LABEL, planningReviewTitle } from '../lib/planning-review';
 import { Analytics } from './Analytics';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
@@ -87,6 +88,7 @@ export function Workspace({
   const [pendingCreates, setPendingCreates] = useState({ backlog: 0, deploy: 0 });
   const [assignPop, setAssignPop] = useState<{ key: string; x: number; y: number } | null>(null);
   const [bulk, setBulk] = useState<Record<string, boolean>>({});
+  const [sourcesTab, setSourcesTab] = useState<'git' | 'files'>('git');
   const [composer, setComposer] = useState<string | null>(null);
   const [pushed, setPushed] = useState<boolean | null>(null);
   const [drafting, setDrafting] = useState(false);
@@ -250,6 +252,24 @@ export function Workspace({
         <span style={{ ...mono(500, 10), color: 'var(--tx3)' }}>{t.key}</span>
         {t.agent && (
           <span style={{ ...mono(500, 9), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 4px' }}>◆ AGENT</span>
+        )}
+        {/* DAT-218: the planning agent is rewriting this ticket right now. Per
+            ticket, so several cards can pulse independently. */}
+        {t.planningReview && (
+          <span
+            title={planningReviewTitle(t.planningReview)}
+            style={{
+              ...mono(500, 9),
+              background: 'var(--agentsoft)',
+              color: 'var(--agent)',
+              border: '1px solid var(--agent)',
+              borderRadius: 2,
+              padding: '1px 4px',
+              animation: 'eec-pulse 2.4s infinite',
+            }}
+          >
+            {PLANNING_REVIEW_LABEL}
+          </span>
         )}
         {(() => {
           if (!at) return null;
@@ -700,6 +720,14 @@ export function Workspace({
       return;
     }
     if (lane !== 'backlog' && lane !== 'review' && lane !== 'done') return;
+    // DAT-213: Done means deployed. Refuse the drop up front rather than let
+    // the card land and snap back on the server's 409 — the toast carries the
+    // server's own reason, so the two can never say different things.
+    const dropped = tickets.find((x) => x.key === payload.key);
+    if (lane === 'done' && dropped?.doneBlockedReason) {
+      toast(dropped.doneBlockedReason);
+      return;
+    }
     // Land exactly where the slot gap previewed it — including a new order
     // within the lane. Optimistic like every board mutation; a failed save
     // refetches so the board falls back to the server's truth.
@@ -1202,13 +1230,18 @@ export function Workspace({
                         <td style={tdBase}>
                           <select
                             value={t.status}
+                            // Done is off the menu until the work is deployed
+                            // (DAT-213); the title says why on hover.
+                            title={t.doneBlockedReason ?? undefined}
                             onChange={(e) => setTicket(t.key, { status: e.target.value as TicketStatus })}
                             style={{ background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
                           >
                             <option value="backlog">Backlog</option>
                             <option value="progress">In Progress</option>
                             <option value="review">In Review</option>
-                            <option value="done">Done</option>
+                            <option value="done" disabled={t.doneBlockedReason !== null}>
+                              {t.doneBlockedReason !== null ? 'Done — not deployed' : 'Done'}
+                            </option>
                           </select>
                         </td>
                         <td style={{ ...tdBase, whiteSpace: 'nowrap' }}>
@@ -1296,8 +1329,31 @@ export function Workspace({
 
       {detail && tab === 'sources' && (
         <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
-          <RepoCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
-          <ContextFilesCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
+          <div style={{ display: 'flex', gap: 3, borderBottom: '1px solid var(--line)', marginBottom: 14 }}>
+            {(['git', 'files'] as const).map((key) => (
+              <button
+                key={key}
+                onClick={() => setSourcesTab(key)}
+                style={{
+                  border: 'none',
+                  borderBottom: sourcesTab === key ? '2px solid var(--acc)' : '2px solid transparent',
+                  background: 'none',
+                  color: sourcesTab === key ? 'var(--tx)' : 'var(--tx3)',
+                  padding: '8px 18px',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                {key === 'git' ? 'Git' : 'Files'}
+              </button>
+            ))}
+          </div>
+          {sourcesTab === 'git' && <RepoCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />}
+          {sourcesTab === 'files' && (
+            <>
+              <FileLibraryCard engId={eng.id} lead={lead} tickets={detail.tickets} toast={toast} refreshDetail={refreshDetail} />
+              <ContextFilesCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
           <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid var(--line)', background: 'var(--bg2)' }}>
             <thead>
               <tr>
@@ -1328,7 +1384,9 @@ export function Workspace({
                 </tr>
               ))}
             </tbody>
-          </table>
+              </table>
+            </>
+          )}
         </div>
       )}
 
@@ -2586,6 +2644,293 @@ function ContextFilesCard({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+
+function FileLibraryCard({
+  engId,
+  lead,
+  tickets,
+  toast,
+  refreshDetail,
+}: {
+  engId: string;
+  lead: boolean;
+  tickets: Ticket[];
+  toast: (msg: string) => void;
+  refreshDetail: () => void;
+}) {
+  const [data, setData] = useState<FileLibrary | null>(null);
+  const [folder, setFolder] = useState('');
+  const [newFolder, setNewFolder] = useState('');
+  const [parent, setParent] = useState('');
+  const [ruleName, setRuleName] = useState('Process uploaded file');
+  const [pattern, setPattern] = useState('*');
+  const [action, setAction] = useState<'create_ticket' | 'refine_ticket'>('create_ticket');
+  const [target, setTarget] = useState('');
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const load = useCallback(
+    () =>
+      api
+        .fileLibrary(engId)
+        .then((d) => {
+          setData(d);
+          setFolder((f) => f || d.folders[0]?.id || '');
+        })
+        .catch((e: Error) => toast(e.message)),
+    [engId, toast]
+  );
+  useEffect(() => void load(), [load]);
+  const mutate = (work: Promise<unknown>, message: string) =>
+    work
+      .then(() => {
+        toast(message);
+        void load();
+        refreshDetail();
+      })
+      .catch((e: Error) => toast(e.message));
+  const path = (id: string): string => {
+    const f = data?.folders.find((x) => x.id === id);
+    return f ? `${f.parentId ? `${path(f.parentId)} / ` : ''}${f.name}` : '';
+  };
+  return (
+    <div
+      style={{
+        border: '1px solid var(--line)',
+        borderRadius: 4,
+        background: 'var(--bg2)',
+        marginBottom: 14,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          padding: '10px 14px',
+          borderBottom: '1px solid var(--line)',
+          ...mono(500, 10),
+          color: 'var(--tx3)',
+          letterSpacing: '.08em',
+        }}
+      >
+        VOLUME FILES
+      </div>
+      {!data ? (
+        <Empty label="Loading file library…" />
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', minHeight: 260 }}>
+          <div style={{ borderRight: '1px solid var(--line)', padding: 10 }}>
+            {data.folders.map((f) => (
+              <div
+                key={f.id}
+                style={{
+                  display: 'flex',
+                  gap: 5,
+                  alignItems: 'center',
+                  padding: '5px 4px',
+                  background: folder === f.id ? 'var(--bg3)' : 'transparent',
+                }}
+              >
+                <button
+                  onClick={() => setFolder(f.id)}
+                  style={{
+                    flex: 1,
+                    textAlign: 'left',
+                    border: 0,
+                    background: 'none',
+                    color: 'var(--tx)',
+                    cursor: 'pointer',
+                    fontSize: 11.5,
+                  }}
+                >
+                  {path(f.id)}
+                </button>
+                {lead && (
+                  <>
+                    <button
+                      title="Rename"
+                      onClick={() => {
+                        const n = prompt('Folder name', f.name);
+                        if (n) void mutate(api.renameFolder(engId, f.id, n), 'Folder renamed');
+                      }}
+                      style={{ border: 0, background: 'none', color: 'var(--tx3)', cursor: 'pointer' }}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      title="Delete"
+                      onClick={() => void mutate(api.deleteFolder(engId, f.id), 'Folder deleted')}
+                      style={{ border: 0, background: 'none', color: 'var(--tx3)', cursor: 'pointer' }}
+                    >
+                      ×
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+            {lead && (
+              <div style={{ borderTop: '1px solid var(--line)', marginTop: 8, paddingTop: 8 }}>
+                <input
+                  value={newFolder}
+                  onChange={(e) => setNewFolder(e.target.value)}
+                  placeholder="New folder"
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    background: 'var(--bg)',
+                    border: '1px solid var(--line2)',
+                    color: 'var(--tx)',
+                    padding: 6,
+                  }}
+                />
+                <select
+                  value={parent}
+                  onChange={(e) => setParent(e.target.value)}
+                  style={{ width: '100%', marginTop: 5, background: 'var(--bg)', color: 'var(--tx)', padding: 5 }}
+                >
+                  <option value="">Top level</option>
+                  {data.folders.map((f) => (
+                    <option value={f.id} key={f.id}>
+                      Inside {path(f.id)}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  disabled={!newFolder.trim()}
+                  onClick={() => {
+                    void mutate(api.createFolder(engId, newFolder, parent || null), 'Folder created');
+                    setNewFolder('');
+                  }}
+                  style={{ marginTop: 5, width: '100%' }}
+                >
+                  Create folder
+                </button>
+              </div>
+            )}
+          </div>
+          <div style={{ padding: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <strong style={{ fontSize: 12 }}>{path(folder) || 'Select a folder'}</strong>
+              <div style={{ flex: 1 }} />
+              <input
+                ref={uploadRef}
+                type="file"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = '';
+                  if (f && folder)
+                    void api
+                      .uploadLibraryFile(engId, folder, f)
+                      .then((r) => {
+                        toast(
+                          r.fired.length ? `${f.name} uploaded — ${r.fired.length} rule fired` : `${f.name} uploaded`
+                        );
+                        void load();
+                        refreshDetail();
+                      })
+                      .catch((x: Error) => toast(x.message));
+                }}
+              />
+              <button disabled={!folder} onClick={() => uploadRef.current?.click()}>
+                Upload file
+              </button>
+            </div>
+            {data.files
+              .filter((f) => f.folderId === folder)
+              .map((f) => (
+                <div
+                  key={f.id}
+                  style={{ display: 'flex', gap: 9, padding: '8px 4px', borderTop: '1px solid var(--line)' }}
+                >
+                  <a href={f.url} style={{ color: 'var(--tx)', fontSize: 12, flex: 1 }}>
+                    {f.filename}
+                  </a>
+                  {f.ticketKey && (
+                    <span style={{ ...mono(500, 9), color: 'var(--agent)' }}>ATTACHED TO {f.ticketKey}</span>
+                  )}
+                  <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtSize(f.size)}</span>
+                  {lead && !f.ticketKey && (
+                    <button
+                      onClick={() => void mutate(api.deleteLibraryFile(engId, f.id), 'File deleted')}
+                      style={{ border: 0, background: 'none', color: 'var(--bad)', cursor: 'pointer' }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              ))}
+            {data.files.filter((f) => f.folderId === folder).length === 0 && <Empty label="No files in this folder." />}
+          </div>
+        </div>
+      )}
+      <div style={{ borderTop: '1px solid var(--line)', padding: 12 }}>
+        <div style={{ ...mono(500, 10), color: 'var(--tx3)', marginBottom: 8 }}>AUTOMATION RULES</div>
+        {data?.rules.map((r) => (
+          <div key={r.id} style={{ display: 'flex', gap: 8, padding: '6px 0', fontSize: 11.5 }}>
+            <span style={{ flex: 1 }}>
+              {r.name}: {path(r.folderId)}/{r.filePattern} →{' '}
+              {r.actionType === 'create_ticket' ? 'create ticket' : `refine ${r.targetTicket}`}
+            </span>
+            {lead && (
+              <button onClick={() => void mutate(api.deleteFileRule(engId, r.id), 'Rule deleted')}>Delete</button>
+            )}
+          </div>
+        ))}
+        {lead && data && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+            <input value={ruleName} onChange={(e) => setRuleName(e.target.value)} placeholder="Rule name" />
+            <select value={folder} onChange={(e) => setFolder(e.target.value)}>
+              {data.folders.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {path(f.id)}
+                </option>
+              ))}
+            </select>
+            <input
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              placeholder="*.txt"
+              style={{ width: 80 }}
+            />
+            <select value={action} onChange={(e) => setAction(e.target.value as typeof action)}>
+              <option value="create_ticket">Create ticket</option>
+              <option value="refine_ticket">Refine ticket</option>
+            </select>
+            {action === 'refine_ticket' && (
+              <select value={target} onChange={(e) => setTarget(e.target.value)}>
+                <option value="">Target ticket…</option>
+                {tickets
+                  .filter((t) => !['done', 'dismissed'].includes(t.status))
+                  .map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.key}
+                    </option>
+                  ))}
+              </select>
+            )}
+            <button
+              disabled={!folder || !ruleName.trim() || (action === 'refine_ticket' && !target)}
+              onClick={() =>
+                void mutate(
+                  api.createFileRule(engId, {
+                    name: ruleName,
+                    folderId: folder,
+                    filePattern: pattern,
+                    actionType: action,
+                    targetTicket: target || null,
+                    enabled: true,
+                  }),
+                  'Rule created'
+                )
+              }
+            >
+              Add rule
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

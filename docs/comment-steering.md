@@ -50,3 +50,37 @@ changes that closed the gaps:
 Caveat: mid-run steering is cooperative — the agent is instructed to check,
 not interrupted. A comment posted after the agent's final pre-push check will
 only be picked up on a re-queue.
+
+## How the agent side of the thread is formatted (DAT-204)
+
+The channel was two-way but one-sided in style: humans wrote markdown and
+agents wrote paragraphs, so a long agent note arrived as an unbroken block.
+
+The formatting contract now lives in one place, `server/routes/comment-style.ts`,
+and is rendered into every prompt that produces a comment body:
+
+- `commentStyleSection()` → the runner prompt (`renderPrompt()` in
+  `server/routes/agent-work.ts`), which covers progress notes, flags and
+  completion summaries.
+- `commentStyleBrief()` → the planning agent's reply to comment feedback
+  (`applyCommentFeedback()` in `server/routes/api.ts`), where the comment is
+  one field of a JSON contract.
+- The delivery-console MCP tools that write a comment (`comment_on_ticket`,
+  `report_agent_progress`, `finish_agent_work`) repeat the short version in
+  their tool descriptions.
+
+The rules in one line: short paragraphs, a blank line between distinct points,
+`-` bullets once there are three or more items, at most about seven bullets and
+one level of nesting, headings only for genuinely multi-section comments,
+**bold** and `code` for key terms — and short beats complete, with one-sentence
+updates left as one sentence.
+
+Display side: `TicketDrawer` renders an ordinary comment through the `Markdown`
+component (marked with `gfm`/`breaks`, then DOMPurify), and `.md` in
+`client/src/index.css` styles headings, lists, `strong`, `code` and `pre` —
+including an explicit `list-style` override, because the appkit-ui Tailwind
+preflight resets it. `tests/comment-markdown.test.ts` pins that path.
+
+Coordination-mirror comments (`::coord::`) are deliberately excluded: they are
+one-line machine messages rendered by `CoordCommentBody`, which linkifies
+ticket keys, @mentions and URLs instead of parsing markdown.

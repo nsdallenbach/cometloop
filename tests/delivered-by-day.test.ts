@@ -28,6 +28,7 @@ function ticket(
     tags: [],
     deployState: null,
     deployUrl: null,
+    doneBlockedReason: null,
     roadmapItem: null,
     branch: null,
     runner: null,
@@ -36,6 +37,7 @@ function ticket(
     activePr: null,
     escalationStage: null,
     escalationPr: null,
+    planningReview: null,
     ...overrides,
   };
 }
