@@ -65,6 +65,7 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 
 | Method | Path | Purpose |
 |---|---|---|
+| `GET` | `/api/agent/work/wait?engagement=&agent=` | Long-poll for queued work (~55s hold) — also the fleet liveness ping |
 | `GET` | `/api/agent/work?engagement=&agent=` | List queued tasks (and this runner's active claims) |
 | `POST` | `/api/agent/work/claim` | Atomically claim the next task → returns the work package |
 | `GET` | `/api/agent/work/:id` | Re-fetch the work package for a claimed task |
@@ -84,6 +85,32 @@ All bodies are JSON. `agent` is the runner's self-chosen name (e.g.
 | `GET` | `/api/tickets/:key/attachments/:id` | Download one attachment (`X-Content-Sha256` header carries the checksum) |
 | `DELETE` | `/api/tickets/:key/attachments/:id` | Delete an attachment (lead only) |
 
+### Wait (and say who you are)
+
+```bash
+curl -s "$APP/api/agent/work/wait?agent=devbox-1" -H "$AUTH"
+```
+
+Always pass `agent` on the poll. The console stamps `last_polled_at` for that
+runner and treats anything without a stamp inside the grace window (4 minutes,
+about three missed cycles) as **offline** rather than idle — that stamp is the
+only thing separating "waiting for work" from "the process died". Task
+heartbeats count too, so a runner deep in a long run stays online while it is
+not polling.
+
+The payoff is on the board: when work has been queued past the alert threshold
+(10 minutes) with zero online runners for its engagement, the console raises a
+**FLEET DOWN** warning instead of leaving the card sitting quietly in the lane.
+Omit `agent` and your runner is invisible to that check while idle (the console
+logs a one-time warning saying so).
+
+The console also reclaims work you drop. If a claimed task goes 15 minutes
+without a heartbeat, it is released back to `queued` for another runner (and
+after two releases it fails for a human). Keep heartbeating while you work, and
+treat `404`/`409` from heartbeat or complete as "this run is no longer mine" —
+kill the agent and go back to waiting rather than finishing a run the console
+has already handed to someone else.
+
 ### Claim
 
 ```bash
@@ -94,6 +121,17 @@ curl -s -X POST "$APP/api/agent/work/claim" -H "$AUTH" -H 'Content-Type: applica
 Optional body fields: `engagement` (only claim from one engagement), `ticket`
 (claim a specific queued ticket). `404` means nothing is queued. Claiming is
 atomic (`FOR UPDATE SKIP LOCKED`) — concurrent runners never get the same task.
+
+`403` means the runner's per-agent security settings forbid it (DAT-212): the
+agent is disabled, or lacks the `claim_work` scope. The claim is released, so
+the ticket stays queued for another runner, and the body carries the reason and
+the `action` that was denied. Treat it as a configuration decision, not a
+transient error — back off rather than retrying, or the still-queued work will
+spin the loop (`runner.mjs` pauses `DENIED_COOLDOWN_MS`, default 2 minutes).
+`git-credential` and the coordination endpoints answer 403 the same way; a lead
+widens the scope from the agent's panel on `/agents`. Reporting progress and
+completing a task the runner already holds are never blocked, so an agent
+disabled mid-run can always close out cleanly.
 
 The response contains `task` (note `task.id` and `task.instructions`),
 `ticket` (with `description` and `ac` acceptance criteria), `engagement`,

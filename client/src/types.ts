@@ -121,6 +121,21 @@ export interface Ticket {
   escalationStage: EscalationStage | null;
   /** PR the escalation is about, when one is live. */
   escalationPr: number | null;
+  /** The planning agent's review pass on this ticket right now (DAT-218);
+   *  null whenever no pass is running. Server-side state, so every ticket
+   *  reports its own — several can be under review at once. */
+  planningReview: PlanningReview | null;
+}
+
+/** Which planning pass is running: the first plan for a chatbox ticket, an
+ *  on-demand re-plan, or a rework triggered by a comment. */
+export type PlanningReviewFlow = 'plan' | 'refine' | 'comment-rework';
+
+/** A live planning-agent review pass, as the board and drawer show it. */
+export interface PlanningReview {
+  flow: PlanningReviewFlow;
+  /** When the pass started; null if the server sent no timestamp. */
+  startedAt: string | null;
 }
 
 /** Stage of a PR review-SLA escalation (DAT-201); cleared rows are never sent. */
@@ -214,6 +229,28 @@ export type ProjectAgentType = 'runner' | 'serving-endpoint' | 'agentbricks' | '
 /** What an agent is for. 'pr-reviewer' is wired to the PR review gate. */
 export type ProjectAgentRole = 'delivery' | 'pr-reviewer' | 'planning' | 'other';
 
+/** Gateable agent actions (DAT-212) — mirrors AGENT_ACTIONS server-side. */
+export type AgentAction = 'claim_work' | 'git_credential' | 'coordination' | 'pr_review';
+
+export type AgentAccessLevel = 'restricted' | 'standard' | 'elevated' | 'custom';
+
+/** One agent's security controls, enforced at action-execution time. */
+export interface AgentSecuritySettings {
+  /** Master switch — a disabled agent may only wind down a task it already holds. */
+  enabled: boolean;
+  accessLevel: AgentAccessLevel;
+  allowedActions: AgentAction[];
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
+/** Action ids, labels and preset scopes, served from the security catalog endpoint. */
+export interface AgentSecurityCatalog {
+  actions: { id: AgentAction; label: string }[];
+  accessLevels: AgentAccessLevel[];
+  presets: Record<Exclude<AgentAccessLevel, 'custom'>, AgentAction[]>;
+}
+
 /** One agent node on the /agents architecture map. */
 export interface ProjectAgent {
   id: string;
@@ -241,6 +278,8 @@ export interface ProjectAgent {
   activeTasks: number;
   lastSeen: string | null;
   createdAt: string | null;
+  /** Per-agent security controls, editable by leads from the agent's panel. */
+  security: AgentSecuritySettings;
 }
 
 /** Latest automated review for a PR, as shown next to the PR on a ticket. */
@@ -268,6 +307,19 @@ export interface AgentsOverview {
   agents: ProjectAgent[];
 }
 
+export interface RunnerLoadBalance {
+  name: string;
+  status: string;
+  weight: number;
+  cap: number | null;
+  activeTasks: number;
+}
+
+export interface RunnerLoadBalancing {
+  modelType: string;
+  runners: RunnerLoadBalance[];
+}
+
 /** One tool invocation streamed from an agent run (live feed in the ticket drawer). */
 export interface ToolCall {
   id: number;
@@ -281,6 +333,35 @@ export interface ContextFile {
   size: number;
   lastModified: string | null;
   url: string;
+}
+
+export interface FileFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+export interface LibraryFile {
+  id: string;
+  filename: string;
+  size: number;
+  folderId: string;
+  ticketKey: string | null;
+  createdAt: string | null;
+  url: string;
+}
+export interface FileRule {
+  id: string;
+  name: string;
+  folderId: string;
+  filePattern: string;
+  actionType: 'create_ticket' | 'refine_ticket';
+  targetTicket: string | null;
+  enabled: boolean;
+}
+export interface FileLibrary {
+  folders: FileFolder[];
+  files: LibraryFile[];
+  rules: FileRule[];
 }
 
 export interface TicketAttachment {
@@ -313,7 +394,13 @@ export interface VelocityReport {
   stages: { key: 'queue' | 'build' | 'review'; label: string; medianHrs: number | null; samples: number }[];
   backlog: { date: string; open: number }[];
   backlogDelta: number | null;
-  weekly: { week: string; doneCount: number; leadTimeHrs: number | null; cycleTimeHrs: number | null; humanHoursSaved: number }[];
+  weekly: {
+    week: string;
+    doneCount: number;
+    leadTimeHrs: number | null;
+    cycleTimeHrs: number | null;
+    humanHoursSaved: number;
+  }[];
   humanHoursSaved: { window: number; total: number; agentHoursSpent: number };
   thenVsNow: {
     spanDays: number;
@@ -335,6 +422,34 @@ export type BurndownDay = {
   total: number;
 };
 
+/** One runner's liveness as the fleet monitor sees it (DAT-224). */
+export interface FleetRunner {
+  agent: string;
+  /** Last poll/claim/heartbeat that reached the server. */
+  lastPolledAt: string | null;
+  lastSeenAt: string | null;
+  online: boolean;
+  busy: boolean;
+}
+
+/**
+ * Whether anything is actually online to claim this engagement's queued work.
+ * `down` means work has been waiting past the threshold with zero online
+ * runners — the board raises it rather than leaving the card sitting silently.
+ */
+export interface FleetStatus {
+  engagementId: string;
+  runners: FleetRunner[];
+  online: number;
+  offline: number;
+  queued: number;
+  oldestQueuedKey: string | null;
+  oldestQueuedAt: string | null;
+  waitingMs: number;
+  down: boolean;
+  message: string | null;
+}
+
 export interface EngagementDetail {
   tickets: Ticket[];
   sources: ContextSource[];
@@ -342,6 +457,8 @@ export interface EngagementDetail {
   team: TeamMember[];
   suggestions: Suggestion[];
   agentTasks: AgentTask[];
+  /** Null when the fleet check could not run — treat as "no warning to show". */
+  fleet: FleetStatus | null;
 }
 
 export interface Proposal {
@@ -369,6 +486,17 @@ export interface AdminData {
 
 export type Role = 'admin' | 'lead' | 'developer';
 
+export interface Notification {
+  id: number;
+  type: string;
+  title: string;
+  message: string;
+  ticketKey: string | null;
+  engagementId: string | null;
+  read: boolean;
+  createdAt: string;
+}
+
 export interface Me {
   email: string;
   role: Role;
@@ -381,6 +509,14 @@ export interface TicketComment {
   author: string;
   body: string;
   createdAt: string;
+}
+
+/** One review rejection cycle (DAT-217); a ticket accumulates these, oldest first. */
+export interface TicketRejection {
+  id: number;
+  reason: string;
+  rejectedBy: string;
+  rejectedAt: string;
 }
 
 export interface RepoConnection {

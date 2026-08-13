@@ -15,6 +15,7 @@ import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
 import { prefetchMermaid } from './components/Markdown';
 import { Palette, type PaletteItem } from './components/Palette';
+import { NotificationCenter } from './components/NotificationCenter';
 
 export type { Tab } from './routes';
 
@@ -560,6 +561,7 @@ export default function App() {
           ADMIN
         </button>
         )}
+        <NotificationCenter onOpenTicket={openTicket} />
         <button
           onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
           title="Toggle theme"

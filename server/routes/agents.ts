@@ -1,6 +1,8 @@
 import type express from 'express';
 import { z } from 'zod';
 import type { Identity } from './roles';
+import { loadRunnerPolls, runnerStatus } from './fleet';
+import { AGENT_SECURITY_SCHEMA_SQL, type AgentSecuritySettings, baselineSecurity, parseSecuritySettings } from './agent-security';
 import { accessibleProjectIds } from './project-access';
 
 /**
@@ -20,6 +22,9 @@ import { accessibleProjectIds } from './project-access';
  * - Observed runners: derived from app.agent_tasks history — any runner that
  *   ever claimed work on an engagement shows up as a live agent node with its
  *   task counts and last-seen time. This is the "real data" half of the map.
+ *   Their status is not task counts alone: a runner is 'idle' only while it is
+ *   still polling the queue, and 'offline' once it stops (DAT-224), because
+ *   task history alone cannot tell a waiting runner from a dead one.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -47,6 +52,8 @@ export const PROJECT_AGENTS_SCHEMA_SQL = [
   `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'delivery'`,
   `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS endpoint_name TEXT`,
   `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS description TEXT`,
+  // DAT-212: per-agent security settings + the safe-baseline rollout migration.
+  ...AGENT_SECURITY_SCHEMA_SQL,
 ];
 
 /** Node kinds the map renders. 'foundry' is still a placeholder. */
@@ -92,6 +99,14 @@ const txt = (v: unknown): string => (typeof v === 'string' ? v : '');
 const num = (v: unknown): number => (typeof v === 'number' ? v : Number(v) || 0);
 const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString() : typeof v === 'string' ? v : null);
 
+/** Timestamp column → epoch ms, or null when absent/unparseable. */
+const at = (v: unknown): number | null => {
+  const s = iso(v);
+  if (s === null) return null;
+  const t = new Date(s).getTime();
+  return Number.isFinite(t) ? t : null;
+};
+
 /**
  * Every runner in the fleet today is a Claude Code instance (see
  * RunnerLogo.tsx client-side); named harnesses in the runner id override that
@@ -100,6 +115,7 @@ const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString() 
 export function inferHarness(agentName: string): string {
   const n = agentName.toLowerCase();
   if (n.includes('codex')) return 'codex';
+  if (n.includes('omnigent')) return 'omnigent';
   if (n.includes('gemini')) return 'gemini';
   if (n.includes('copilot')) return 'copilot';
   if (n.includes('cursor')) return 'cursor';
@@ -235,18 +251,27 @@ export async function syncProjectAgents(q: Query): Promise<void> {
        GROUP BY engagement_id, agent`,
     )
   ).rows;
+  const polls = await loadRunnerPolls(q);
   for (const r of observed) {
     const name = txt(r.agent);
     const harness = inferHarness(name);
-    const status = num(r.active_tasks) > 0 ? 'active' : 'idle';
-    const config = JSON.stringify({ tasks: num(r.tasks), activeTasks: num(r.active_tasks), lastSeen: iso(r.last_seen) });
+    const lastPolled = polls.get(name) ?? null;
+    const status = runnerStatus(num(r.active_tasks), lastPolled, at(r.last_seen));
+    const config = JSON.stringify({
+      tasks: num(r.tasks),
+      activeTasks: num(r.active_tasks),
+      lastSeen: iso(r.last_seen),
+      lastPolled: lastPolled === null ? null : new Date(lastPolled).toISOString(),
+    });
+    // security_settings is written on insert only — a sync must never overwrite
+    // a scope a lead has set on the panel (DAT-212).
     await q(
-      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, status, config, created_by)
-       VALUES ($1,$2,'runner',$3,$4,$5,$6,'system:observed')
+      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, status, config, created_by, security_settings)
+       VALUES ($1,$2,'runner',$3,$4,$5,$6,'system:observed',$7)
        ON CONFLICT (engagement_id, lower(name))
        DO UPDATE SET status = $5, config = $6, harness = COALESCE(app.project_agents.harness, $3),
                      model_provider = COALESCE(app.project_agents.model_provider, $4)`,
-      [txt(r.engagement_id), name, harness, HARNESS_PROVIDER[harness] ?? null, status, config],
+      [txt(r.engagement_id), name, harness, HARNESS_PROVIDER[harness] ?? null, status, config, JSON.stringify(baselineSecurity('delivery'))],
     );
   }
 
@@ -297,14 +322,14 @@ export async function syncProjectAgents(q: Query): Promise<void> {
   const engagements = (await q('SELECT id FROM app.engagements')).rows;
   for (const e of engagements) {
     await q(
-      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, endpoint_type, endpoint_name, role, status, config, created_by)
-       VALUES ($1,'planning-agent','serving-endpoint',NULL,'databricks',$2,'model-serving',$5,'planning',$3,$4,'system:serving')
+      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, endpoint_type, endpoint_name, role, status, config, created_by, security_settings)
+       VALUES ($1,'planning-agent','serving-endpoint',NULL,'databricks',$2,'model-serving',$5,'planning',$3,$4,'system:serving',$6)
        ON CONFLICT (engagement_id, lower(name))
        -- role is forced, not COALESCEd: rows that predate the role column
        -- carry the 'delivery' default, and this row is system-owned anyway.
        DO UPDATE SET model = $2, status = $3, config = $4, role = 'planning',
                      endpoint_name = COALESCE(app.project_agents.endpoint_name, $5)`,
-      [txt(e.id), state?.servedModel ?? SERVING_ENDPOINT, endpointStatus(state), config, SERVING_ENDPOINT],
+      [txt(e.id), state?.servedModel ?? SERVING_ENDPOINT, endpointStatus(state), config, SERVING_ENDPOINT, JSON.stringify(baselineSecurity('planning'))],
     );
   }
 }
@@ -373,6 +398,8 @@ export interface OverviewAgent {
   activeTasks: number;
   lastSeen: string | null;
   createdAt: string | null;
+  /** Per-agent security controls (DAT-212) — the settings the runtime enforces. */
+  security: AgentSecuritySettings;
 }
 
 export interface OverviewProject {
@@ -395,7 +422,8 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
     phase: txt(r.phase),
   }));
 
-  const configured: OverviewAgent[] = (await q('SELECT * FROM app.project_agents ORDER BY id')).rows.map((r) => {
+  const storedRows = (await q('SELECT * FROM app.project_agents ORDER BY id')).rows;
+  const configured: OverviewAgent[] = storedRows.map((r) => {
     // Synced rows carry live facts in config (task counts, last-seen or the
     // serving endpoint's checked-at) — surface them on the node.
     const cfg = (() => {
@@ -426,11 +454,18 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
       activeTasks: num(cfg.activeTasks),
       lastSeen: typeof cfg.lastSeen === 'string' ? cfg.lastSeen : typeof cfg.checkedAt === 'string' ? cfg.checkedAt : null,
       createdAt: iso(r.created_at),
+      security: parseSecuritySettings(r.security_settings, txt(r.role) || 'delivery'),
     };
   });
 
+  // The stored row behind an observed runner, so the security panel can address
+  // it by id — the sync upserts one per runner before every overview load.
+  const storedByKey = new Map(storedRows.map((r) => [`${txt(r.engagement_id)} ${txt(r.name).toLowerCase()}`, r]));
+
   // Real runner history: one node per (engagement, runner) that has ever
-  // claimed work there. Active = currently holding a claimed/working task.
+  // claimed work there. Active = currently holding a claimed/working task,
+  // idle = still polling with nothing to do, offline = stopped reaching us.
+  const runnerPolls = await loadRunnerPolls(q);
   const observed: OverviewAgent[] = (
     await q(
       `SELECT engagement_id, agent,
@@ -445,26 +480,31 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
   ).rows.map((r) => {
     const name = txt(r.agent);
     const harness = inferHarness(name);
+    const stored = storedByKey.get(`${txt(r.engagement_id)} ${name.toLowerCase()}`);
+    const role = txt(stored?.role) || 'delivery';
     return {
       id: `run-${txt(r.engagement_id)}-${name}`,
-      recordId: null,
+      // Null only until the first sync writes the runner's row; the panel shows
+      // its settings read-only in that window rather than editing a ghost.
+      recordId: stored ? num(stored.id) : null,
       engagementId: txt(r.engagement_id),
       name,
       agentType: 'runner',
-      role: 'delivery',
-      description: null,
+      role,
+      description: stored?.description == null ? null : txt(stored.description),
       harness,
       modelProvider: HARNESS_PROVIDER[harness] ?? null,
       model: null,
       endpointType: null,
       endpointName: null,
       endpointError: null,
-      status: num(r.active_tasks) > 0 ? 'active' : 'idle',
+      status: runnerStatus(num(r.active_tasks), runnerPolls.get(name) ?? null, at(r.last_seen)),
       source: 'observed' as const,
       tasks: num(r.tasks),
       activeTasks: num(r.active_tasks),
       lastSeen: iso(r.last_seen),
       createdAt: null,
+      security: parseSecuritySettings(stored?.security_settings, role),
     };
   });
 
@@ -557,8 +597,8 @@ export function setupProjectAgentRoutes(
       }
       const inserted = await q(
         `INSERT INTO app.project_agents
-           (engagement_id, name, agent_type, role, description, harness, model_provider, model, endpoint_type, endpoint_name, status, config, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+           (engagement_id, name, agent_type, role, description, harness, model_provider, model, endpoint_type, endpoint_name, status, config, created_by, security_settings)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
         [
           engId,
           name,
@@ -573,6 +613,9 @@ export function setupProjectAgentRoutes(
           status,
           JSON.stringify(config),
           who.email,
+          // A new agent starts on the baseline for its role; the lead narrows or
+          // widens it from the security panel afterwards.
+          JSON.stringify(baselineSecurity(role)),
         ],
       );
       const what = endpointBacked ? `${agentType} endpoint '${endpointName ?? ''}'` : (harness ?? modelProvider ?? agentType);
@@ -612,11 +655,18 @@ export function setupProjectAgentRoutes(
         return;
       }
       const { role, description, endpointName } = parsed.data;
+      // Re-role an agent and its baseline scope follows — otherwise promoting an
+      // agent to pr-reviewer would leave it without the review scope and the
+      // gate would reject it. Settings a lead has edited (updatedBy set) are
+      // never rewritten here; they change only through the security panel.
+      const current = parseSecuritySettings(row.security_settings, txt(row.role) || 'delivery');
+      const rebaseline = role && role !== txt(row.role) && current.updatedBy === null ? JSON.stringify(baselineSecurity(role)) : null;
       const updated = await q(
         `UPDATE app.project_agents
-         SET role = COALESCE($2, role), description = COALESCE($3, description), endpoint_name = COALESCE($4, endpoint_name)
+         SET role = COALESCE($2, role), description = COALESCE($3, description), endpoint_name = COALESCE($4, endpoint_name),
+             security_settings = COALESCE($5::jsonb, security_settings)
          WHERE id = $1 RETURNING *`,
-        [num(row.id), role ?? null, description ?? null, endpointName ?? null],
+        [num(row.id), role ?? null, description ?? null, endpointName ?? null, rebaseline],
       );
       res.json(updated.rows[0]);
     } catch (err) {

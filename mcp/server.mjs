@@ -236,6 +236,24 @@ tool(
 );
 
 tool(
+  'reject_ticket_review',
+  'Reject a ticket that is in Review and send it back for rework (lead only). The reason is mandatory and is handed to the next runner that claims the ticket; repeated rejections accumulate rather than overwrite. The ticket returns to Backlog — never Done — and is re-queued for an agent unless requeue is false.',
+  {
+    key: z.string(),
+    reason: z.string().min(1).describe('What is wrong and what the next run must fix'),
+    requeue: z.boolean().optional().describe('Also queue a fresh agent run (default: yes when an agent worked the ticket)'),
+  },
+  async ({ key, ...body }) => call('POST', `/api/tickets/${encodeURIComponent(key)}/reject`, body),
+);
+
+tool(
+  'list_ticket_rejections',
+  'The review rejection history of a ticket (reason, who rejected it, when), oldest first.',
+  { key: z.string() },
+  async ({ key }) => call('GET', `/api/tickets/${encodeURIComponent(key)}/rejections`),
+);
+
+tool(
   'comment_on_ticket',
   `Add a comment to a ticket.${MD_HINT}`,
   { key: z.string(), body: z.string().min(1) },

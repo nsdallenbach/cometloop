@@ -52,13 +52,15 @@ describe('applyTicketOrder', () => {
 
   it('leaves other engagements untouched', async () => {
     await applyTicketOrder(q, 'eng-a', ['DAT-102', 'DAT-101', 'DAT-103']);
-    expect(await boardOrder('eng-b')).toEqual(['NAC-101', 'NAC-102']);
+    // eng-b is never renumbered, so it keeps its SERIAL seq — which on a
+    // newest-first board (DAT-223) puts the later-created ticket on top.
+    expect(await boardOrder('eng-b')).toEqual(['NAC-102', 'NAC-101']);
   });
 
   it('ignores keys outside the engagement', async () => {
     expect(await applyTicketOrder(q, 'eng-a', ['NAC-101', 'DAT-102', 'DAT-101', 'DAT-103'])).toBe(3);
     expect(await boardOrder('eng-a')).toEqual(['DAT-102', 'DAT-101', 'DAT-103']);
-    expect(await boardOrder('eng-b')).toEqual(['NAC-101', 'NAC-102']);
+    expect(await boardOrder('eng-b')).toEqual(['NAC-102', 'NAC-101']);
   });
 
   it('keeps the first position for duplicated keys', async () => {

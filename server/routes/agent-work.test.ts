@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderPrompt } from './agent-work';
+import { blockedByRun, renderPrompt } from './agent-work';
 import { COMMENT_STYLE_RULES } from './comment-style';
 
 const task = { id: 7, ticket_key: 'DAT-146', agent: 'devbox-1', instructions: '' };
@@ -45,6 +45,68 @@ describe('renderPrompt ticket comments', () => {
   it('tells the agent to re-read comments mid-run via get_ticket', () => {
     const prompt = renderPrompt(task, ticket, engagement, null, [], []);
     expect(prompt).toContain('get_ticket (key DAT-146)');
+  });
+});
+
+describe('blockedByRun', () => {
+  const NOW = Date.UTC(2026, 7, 13, 12, 0, 0);
+
+  it('says a queued ticket is simply already queued', () => {
+    expect(blockedByRun({ id: 4, state: 'queued' }, NOW)).toBe('This ticket is already queued for agent work');
+  });
+
+  it('names the holder, how long it has been silent, and how to clear it', () => {
+    // The zombie case: GET /api/agent/work showed nothing for the ticket, but
+    // queueing it returned a bare 409 with no way to discover the block.
+    const msg = blockedByRun(
+      { id: 42, state: 'working', agent: 'devbox-2', last_heartbeat: new Date(NOW - 8 * 60 * 60_000) },
+      NOW,
+    );
+    expect(msg).toContain('devbox-2');
+    expect(msg).toContain('run 42');
+    expect(msg).toContain('8h ago');
+    expect(msg).toContain('Recall it first');
+  });
+
+  it('handles a claim that never heartbeated', () => {
+    expect(blockedByRun({ id: 42, state: 'claimed', agent: 'devbox-2', last_heartbeat: null }, NOW)).toContain('never heartbeated');
+  });
+});
+
+describe('renderPrompt review rejections', () => {
+  const rejection = (n: number, reason: string) => ({
+    id: n,
+    reason,
+    rejectedBy: 'lead@datavail.com',
+    rejectedAt: `2026-08-1${n}T09:00:00.000Z`,
+  });
+
+  it('omits the section for a ticket that was never rejected', () => {
+    expect(renderPrompt(task, ticket, engagement, null, [], [], [])).not.toContain('## Previous review rejections');
+  });
+
+  it('hands the runner every prior reason, newest last', () => {
+    const prompt = renderPrompt(task, ticket, engagement, null, [], [], [], [
+      rejection(1, 'No tests on the new endpoint.'),
+      rejection(2, 'Still no tests.'),
+    ]);
+    expect(prompt).toContain('## Previous review rejections (2)');
+    expect(prompt.indexOf('No tests on the new endpoint.')).toBeLessThan(prompt.indexOf('Still no tests.'));
+  });
+
+  it('puts the rejections ahead of the lead instructions and the comment thread', () => {
+    const prompt = renderPrompt(
+      { ...task, instructions: 'Ship it behind a flag.' },
+      ticket,
+      engagement,
+      null,
+      [],
+      [{ author: 'lead', body: 'One more thing.', created_at: '' }],
+      [],
+      [rejection(1, 'Wrong lane after rejection.')],
+    );
+    expect(prompt.indexOf('## Previous review rejections')).toBeLessThan(prompt.indexOf('## Lead instructions'));
+    expect(prompt.indexOf('## Previous review rejections')).toBeLessThan(prompt.indexOf('## Ticket comments'));
   });
 });
 

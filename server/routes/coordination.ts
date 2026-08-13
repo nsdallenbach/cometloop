@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type express from 'express';
 import { resolveIdentity } from './roles';
+import { activeEngagementFor, enforceAgentAction } from './agent-security';
 
 /**
  * Inter-agent coordination channel (DAT-149).
@@ -295,6 +296,17 @@ export function setupCoordinationRoutes(app: express.Application, q: Query) {
     return rows.length > 0;
   }
 
+  /**
+   * Security gate (DAT-212): the agent's own settings must allow 'coordination'.
+   * Scoped to the engagement of the claim it is working — callerOwnsAgent has
+   * already established there is one.
+   */
+  async function coordinationAllowed(res: express.Response, agent: string, detail: string): Promise<boolean> {
+    const engagementId = await activeEngagementFor(q, agent);
+    if (!engagementId) return true;
+    return await enforceAgentAction(res, q, { engagementId, agent, action: 'coordination', detail });
+  }
+
   app.post('/api/agent/coordination/messages', async (req, res) => {
     const parsed = MessageBody.safeParse(req.body);
     if (!parsed.success) {
@@ -307,6 +319,7 @@ export function setupCoordinationRoutes(app: express.Application, q: Query) {
         res.status(403).json({ error: 'sender must own an active claimed task under that agent name' });
         return;
       }
+      if (!(await coordinationAllowed(res, m.sender, `${m.type} → ${m.recipient ?? 'all'}`))) return;
       const row = await postCoordinationMessage(q, m);
       console.log(
         `[coordination] ${m.sender} → ${m.recipient ?? 'all'}: ${m.type}${m.sla ? ` (SLA ${m.sla})` : ''}${m.branch ? ` on ${m.branch}` : ''} (message ${String(row.id)})`,
@@ -355,6 +368,7 @@ export function setupCoordinationRoutes(app: express.Application, q: Query) {
         res.status(403).json({ error: 'announcing requires an active claimed task under that agent name' });
         return;
       }
+      if (!(await coordinationAllowed(res, parsed.data.agent, parsed.data.branch))) return;
       // A branch actively announced by another agent can't be taken over or
       // marked completed on its behalf.
       const existing = (

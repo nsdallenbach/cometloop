@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findTicketKey, rememberDelivery } from './repos';
+import { extractPullRequestNumbers, findTicketKey, matchPullRequestTicket, rememberDelivery } from './repos';
 
 describe('findTicketKey', () => {
   it('finds a ticket key in a branch name', () => {
@@ -12,6 +12,57 @@ describe('findTicketKey', () => {
 
   it('returns null when no key is present', () => {
     expect(findTicketKey('main', 'chore: bump deps')).toBeNull();
+  });
+});
+
+describe('extractPullRequestNumbers', () => {
+  const github = { provider: 'github' as const, repo_url: 'https://github.com/datavail-solutions/engagement-console' };
+
+  it('reproduces the DAT-105 completion-comment format', () => {
+    const comment =
+      'Completed: notification center shipped.\n\nhttps://github.com/datavail-solutions/engagement-console/pull/106\nhttps://github.com/datavail-solutions/engagement-console/pull/106';
+    expect(extractPullRequestNumbers(comment, github)).toEqual([106]);
+  });
+
+  it('reproduces the DAT-200 completion-comment format with surrounding prose', () => {
+    const comment = 'Completed DAT-200 via https://github.com/datavail-solutions/engagement-console/pull/103.';
+    expect(extractPullRequestNumbers(comment, github)).toEqual([103]);
+  });
+
+  it('spot-checks markdown, punctuation, and unrelated repository references', () => {
+    const comment = [
+      '[PR](https://github.com/datavail-solutions/engagement-console/pull/91),',
+      '`https://github.com/datavail-solutions/engagement-console/pull/92`',
+      'https://github.com/another/repository/pull/93',
+    ].join(' ');
+    expect(extractPullRequestNumbers(comment, github)).toEqual([91, 92]);
+  });
+
+  it('supports Azure DevOps pull-request URLs', () => {
+    const ado = { provider: 'ado' as const, repo_url: 'https://dev.azure.com/acme/Console/_git/execution' };
+    expect(extractPullRequestNumbers('See https://dev.azure.com/acme/Console/_git/execution/pullrequest/27', ado)).toEqual([27]);
+  });
+});
+
+describe('matchPullRequestTicket', () => {
+  const known = new Set(['DAT-105', 'DAT-200', 'DAT-225']);
+
+  it.each([
+    [106, 'feature/notification-center', 'Build notifications', 'DAT-105'],
+    [103, 'feature/requeue-conflicts', 'Requeue merge conflicts', 'DAT-200'],
+  ])('backfills PR #%i from the completion-comment reference', (number, branch, title, ticket) => {
+    const references = new Map([[number, new Set([ticket])]]);
+    expect(matchPullRequestTicket({ number, branch, title }, known, references)).toBe(ticket);
+  });
+
+  it('keeps the branch/title ticket key authoritative', () => {
+    const references = new Map([[225, new Set(['DAT-200'])]]);
+    expect(matchPullRequestTicket({ number: 225, branch: 'DAT-225-fix', title: 'Fix links' }, known, references)).toBe('DAT-225');
+  });
+
+  it('does not guess when multiple tickets reference the same PR', () => {
+    const references = new Map([[106, new Set(['DAT-105', 'DAT-200'])]]);
+    expect(matchPullRequestTicket({ number: 106, branch: 'feature/notifications', title: 'Notifications' }, known, references)).toBeNull();
   });
 });
 

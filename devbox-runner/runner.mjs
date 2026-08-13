@@ -29,6 +29,9 @@
 //   MAX_RUN_MINUTES   watchdog: kill the agent and fail the task after this
 //                     many minutes (default 180; "0" disables)
 //   ONCE              "1" = run a single task then exit (local testing)
+//   DENIED_COOLDOWN_MS  pause after the console refuses a claim on agent-security
+//                     grounds, so a disabled runner idles instead of spinning
+//                     (default 120000)
 import { execFileSync, spawn } from 'child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import os from 'os';
@@ -44,6 +47,8 @@ const WORK_ROOT = process.env.WORK_ROOT ?? path.join(os.homedir(), 'agent-work')
 const HARNESS = getHarness(process.env.HARNESS);
 const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES ?? 180);
 const ONCE = process.env.ONCE === '1';
+/** Pause after the console refuses a claim on security grounds (DAT-212). */
+const DENIED_COOLDOWN_MS = Number(process.env.DENIED_COOLDOWN_MS ?? 120_000);
 
 const log = (msg) => console.log(`[${new Date().toISOString()}] ${msg}`);
 
@@ -89,7 +94,13 @@ async function call(method, apiPath, body, timeoutMs = 30_000) {
 }
 
 async function waitForWork() {
-  const qs = ENGAGEMENT ? `?engagement=${encodeURIComponent(ENGAGEMENT)}` : '';
+  // The agent id turns this poll into the fleet liveness ping (DAT-224): an
+  // idle runner is only distinguishable from an exited one because this
+  // request keeps arriving every ~70s. No extra traffic — the console stamps
+  // last_polled_at on the long-poll the runner was making anyway.
+  const params = new URLSearchParams({ agent: AGENT });
+  if (ENGAGEMENT) params.set('engagement', ENGAGEMENT);
+  const qs = `?${params.toString()}`;
   for (;;) {
     try {
       const hit = await call('GET', `/api/agent/work/wait${qs}`, undefined, 70_000);
@@ -469,6 +480,14 @@ for (;;) {
   try {
     pkg = await call('POST', '/api/agent/work/claim', { agent: AGENT, ...(ENGAGEMENT ? { engagement: ENGAGEMENT } : {}) });
   } catch (e) {
+    // 403 = this runner's security settings forbid claiming (DAT-212). The
+    // work stays queued, so waiting would answer instantly and spin — back off
+    // until a lead re-enables the agent.
+    if (e.status === 403) {
+      log(`claim refused by the console's agent security settings: ${e.message} — pausing ${DENIED_COOLDOWN_MS / 1000}s`);
+      await new Promise((r) => setTimeout(r, DENIED_COOLDOWN_MS));
+      continue;
+    }
     if (e.status !== 404) log(`claim failed: ${e.message}`);
     continue; // another runner got there first — go back to waiting
   }
