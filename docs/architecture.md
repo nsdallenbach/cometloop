@@ -71,7 +71,7 @@ component. Mutations are optimistic with rollback; the board polls every 8s.
 
 | Store | Contents |
 |---|---|
-| Lakebase Postgres (`app.*`) | engagements, tickets (+events/links/tags/attachments/estimates), comments, feed, team, agent_tasks, coordination_messages, repo connections/PRs/commits, notifications-to-be |
+| Lakebase Postgres (`app.*`) | engagements, tickets (+events/links/tags/attachments/estimates), comments, feed, team, agent_tasks, coordination_messages, repo connections/PRs/commits, PR review-SLA escalations |
 | UC volume `sow_docs` | uploaded SOW/SOP documents, per-engagement context files, standards docs |
 | UC volume `agent_telemetry` | per-run tool-call logs archived as NDJSON under `tool-calls/<engagement>/<ticket>/` |
 
@@ -90,6 +90,7 @@ with a Lakebase credential.
 - `coordination.ts` — inter-agent messages (announce, request/response, SLAs), mirrored to tickets
 - `repos.ts` — GitHub/ADO providers: PR & commit sync, ticket auto-linking, merge-from-drawer, deploy watch
 - `pr-conflicts.ts` — conflict reports, auto-resolve vs escalate assessment
+- `pr-escalation.ts` — review-SLA watch: 24h lead ping, 48h PR comment + board flag, lead dismissal resets the timers
 - `estimates.ts` — agent + human hour estimates, per-engagement calibration from actuals
 - `ticket-events / -links / -tags / -order / -attachments` — the event trail, dependencies, tags, board ordering, file attachments
 - `tool-calls.ts` — live tool-call streaming from runners, archived to telemetry
@@ -157,6 +158,14 @@ warning on red. Merging is possible from the ticket drawer itself
 (lead-only, click-to-confirm). Conflict tooling gives agents a safe path:
 report conflicts, auto-resolve only trivial ones, escalate anything that
 overlaps another ticket's open PR.
+
+Reviews get a clock too: an open PR that no one has reviewed 24h after the
+runner opened it pings the engagement lead in the notification centre, and at
+48h the console posts a summary comment on the PR and flags the ticket on the
+board. Every stage transition is claimed with a conditional UPDATE, so a
+threshold checked repeatedly still notifies exactly once; a lead can dismiss
+the escalation from the ticket drawer, which resets both timers, and review,
+merge or closure stops the clock for good.
 
 CI (`deploy.yml`) runs typecheck → lint → build → `databricks bundle
 deploy` → `bundle run app` on every push to main, serialized by a

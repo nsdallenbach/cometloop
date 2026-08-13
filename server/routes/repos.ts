@@ -47,6 +47,9 @@ export const REPO_SCHEMA_SQL = [
     UNIQUE (connection_id, number)
   )`,
   `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS merge_sha TEXT`,
+  // When the provider says the PR was opened — the start of the review SLA
+  // clock (DAT-201). Never overwritten once recorded.
+  `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ`,
   `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_state TEXT`,
   `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_url TEXT`,
   `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_started_at TIMESTAMPTZ`,
@@ -126,6 +129,8 @@ interface PrItem {
   url: string;
   updatedAt: string | null;
   mergeSha: string | null;
+  /** When the PR was opened — starts the review SLA clock (DAT-201). */
+  createdAt: string | null;
 }
 
 /** Aggregate CI status for one commit: 'none' = no pipeline triggered (yet). */
@@ -230,6 +235,7 @@ const github: Provider = {
       state: string;
       merged_at: string | null;
       merge_commit_sha: string | null;
+      created_at: string;
       updated_at: string;
       html_url: string;
       user?: { login?: string };
@@ -243,6 +249,7 @@ const github: Provider = {
       branch: p.head?.ref ?? '',
       url: p.html_url,
       updatedAt: p.updated_at ?? null,
+      createdAt: p.created_at ?? null,
       // For unmerged PRs merge_commit_sha is a test-merge ref — only trust it once merged.
       mergeSha: p.merged_at ? (p.merge_commit_sha ?? null) : null,
     }));
@@ -357,6 +364,7 @@ const ado: Provider = {
       branch: (p.sourceRefName ?? '').replace(/^refs\/heads\//, ''),
       url: `${conn.repo_url}/pullrequest/${p.pullRequestId}`,
       updatedAt: p.closedDate ?? p.creationDate ?? null,
+      createdAt: p.creationDate ?? null,
       mergeSha: p.status === 'completed' ? (p.lastMergeCommit?.commitId ?? null) : null,
     }));
   },
@@ -456,12 +464,13 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
       await q('SELECT state FROM app.repo_prs WHERE connection_id = $1 AND number = $2', [conn.id, p.number])
     ).rows[0];
     await q(
-      `INSERT INTO app.repo_prs (connection_id, number, title, author, state, branch, url, ticket_key, updated_at, merge_sha)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO app.repo_prs (connection_id, number, title, author, state, branch, url, ticket_key, updated_at, merge_sha, opened_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        ON CONFLICT (connection_id, number)
        DO UPDATE SET title = $3, author = $4, state = $5, branch = $6, url = $7, ticket_key = $8, updated_at = $9,
-                     merge_sha = COALESCE(EXCLUDED.merge_sha, app.repo_prs.merge_sha)`,
-      [conn.id, p.number, p.title.slice(0, 500), p.author, p.state, p.branch, p.url, ticketKey, p.updatedAt, p.mergeSha],
+                     merge_sha = COALESCE(EXCLUDED.merge_sha, app.repo_prs.merge_sha),
+                     opened_at = COALESCE(app.repo_prs.opened_at, EXCLUDED.opened_at)`,
+      [conn.id, p.number, p.title.slice(0, 500), p.author, p.state, p.branch, p.url, ticketKey, p.updatedAt, p.mergeSha, p.createdAt],
     );
     const prevState = prev ? String(prev.state) : null;
     if (prevState === p.state) continue;

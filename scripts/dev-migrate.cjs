@@ -164,6 +164,35 @@ const MIGRATIONS = [
   { sql: `ALTER TABLE app.tickets ALTER COLUMN human_est_hours SET NOT NULL` },
   // Attachments metadata: FK onto dev-owned tickets, so the table is created
   // here as the dev role; dev default privileges auto-grant the app SP.
+  // DAT-201 review-SLA escalation. `opened_at` starts the review clock (the
+  // boot ALTER in REPO_SCHEMA_SQL is rejected on this dev-owned table, and the
+  // PR upsert writes the column, so this must run before the next deploy).
+  // Existing rows stay NULL and are filled with the provider's real creation
+  // date on the next repo sync — a long-open unreviewed PR escalates once then.
+  { sql: `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ` },
+  // The escalation table FKs onto dev-owned repo_connections, so — like
+  // ticket_attachments below — it is created here as the dev role; the boot
+  // schema creates the identical table on a fresh install.
+  { sql: `CREATE TABLE IF NOT EXISTS app.pr_review_escalations (
+    id SERIAL PRIMARY KEY,
+    connection_id INT NOT NULL REFERENCES app.repo_connections(id) ON DELETE CASCADE,
+    pr_number INT NOT NULL,
+    ticket_key TEXT NOT NULL,
+    engagement_id TEXT NOT NULL,
+    timer_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    stage TEXT NOT NULL DEFAULT 'waiting',
+    pinged_at TIMESTAMPTZ,
+    flagged_at TIMESTAMPTZ,
+    cleared_at TIMESTAMPTZ,
+    cleared_reason TEXT,
+    dismissed_at TIMESTAMPTZ,
+    dismissed_by TEXT,
+    dismiss_count INT NOT NULL DEFAULT 0,
+    lead_email TEXT,
+    UNIQUE (connection_id, pr_number)
+  )` },
+  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_ticket ON app.pr_review_escalations (ticket_key)` },
+  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_stage ON app.pr_review_escalations (stage)` },
   { sql: `CREATE TABLE IF NOT EXISTS app.ticket_attachments (
     id TEXT PRIMARY KEY,
     ticket_key TEXT NOT NULL REFERENCES app.tickets(key) ON DELETE CASCADE,

@@ -2,7 +2,17 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { motion } from 'motion/react';
 import { api } from '../api';
 import { canonicalTag, suggestedTags } from '../lib/ticket-tags';
-import type { AgentTask, Ticket, TicketAttachment, TicketComment, TicketDev, TicketLinkType, TicketLinks, ToolCall } from '../types';
+import type {
+  AgentTask,
+  Ticket,
+  TicketAttachment,
+  TicketComment,
+  TicketDev,
+  TicketEscalation,
+  TicketLinkType,
+  TicketLinks,
+  ToolCall,
+} from '../types';
 import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
@@ -293,6 +303,35 @@ export function TicketDrawer({
   }, [ticket.key]);
 
   useEffect(loadDev, [loadDev]);
+
+  // ---- review SLA (DAT-201) ----
+  const [escalation, setEscalation] = useState<{ key: string; data: TicketEscalation | null } | null>(null);
+  const [dismissing, setDismissing] = useState(false);
+
+  const loadEscalation = useCallback(() => {
+    void api
+      .ticketEscalation(ticket.key)
+      .then((data) => setEscalation({ key: ticket.key, data }))
+      .catch(() => setEscalation({ key: ticket.key, data: null }));
+  }, [ticket.key]);
+
+  useEffect(loadEscalation, [loadEscalation]);
+
+  const esc = escalation && escalation.key === ticket.key ? escalation.data : null;
+
+  const dismissEscalation = () => {
+    if (dismissing) return;
+    setDismissing(true);
+    api
+      .dismissEscalation(ticket.key)
+      .then(() => {
+        toast(`Review escalation dismissed — 24h and 48h timers reset for ${ticket.key}`);
+        loadEscalation();
+        refreshDetail(); // clears the flag chip on the board card
+      })
+      .catch((e: Error) => toast(`Dismiss failed — ${e.message}`))
+      .finally(() => setDismissing(false));
+  };
 
   // ---- linked tickets & branches ----
   const [linked, setLinked] = useState<{ key: string; data: TicketLinks | null } | null>(null);
@@ -1273,6 +1312,68 @@ export function TicketDrawer({
               </div>
             )}
           </div>
+          {/* Review SLA (DAT-201): visible once the lead has been pinged at 24h.
+              Dismissing resets both timers and clears the board flag. */}
+          {esc && (esc.stage === 'pinged' || esc.stage === 'flagged') && (
+            <>
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>REVIEW SLA</div>
+              <div
+                style={{
+                  border: `1px solid ${esc.stage === 'flagged' ? 'var(--bad)' : 'var(--warn)'}`,
+                  borderRadius: 3,
+                  padding: '9px 11px',
+                  marginBottom: 18,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <span
+                  style={{
+                    ...mono(500, 9),
+                    color: esc.stage === 'flagged' ? 'var(--bad)' : 'var(--warn)',
+                    border: `1px solid ${esc.stage === 'flagged' ? 'var(--bad)' : 'var(--warn)'}`,
+                    borderRadius: 2,
+                    padding: '1px 5px',
+                    letterSpacing: '.06em',
+                    flex: 'none',
+                  }}
+                >
+                  {esc.stage === 'flagged' ? '⚠ 48H BREACH' : '⏰ 24H PING'}
+                </span>
+                <span style={{ fontSize: 11.5, color: 'var(--tx2)', flex: 1, minWidth: 180, lineHeight: 1.45 }}>
+                  {esc.stage === 'flagged'
+                    ? `PR #${esc.prNumber} has been unreviewed for ${esc.hoursUnreviewed}h — a summary was posted on the PR and this ticket is flagged on the board.`
+                    : `PR #${esc.prNumber} has been unreviewed for ${esc.hoursUnreviewed}h — ${esc.leadEmail ?? 'the engagement lead'} was pinged${
+                        esc.hoursUntilNextStage === null ? '' : `. ${esc.hoursUntilNextStage}h until the 48h escalation`
+                      }.`}
+                  {esc.dismissCount > 0 && ' (timers were reset by a previous dismissal)'}
+                </span>
+                {lead && (
+                  <button
+                    onClick={dismissEscalation}
+                    disabled={dismissing}
+                    title="Reset the 24h and 48h timers and clear the flag"
+                    style={{
+                      flex: 'none',
+                      border: '1px solid var(--line2)',
+                      background: 'none',
+                      color: 'var(--tx2)',
+                      borderRadius: 2,
+                      padding: '2px 9px',
+                      ...mono(500, 9),
+                      letterSpacing: '.06em',
+                      cursor: dismissing ? 'default' : 'pointer',
+                      opacity: dismissing ? 0.5 : 1,
+                    }}
+                  >
+                    {dismissing ? 'DISMISSING…' : 'DISMISS'}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
           {devData && (devData.prs.length > 0 || devData.commits.length > 0) && (
             <>
               <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>DEVELOPMENT</div>

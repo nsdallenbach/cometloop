@@ -279,6 +279,24 @@ export function Workspace({
           <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}>✕ DEPLOY FAILED</span>
         )}
         {t.blocked && <span style={{ ...mono(500, 9), color: 'var(--bad)' }}>BLOCKED</span>}
+        {/* Review-SLA escalation (DAT-201): the lead was pinged at 24h, and a
+            48h breach flags the card until the PR is reviewed or dismissed. */}
+        {!isDone && t.escalationStage === 'flagged' && (
+          <span
+            title={`PR${t.escalationPr ? ` #${t.escalationPr}` : ''} unreviewed for over 48h — summary posted on the PR. Dismiss the escalation from the ticket to reset the timers.`}
+            style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 4px' }}
+          >
+            ⚠ REVIEW SLA 48H
+          </span>
+        )}
+        {!isDone && t.escalationStage === 'pinged' && (
+          <span
+            title={`PR${t.escalationPr ? ` #${t.escalationPr}` : ''} unreviewed for over 24h — the engagement lead has been pinged.`}
+            style={{ ...mono(500, 9), color: 'var(--warn)', border: '1px solid var(--warn)', borderRadius: 2, padding: '1px 4px' }}
+          >
+            ⏰ REVIEW SLA 24H
+          </span>
+        )}
         {!isDone && t.waitingOn > 0 && (
           <span
             title={`Waiting on ${t.waitingOn} linked ticket${t.waitingOn === 1 ? '' : 's'} — see Linked work in the ticket`}

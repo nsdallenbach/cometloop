@@ -106,6 +106,32 @@ export interface Ticket {
   /** Unresolved blocking tickets (open `blocks` links pointing at this ticket). */
   waitingOn: number;
   activePr: ActivePr | null;
+  /** Live review-SLA escalation: 'pinged' = lead pinged at 24h, 'flagged' =
+   *  48h breach (summary posted on the PR, ticket flagged on the board). */
+  escalationStage: EscalationStage | null;
+  /** PR the escalation is about, when one is live. */
+  escalationPr: number | null;
+}
+
+/** Stage of a PR review-SLA escalation (DAT-201); cleared rows are never sent. */
+export type EscalationStage = 'waiting' | 'pinged' | 'flagged';
+
+/** The review-SLA clock on a ticket's open PR, as the drawer shows it. */
+export interface TicketEscalation {
+  prNumber: number;
+  prUrl: string;
+  ticketKey: string;
+  stage: EscalationStage;
+  hoursUnreviewed: number;
+  /** Hours left before the next stage fires; null once flagged. */
+  hoursUntilNextStage: number | null;
+  timerStartedAt: string | null;
+  pingedAt: string | null;
+  flaggedAt: string | null;
+  dismissedAt: string | null;
+  dismissedBy: string | null;
+  dismissCount: number;
+  leadEmail: string | null;
 }
 
 /** Ticket joined with its engagement, for cross-project views (/tickets). */

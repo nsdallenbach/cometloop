@@ -11,6 +11,7 @@ import type {
   DeployState,
   Engagement,
   EngagementDetail,
+  EscalationStage,
   FeedItem,
   Me,
   ParsedPlan,
@@ -28,6 +29,7 @@ import type {
   TicketAttachment,
   TicketComment,
   TicketDev,
+  TicketEscalation,
   TicketLink,
   TicketLinkType,
   TicketLinks,
@@ -112,6 +114,9 @@ function mapTicket(r: Row): Ticket {
     doneAt: r.done_at == null ? null : s(r.done_at),
     updatedAt: r.updated_at == null ? null : s(r.updated_at),
     waitingOn: n(r.waiting_on),
+    // Only live escalations are joined server-side, so any stage here is current.
+    escalationStage: r.escalation_stage == null ? null : (s(r.escalation_stage) as EscalationStage),
+    escalationPr: r.escalation_pr == null ? null : n(r.escalation_pr),
     activePr:
       r.pr_number == null
         ? null
@@ -446,6 +451,23 @@ export const api = {
   async ticketDev(key: string): Promise<TicketDev> {
     const d = await http<{ prs: Row[]; commits: Row[] }>(`/api/tickets/${key}/dev`);
     return { prs: d.prs.map(mapRepoPr), commits: d.commits.map(mapRepoCommit) };
+  },
+
+  // ---- PR review SLA (DAT-201) ----
+
+  /** The live review-SLA clock on the ticket's open PR, or null when none is running. */
+  async ticketEscalation(key: string): Promise<TicketEscalation | null> {
+    const d = await http<{ escalation: TicketEscalation | null }>(`/api/tickets/${key}/escalation`);
+    return d.escalation;
+  },
+
+  /** Lead-only: reset the 24h and 48h timers and clear the board flag. */
+  async dismissEscalation(key: string): Promise<TicketEscalation | null> {
+    const d = await http<{ escalation: TicketEscalation | null }>(`/api/tickets/${key}/escalation/dismiss`, {
+      method: 'POST',
+      ...json({}),
+    });
+    return d.escalation;
   },
 
   // ---- linked tickets ----

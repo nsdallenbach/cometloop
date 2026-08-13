@@ -9,6 +9,7 @@ import { PROJECT_AGENTS_SCHEMA_SQL, setupProjectAgentRoutes } from './agents';
 import { COORDINATION_SCHEMA_SQL, setupCoordinationRoutes } from './coordination';
 import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
+import { PR_ESCALATION_SCHEMA_SQL, setupPrEscalationRoutes, startEscalationPolling } from './pr-escalation';
 import { setupContextFileRoutes } from './context-files';
 import { ATTACHMENT_SCHEMA_SQL, deleteAttachmentFiles, setupTicketAttachmentRoutes } from './ticket-attachments';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
@@ -180,7 +181,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL, ...PR_ESCALATION_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -667,13 +668,15 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         // pipeline progress while the ticket holds in Review, the active PR
         // (open one if any, else most recently updated) for branch/state on
         // cards, the branch a runner announced for in-flight work (fills the
-        // gap between claim and the PR opening), and waiting_on = unresolved
-        // blocking tickets for dependency chips.
+        // gap between claim and the PR opening), waiting_on = unresolved
+        // blocking tickets for dependency chips, and the live review-SLA
+        // escalation stage (DAT-201) so a breached PR review flags the card.
         const tickets = (
           await q(
             `SELECT t.*, d.deploy_state, d.deploy_url,
                     p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url,
                     ba.branch_name AS active_branch,
+                    esc.stage AS escalation_stage, esc.pr_number AS escalation_pr,
                     (SELECT COUNT(*)::int FROM app.ticket_links l
                      JOIN app.tickets b ON b.key = l.ticket_key
                      WHERE l.linked_key = t.key AND l.type = 'blocks'
@@ -696,6 +699,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                WHERE b.ticket_key = t.key AND b.status = 'active'
                ORDER BY b.last_heartbeat DESC NULLS LAST LIMIT 1
              ) ba ON true
+             LEFT JOIN LATERAL (
+               SELECT e.stage, e.pr_number FROM app.pr_review_escalations e
+               WHERE e.ticket_key = t.key AND e.stage IN ('pinged','flagged')
+               ORDER BY (e.stage = 'flagged') DESC, e.id DESC LIMIT 1
+             ) esc ON true
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
             [id],
           )
@@ -759,7 +767,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     // agent task, so the list view can show branch + runner avatar too.
     const crossTicketSelect = `
       SELECT t.*, e.client, e.name AS engagement_name,
-             p.branch AS pr_branch, ba.branch_name AS active_branch, ag.agent AS task_agent
+             p.branch AS pr_branch, ba.branch_name AS active_branch, ag.agent AS task_agent,
+             esc.stage AS escalation_stage, esc.pr_number AS escalation_pr
       FROM app.tickets t
       JOIN app.engagements e ON e.id = t.engagement_id
       LEFT JOIN LATERAL (
@@ -776,7 +785,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       LEFT JOIN LATERAL (
         SELECT a.agent FROM app.agent_tasks a
         WHERE a.ticket_key = t.key ORDER BY a.id DESC LIMIT 1
-      ) ag ON true`;
+      ) ag ON true
+      LEFT JOIN LATERAL (
+        SELECT s.stage, s.pr_number FROM app.pr_review_escalations s
+        WHERE s.ticket_key = t.key AND s.stage IN ('pinged','flagged')
+        ORDER BY (s.stage = 'flagged') DESC, s.id DESC LIMIT 1
+      ) esc ON true`;
 
     app.get('/api/tickets', async (_req, res) => {
       try {
@@ -1782,6 +1796,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupToolCallRoutes(app, q);
     setupCoordinationRoutes(app, q);
     setupPrConflictRoutes(app, q);
+    setupPrEscalationRoutes(app, q, requireLead);
     setupEstimateRoutes(app, q, appkit.serving.bind(appkit), requireLead);
     setupTicketHoursRoutes(app, q, appkit.serving.bind(appkit), requireLead);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
@@ -1825,5 +1840,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   // the ticket in under a minute while webhooks can't reach the app
   // (GitHub App tokens make the extra polling free, rate-limit-wise).
   startRepoPolling(q, 90_000, 30_000);
+  // Review-SLA watch (DAT-201): the thresholds are 24h and 48h, so a 5-minute
+  // sweep is ample — and PRs inside the first 24h cost no provider calls.
+  startEscalationPolling(q, 5 * 60_000);
   if (process.env.DEMO_MOCK_RUNNER === '1') startMockRunner(q);
 }

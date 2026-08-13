@@ -30,6 +30,8 @@ function ticket(key: string, status: TicketStatus, doneAt: string | null = null)
     updatedAt: null,
     waitingOn: 0,
     activePr: null,
+    escalationStage: null,
+    escalationPr: null,
   };
 }
 

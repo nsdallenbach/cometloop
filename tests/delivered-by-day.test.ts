@@ -34,6 +34,8 @@ function ticket(
     doneAt: null,
     waitingOn: 0,
     activePr: null,
+    escalationStage: null,
+    escalationPr: null,
     ...overrides,
   };
 }
