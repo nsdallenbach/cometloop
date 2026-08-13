@@ -1840,9 +1840,8 @@ function NewTicketModal({
   const [estHours, setEstHours] = useState('');
   const [humanEstHours, setHumanEstHours] = useState('');
   const [estTouched, setEstTouched] = useState({ agent: false, human: false });
-  // Live Shift tracking so the shortcut hints show which action Ctrl+Enter
-  // will actually fire (leads only — Shift is a no-op for everyone else).
-  const [shiftHeld, setShiftHeld] = useState(false);
+  const createButtonRef = useRef<HTMLButtonElement>(null);
+  const deployButtonRef = useRef<HTMLButtonElement>(null);
 
   const parseHours = (v: string, max: number): number | null => {
     const n = Number(v);
@@ -1851,21 +1850,6 @@ function NewTicketModal({
   const estVal = parseHours(estHours, 400);
   const humanVal = parseHours(humanEstHours, 999);
   const valid = Boolean(description.trim()) && estVal != null && humanVal != null;
-
-  useEffect(() => {
-    if (!lead) return;
-    const down = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(true); };
-    const up = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(false); };
-    const reset = () => setShiftHeld(false);
-    window.addEventListener('keydown', down);
-    window.addEventListener('keyup', up);
-    window.addEventListener('blur', reset);
-    return () => {
-      window.removeEventListener('keydown', down);
-      window.removeEventListener('keyup', up);
-      window.removeEventListener('blur', reset);
-    };
-  }, [lead]);
 
   const create = (deploy: boolean) => {
     if (!description.trim() || estVal == null || humanVal == null) {
@@ -1906,9 +1890,20 @@ function NewTicketModal({
         transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
         onKeyDown={(e) => {
           // Escape is handled by the app-level layering (palette > modal > drawer).
-          // Ctrl+Enter → Backlog; Ctrl+Shift+Enter → create & deploy (leads —
-          // for everyone else the shift is ignored and it lands in Backlog).
-          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') create(lead && e.shiftKey);
+          if (e.key === 'Control') {
+            createButtonRef.current?.focus();
+            return;
+          }
+
+          const actionButtons = [createButtonRef.current, deployButtonRef.current].filter(
+            (button): button is HTMLButtonElement => button != null && !button.disabled,
+          );
+          const focusedIndex = actionButtons.indexOf(document.activeElement as HTMLButtonElement);
+          if (focusedIndex < 0 || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+
+          e.preventDefault();
+          const offset = e.key === 'ArrowRight' ? 1 : -1;
+          actionButtons[(focusedIndex + offset + actionButtons.length) % actionButtons.length]?.focus();
         }}
         style={{
           position: 'fixed',
@@ -2001,7 +1996,7 @@ function NewTicketModal({
           <div
             style={{
               ...mono(400, 10),
-              color: lead && shiftHeld ? 'var(--agent)' : 'var(--tx3)',
+              color: 'var(--tx3)',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
@@ -2010,10 +2005,8 @@ function NewTicketModal({
             }}
           >
             {lead
-              ? shiftHeld
-                ? 'SHIFT HELD — CTRL+ENTER CREATES & DEPLOYS TO THE AGENT QUEUE'
-                : 'HOLD SHIFT TO SWITCH CTRL+ENTER TO CREATE & DEPLOY'
-              : 'LANDS IN BACKLOG · CTRL+ENTER TO CREATE'}
+              ? 'PRESS CTRL TO FOCUS ACTIONS · USE ←/→ TO CHOOSE · ENTER TO ACTIVATE'
+              : 'PRESS CTRL TO FOCUS CREATE · ENTER TO ACTIVATE'}
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <div style={{ flex: 1 }} />
@@ -2024,9 +2017,10 @@ function NewTicketModal({
               Cancel
             </button>
             <button
+              ref={createButtonRef}
               onClick={() => create(false)}
               disabled={!valid}
-              title="Create in Backlog (Ctrl+Enter)"
+              title="Create in Backlog (Control, then Enter)"
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -2041,19 +2035,20 @@ function NewTicketModal({
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
                 flexShrink: 0,
-                opacity: !valid ? 0.45 : lead && shiftHeld ? 0.55 : 1,
+                opacity: !valid ? 0.45 : 1,
                 transition: 'opacity .12s ease',
               }}
             >
               <Plus size={13} strokeWidth={2.5} />
               Create ticket
-              <span style={kbd(!shiftHeld)}>Ctrl+↵</span>
+              <span style={kbd(false)}>Ctrl</span>
             </button>
             {lead && (
               <button
+                ref={deployButtonRef}
                 onClick={() => create(true)}
                 disabled={!valid}
-                title="Create and deploy straight to the agent queue (Ctrl+Shift+Enter)"
+                title="Create and deploy straight to the agent queue (Control, Right Arrow, then Enter)"
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -2069,13 +2064,11 @@ function NewTicketModal({
                   whiteSpace: 'nowrap',
                   flexShrink: 0,
                   opacity: !valid ? 0.45 : 1,
-                  boxShadow: shiftHeld ? '0 0 0 1px var(--bg2), 0 0 0 3px var(--agent)' : 'none',
-                  transition: 'box-shadow .12s ease',
                 }}
               >
                 <Rocket size={13} strokeWidth={2.25} />
                 Create &amp; deploy
-                <span style={kbd(shiftHeld)}>Ctrl+⇧+↵</span>
+                <span style={kbd(false)}>Ctrl+→</span>
               </button>
             )}
           </div>
