@@ -44,6 +44,9 @@ const MIGRATIONS = [
   // --- feature-PR columns on dev-owned tables (merge train, Aug 2026) ---
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS roadmap_item TEXT` },
   { sql: `ALTER TABLE app.engagements ADD COLUMN IF NOT EXISTS roadmap_settings JSONB` },
+  // DAT-212: workspace identity used by project membership / inherited runner access.
+  { sql: `ALTER TABLE app.team_members ADD COLUMN IF NOT EXISTS email TEXT` },
+  { sql: `CREATE UNIQUE INDEX IF NOT EXISTS team_members_email_unique ON app.team_members (LOWER(email)) WHERE email IS NOT NULL` },
   // est_hours settled as REAL (PR #24 wanted REAL, #34 NUMERIC) so node-pg
   // returns JS numbers to both features.
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS est_hours REAL` },
