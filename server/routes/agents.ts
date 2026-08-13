@@ -2,6 +2,7 @@ import type express from 'express';
 import { z } from 'zod';
 import type { Identity } from './roles';
 import { AGENT_SECURITY_SCHEMA_SQL, type AgentSecuritySettings, baselineSecurity, parseSecuritySettings } from './agent-security';
+import { accessibleProjectIds } from './project-access';
 
 /**
  * Project agents: the entities behind the /agents architecture map. Three
@@ -102,9 +103,11 @@ const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString() 
 export function inferHarness(agentName: string): string {
   const n = agentName.toLowerCase();
   if (n.includes('codex')) return 'codex';
+  if (n.includes('omnigent')) return 'omnigent';
   if (n.includes('gemini')) return 'gemini';
   if (n.includes('copilot')) return 'copilot';
   if (n.includes('cursor')) return 'cursor';
+  if (n.includes('omnigent')) return 'omnigent';
   return 'claude-code';
 }
 
@@ -119,6 +122,10 @@ export const HARNESS_PROVIDER: Record<string, string> = {
   gemini: 'google',
   copilot: 'microsoft',
   cursor: 'anysphere',
+  // Omnigent is a hosted service rather than a CLI over someone else's model, so
+  // it is its own provider — the model behind a run is the vendor's business
+  // (DAT-221, docs/omnigent-runner-architecture.md).
+  omnigent: 'omnigent',
 };
 
 // ---------- live model-serving state (DAT-203) ----------
@@ -299,7 +306,10 @@ export async function syncProjectAgents(q: Query): Promise<void> {
       `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, endpoint_type, endpoint_name, role, status, config, created_by, security_settings)
        VALUES ($1,'planning-agent','serving-endpoint',NULL,'databricks',$2,'model-serving',$5,'planning',$3,$4,'system:serving',$6)
        ON CONFLICT (engagement_id, lower(name))
-       DO UPDATE SET model = $2, status = $3, config = $4, endpoint_name = COALESCE(app.project_agents.endpoint_name, $5)`,
+       -- role is forced, not COALESCEd: rows that predate the role column
+       -- carry the 'delivery' default, and this row is system-owned anyway.
+       DO UPDATE SET model = $2, status = $3, config = $4, role = 'planning',
+                     endpoint_name = COALESCE(app.project_agents.endpoint_name, $5)`,
       [txt(e.id), state?.servedModel ?? SERVING_ENDPOINT, endpointStatus(state), config, SERVING_ENDPOINT, JSON.stringify(baselineSecurity('planning'))],
     );
   }
@@ -491,14 +501,25 @@ export function setupProjectAgentRoutes(
   app: express.Application,
   q: Query,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  resolveIdentity: (req: express.Request) => Promise<Identity>,
 ) {
-  app.get('/api/agents/overview', async (_req, res) => {
+  app.get('/api/agents/overview', async (req, res) => {
     try {
       // Persist before reading: the table is the record of truth, refreshed
       // from runner history + live serving state on every overview load. A
       // sync failure must not blank the map.
       await syncProjectAgents(q).catch((err) => console.warn('[agents] sync failed:', (err as Error).message));
-      res.json(await loadAgentsOverview(q));
+      const overview = await loadAgentsOverview(q);
+      const allowed = await accessibleProjectIds(q, await resolveIdentity(req));
+      if (allowed === null) {
+        res.json(overview);
+        return;
+      }
+      const ids = new Set(allowed);
+      res.json({
+        projects: overview.projects.filter((project) => ids.has(project.id)),
+        agents: overview.agents.filter((agent) => ids.has(agent.engagementId)),
+      });
     } catch (err) {
       console.error('agents overview failed:', err);
       res.status(500).json({ error: 'Failed to load the agent map' });

@@ -11,9 +11,11 @@ import type {
   ProjectAgent,
   ProjectAgentRole,
   ProjectAgentType,
+  RunnerLoadBalance,
 } from '../types';
 import { HEALTH_COLOR, mono } from '../util';
 import { agentBrand, HARNESS_DEFAULT_PROVIDER, HARNESS_OPTIONS, PROVIDER_OPTIONS } from './AgentLogos';
+import { MAP_LINKS_CLASS, MAP_MARK_CLASS, MapViewport } from './MapViewport';
 
 /**
  * /agents — the agent architecture map. Every project renders as a central hub
@@ -66,6 +68,10 @@ const ROLE_LABEL: Record<string, string> = {
   other: 'AGENT',
 };
 
+const GENERAL_CODING_MODELS = new Set(['claude-code', 'codex', 'omnigent', 'gemini', 'copilot', 'cursor']);
+const isGeneralCodingAgent = (agent: Pick<ProjectAgent, 'agentType' | 'harness'>) =>
+  agent.agentType === 'runner' && Boolean(agent.harness && GENERAL_CODING_MODELS.has(agent.harness.toLowerCase()));
+
 /** The console's own MCP server — what an AgentBricks agent attaches to. */
 const mcpUrl = () => `${window.location.origin}/api/mcp`;
 
@@ -91,7 +97,10 @@ function EmptySpoke({ x, y, lead }: { x: number; y: number; lead: boolean }) {
     <div
       style={{ position: 'absolute', left: x - 62, top: y - 30, width: 124, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, opacity: 0.75 }}
     >
-      <div style={{ width: 38, height: 38, borderRadius: 9, border: '1px dashed var(--line2)', display: 'grid', placeItems: 'center', color: 'var(--tx3)', fontSize: 15 }}>
+      <div
+        className={MAP_MARK_CLASS}
+        style={{ width: 38, height: 38, borderRadius: 9, border: '1px dashed var(--line2)', display: 'grid', placeItems: 'center', color: 'var(--tx3)', fontSize: 15 }}
+      >
         ◇
       </div>
       <div style={{ ...mono(400, 8), color: 'var(--tx3)', letterSpacing: '.08em', textAlign: 'center' }}>
@@ -155,11 +164,16 @@ function AgentSpoke({ agent, x, y, onSelect }: { agent: ProjectAgent; x: number;
       animate={{ opacity: 1, scale: 1 }}
       whileHover={{ scale: 1.05 }}
       transition={{ type: 'spring', visualDuration: 0.3, bounce: 0.25 }}
-      title={disabled ? `${agent.name} — disabled by security settings; click for details` : `${agent.name} — click for details`}
+      title={
+        disabled
+          ? `${agent.name} — disabled by security settings; click for details`
+          : `${agent.name} — click for ${isGeneralCodingAgent(agent) ? 'load balancing' : 'details'}`
+      }
       onClick={() => onSelect(agent)}
       style={{ position: 'absolute', left: x - 62, top: y - 30, width: 124, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, cursor: 'pointer' }}
     >
       <div
+        className={MAP_MARK_CLASS}
         style={{
           position: 'relative',
           width: 38,
@@ -258,27 +272,33 @@ function ProjectCluster({
   return (
     <div style={{ position: 'relative', width: geom.w, height: geom.h, flex: 'none' }}>
       <svg width={geom.w} height={geom.h} aria-hidden="true" style={{ position: 'absolute', inset: 0 }}>
-        {spots.map((p, i) => {
-          const agent = agents[i];
-          const empty = !agent;
-          const { staged, unreachable, disabled } = agent ? spokeState(agent) : { staged: false, unreachable: false, disabled: false };
-          const active = agent?.status === 'active' && !disabled;
-          return (
-            <line
-              key={agent?.id ?? 'empty'}
-              x1={geom.cx}
-              y1={geom.cy}
-              x2={p.x}
-              y2={p.y}
-              stroke={
-                disabled || unreachable ? 'var(--bad)' : active ? 'var(--agent)' : staged ? 'var(--warn)' : 'var(--line2)'
-              }
-              strokeWidth={active ? 1.6 : 1.1}
-              strokeDasharray={empty || staged || unreachable || disabled ? '4 4' : undefined}
-              opacity={empty ? 0.55 : 0.9}
-            />
-          );
-        })}
+        {/* One group per cluster so a zoom settle can lift the whole spoke
+            bundle with anime.js in a single animation, not one per line. */}
+        <g className={MAP_LINKS_CLASS}>
+          {spots.map((p, i) => {
+            const agent = agents[i];
+            const empty = !agent;
+            const { staged, unreachable, disabled } = agent
+              ? spokeState(agent)
+              : { staged: false, unreachable: false, disabled: false };
+            const active = agent?.status === 'active' && !disabled;
+            return (
+              <line
+                key={agent?.id ?? 'empty'}
+                x1={geom.cx}
+                y1={geom.cy}
+                x2={p.x}
+                y2={p.y}
+                stroke={
+                  disabled || unreachable ? 'var(--bad)' : active ? 'var(--agent)' : staged ? 'var(--warn)' : 'var(--line2)'
+                }
+                strokeWidth={active ? 1.6 : 1.1}
+                strokeDasharray={empty || staged || unreachable || disabled ? '4 4' : undefined}
+                opacity={empty ? 0.55 : 0.9}
+              />
+            );
+          })}
+        </g>
       </svg>
       {spots.map((p, i) =>
         agents[i] ? (
@@ -289,6 +309,7 @@ function ProjectCluster({
       )}
       {/* Hub */}
       <div
+        className={MAP_MARK_CLASS}
         style={{
           position: 'absolute',
           left: geom.cx - 78,
@@ -806,6 +827,64 @@ function SecurityPanel({
   );
 }
 
+function LoadBalancingModal({ agent, canEdit, onClose, toast }: { agent: ProjectAgent; canEdit: boolean; onClose: () => void; toast: (message: string) => void }) {
+  const modelType = agent.harness ?? '';
+  const [runners, setRunners] = useState<RunnerLoadBalance[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    api.runnerLoadBalancing(agent.engagementId, modelType)
+      .then((data) => setRunners(data.runners))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+    return () => window.removeEventListener('keydown', onKey);
+  }, [agent.engagementId, modelType, onClose]);
+  const update = (name: string, values: Partial<RunnerLoadBalance>) => setRunners((rows) => rows.map((r) => (r.name === name ? { ...r, ...values } : r)));
+  const totalWeight = runners.reduce((sum, runner) => sum + runner.weight, 0);
+  const save = () => {
+    if (runners.some((r) => !Number.isInteger(r.weight) || r.weight < 0 || r.weight > 100)) return setError('Weights must be whole numbers from 0 to 100.');
+    if (totalWeight === 0) return setError('At least one runner must have a positive weight.');
+    if (runners.some((r) => r.cap !== null && (!Number.isInteger(r.cap) || r.cap < 1 || r.cap > 100))) return setError('Caps must be blank or a whole number from 1 to 100.');
+    setBusy(true);
+    setError(null);
+    api.saveRunnerLoadBalancing(agent.engagementId, modelType, runners.map(({ name, weight, cap }) => ({ name, weight, cap })))
+      .then(() => { toast(`Load balancing saved for ${modelType}`); onClose(); })
+      .catch((e: Error) => { setError(e.message); setBusy(false); });
+  };
+  return (
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 54 }} />
+      <motion.div initial={{ opacity: 0, transform: 'translate(-50%,-48%) scale(.97)' }} animate={{ opacity: 1, transform: 'translate(-50%,-50%) scale(1)' }} role="dialog" aria-label={`Load balancing for ${agent.name}`} style={{ position: 'fixed', left: '50%', top: '50%', width: 520, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 50px)', overflowY: 'auto', background: 'var(--bg2)', border: '1px solid var(--line)', borderRadius: 6, padding: 18, zIndex: 55, boxShadow: '0 12px 40px rgba(0,0,0,.5)' }}>
+        <div style={{ display: 'flex', alignItems: 'start', gap: 10 }}>
+          <div><div style={{ ...mono(600, 11), letterSpacing: '.1em' }}>RUNNER LOAD BALANCING</div><div style={{ fontSize: 11.5, color: 'var(--tx3)', marginTop: 3 }}>{agent.name} · {modelType}. Weights are relative; caps limit concurrent tasks per runner.</div></div>
+          <button onClick={onClose} aria-label="Close" style={{ marginLeft: 'auto', border: 0, background: 'none', color: 'var(--tx3)', cursor: 'pointer', fontSize: 18 }}>×</button>
+        </div>
+        {loading ? <div style={{ color: 'var(--tx3)', fontSize: 12, padding: '24px 0' }}>Loading available runners…</div> : runners.length === 0 ? <div style={{ color: 'var(--tx3)', fontSize: 12, padding: '24px 0' }}>No live or idle runners are currently available for this model type.</div> : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16 }}>
+            {runners.map((runner) => <div key={runner.name} style={{ border: '1px solid var(--line2)', borderRadius: 4, padding: '10px 11px' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}><span style={{ ...mono(600, 10.5), flex: 1 }}>{runner.name}</span><span style={{ ...mono(400, 8.5), color: runner.status === 'active' ? 'var(--ok)' : 'var(--tx3)', letterSpacing: '.07em' }}>{runner.status.toUpperCase()} · {runner.activeTasks} ACTIVE</span></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 64px 86px', gap: 8, alignItems: 'center' }}>
+                <input aria-label={`${runner.name} weight slider`} type="range" min={0} max={100} value={runner.weight} disabled={!canEdit} onChange={(e) => update(runner.name, { weight: Number(e.target.value) })} />
+                <input aria-label={`${runner.name} weight`} type="number" min={0} max={100} step={1} value={runner.weight} disabled={!canEdit} onChange={(e) => update(runner.name, { weight: Number(e.target.value) })} style={{ ...FIELD, padding: '5px 6px' }} />
+                <input aria-label={`${runner.name} concurrency cap`} type="number" min={1} max={100} step={1} value={runner.cap ?? ''} disabled={!canEdit} placeholder="No cap" onChange={(e) => update(runner.name, { cap: e.target.value === '' ? null : Number(e.target.value) })} style={{ ...FIELD, padding: '5px 6px' }} />
+              </div>
+              <div style={{ ...mono(400, 8.5), color: 'var(--tx3)', marginTop: 5 }}>{totalWeight > 0 ? `${Math.round((runner.weight / totalWeight) * 100)}% TARGET SHARE` : '0% TARGET SHARE'}</div>
+            </div>)}
+          </div>
+        )}
+        {error && <div role="alert" style={{ color: 'var(--bad)', fontSize: 11.5, marginTop: 12 }}>{error}</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button onClick={onClose} style={{ ...mono(500, 9.5), background: 'none', border: '1px solid var(--line2)', color: 'var(--tx3)', borderRadius: 3, padding: '6px 11px', cursor: 'pointer' }}>CANCEL</button>
+          {canEdit && <button onClick={save} disabled={busy || loading || runners.length === 0} style={{ ...mono(500, 9.5), background: 'var(--agent)', border: '1px solid var(--agent)', color: '#fff', borderRadius: 3, padding: '6px 12px', cursor: busy ? 'wait' : 'pointer', opacity: busy || loading || runners.length === 0 ? .6 : 1 }}>{busy ? 'SAVING…' : 'SAVE'}</button>}
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
 /** Click-through detail for any node on the map (DAT-197 follow-up). */
 function AgentDetailModal({
   agent,
@@ -995,6 +1074,7 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
   // Action ids, labels and preset scopes come from the server so the permission
   // model lives in one place; the panel degrades to humanized ids without it.
   const [securityCatalog, setSecurityCatalog] = useState<AgentSecurityCatalog | null>(null);
+  const [loadBalanceAgent, setLoadBalanceAgent] = useState<ProjectAgent | null>(null);
 
   const load = useCallback(() => {
     return api
@@ -1035,8 +1115,14 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
   }, [data]);
 
   return (
-    <div className="tab-pane" style={{ flex: 1, overflowY: 'auto', padding: '18px 22px 30px' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
+    // Column layout with the pane itself clipped: the constellation lives in a
+    // zoomable viewport that owns the remaining height, so the page must not
+    // scroll underneath it and fight the wheel gesture.
+    <div
+      className="tab-pane"
+      style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '18px 22px 18px' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap', flex: 'none' }}>
         <span style={{ ...mono(700, 13), letterSpacing: '.12em' }}>AGENT MAP</span>
         {data && (
           <span style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
@@ -1051,7 +1137,7 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
       </div>
 
       {/* Legend, including the not-yet-live node kinds. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '12px 0 6px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', margin: '12px 0 8px', flex: 'none' }}>
         {[
           { label: 'LIVE', dot: 'var(--ok)', dashed: false },
           { label: 'IDLE', dot: 'var(--tx3)', dashed: false },
@@ -1067,12 +1153,6 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
             {l.label}
           </span>
         ))}
-        <span
-          title="Placeholder node types — created for projects in a future release"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px dashed var(--line2)', borderRadius: 3, padding: '3px 8px', ...mono(400, 8.5), color: 'var(--tx3)', letterSpacing: '.07em' }}
-        >
-          ◇ SERVING ENDPOINT · AGENTBRICKS · FOUNDRY — COMING SOON
-        </span>
       </div>
 
       {error && (
@@ -1097,18 +1177,22 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
         </div>
       )}
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-        {data?.projects.map((p) => (
-          <ProjectCluster
-            key={p.id}
-            project={p}
-            agents={byProject.get(p.id) ?? []}
-            lead={canLead(p.id)}
-            onNewAgent={() => setNewAgentFor(p)}
-            onSelectAgent={setSelectedAgent}
-          />
-        ))}
-      </div>
+      {data && data.projects.length > 0 && (
+        <MapViewport>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {data.projects.map((p) => (
+              <ProjectCluster
+                key={p.id}
+                project={p}
+                agents={byProject.get(p.id) ?? []}
+                lead={canLead(p.id)}
+                onNewAgent={() => setNewAgentFor(p)}
+                onSelectAgent={(agent) => (isGeneralCodingAgent(agent) ? setLoadBalanceAgent(agent) : setSelectedAgent(agent))}
+              />
+            ))}
+          </div>
+        </MapViewport>
+      )}
 
       <AnimatePresence>
         {selectedAgent && (
@@ -1133,6 +1217,9 @@ export function AgentMap({ canLead, toast }: { canLead: (engagementId: string) =
               );
             }}
           />
+        )}
+        {loadBalanceAgent && (
+          <LoadBalancingModal key={loadBalanceAgent.id} agent={loadBalanceAgent} canEdit={canLead(loadBalanceAgent.engagementId)} onClose={() => setLoadBalanceAgent(null)} toast={toast} />
         )}
       </AnimatePresence>
 

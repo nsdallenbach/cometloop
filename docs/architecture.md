@@ -71,7 +71,7 @@ component. Mutations are optimistic with rollback; the board polls every 8s.
 
 | Store | Contents |
 |---|---|
-| Lakebase Postgres (`app.*`) | engagements, tickets (+events/links/tags/attachments/estimates), comments, feed, team, agent_tasks, coordination_messages, repo connections/PRs/commits, PR review-SLA escalations |
+| Lakebase Postgres (`app.*`) | engagements, tickets (+events/links/tags/attachments/estimates), comments, feed, team, agent_tasks, coordination_messages, repo connections/PRs/commits, PR review-SLA escalations, in-flight planning reviews |
 | UC volume `sow_docs` | uploaded SOW/SOP documents, per-engagement context files, standards docs |
 | UC volume `agent_telemetry` | per-run tool-call logs archived as NDJSON under `tool-calls/<engagement>/<ticket>/` |
 
@@ -92,8 +92,12 @@ with a Lakebase credential.
 - `coordination.ts` — inter-agent messages (announce, request/response, SLAs), mirrored to tickets
 - `repos.ts` — GitHub/ADO providers: PR & commit sync, ticket auto-linking, merge-from-drawer, deploy watch
 - `pr-conflicts.ts` — conflict reports, auto-resolve vs escalate assessment
+- `pr-review.ts` — the PR review gate: case assembly, reviewer prompt, verdict parsing, PR + ticket publication
+- `pr-requeue.ts` — merge-conflict requeue: classify the review outcome, put the ticket back at the top of the runner queue, cap the retries
 - `pr-escalation.ts` — review-SLA watch: 24h lead ping, 48h PR comment + board flag, lead dismissal resets the timers
+- `ticket-review.ts` — reason-based rejection out of Review: rejection history, requeue, prompt context
 - `estimates.ts` — agent + human hour estimates, per-engagement calibration from actuals
+- `planning-review.ts` — "agent reviewing" status while a planning pass rewrites a ticket: `app.planning_reviews` rows with a TTL, so a pass that dies mid-flight clears its own badge
 - `ticket-events / -links / -tags / -order / -attachments` — the event trail, dependencies, tags, board ordering, file attachments
 - `tool-calls.ts` — live tool-call streaming from runners, archived to telemetry
 - `standards.ts` — per-engagement standards docs with AI-assisted editing
@@ -184,10 +188,27 @@ Ticket keys are the join key for everything: a `DAT-nnn` in a branch name or
 PR title auto-links commits and PRs to the ticket. Automation then drives
 the board: PR opened → Review; PR merged → deploy watch (the ticket holds in
 Review while Actions runs for the merge SHA) → Done on green, stays with a
-warning on red. Merging is possible from the ticket drawer itself
+warning on red. The same deploy fact gates the manual path: a user, API or
+MCP move into Done is rejected until the linked PR is merged and its pipeline
+has succeeded, so Done always means shipped (tickets already in Done, tickets
+tagged `no-deploy`, and engagements with no repo connected are exempt).
+Merging is possible from the ticket drawer itself
 (lead-only, click-to-confirm). Conflict tooling gives agents a safe path:
 report conflicts, auto-resolve only trivial ones, escalate anything that
 overlaps another ticket's open PR.
+
+A merge conflict is the one review outcome that jumps the queue. When the
+review gate publishes a verdict, `pr-requeue.ts` asks the provider whether the
+PR still merges; if it does not — or the reviewer names a conflict while
+mergeability is not yet computed — the ticket goes back into
+`app.agent_tasks` at a priority above anything the board can assign, carrying
+instructions to resolve that conflict and nothing else. Claiming already
+sorted `priority DESC, id`, so the conflict is the next pickup and several
+conflicts stay FIFO among themselves. Every other review failure (tests,
+lint, unmet criteria) keeps the human path. The loop is bounded: three
+automatic attempts on the same PR, then the conflict is flagged for a
+developer instead of requeued, and each decision is recorded in
+`app.pr_requeues` with the PR number, reason and timestamp.
 
 Reviews get a clock too: an open PR that no one has reviewed 24h after the
 runner opened it pings the engagement lead in the notification centre, and at
@@ -196,6 +217,15 @@ board. Every stage transition is claimed with a conditional UPDATE, so a
 threshold checked repeatedly still notifies exactly once; a lead can dismiss
 the escalation from the ticket drawer, which resets both timers, and review,
 merge or closure stops the clock for good.
+
+Review has a second exit next to approval: a lead can reject a ticket that is
+in Review with a reason (`POST /api/tickets/:key/reject`, the drawer's REVIEW
+panel). The reason is mandatory — a blank one is refused before anything is
+written — and the ticket goes back to Backlog, never Done, re-queued for an
+agent by default. Reasons accumulate in `app.ticket_rejections` (one row per
+cycle, so a third rejection does not erase the first two) and the newest five
+are rendered into the runner prompt above the lead instructions, so the next
+run starts from the reviewer's words instead of a cold re-read.
 
 CI (`deploy.yml`) runs typecheck → lint → build → `databricks bundle
 deploy` → `bundle run app` on every push to main, serialized by a
