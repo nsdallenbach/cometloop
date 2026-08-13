@@ -615,6 +615,14 @@ export function TicketDrawer({
                 ))}
               </select>
             </div>
+            {/* Deploy gate (DAT-213): the board refuses a drop into Done while
+                this is set, so the drawer spells out what is missing. */}
+            {ticket.doneBlockedReason !== null && (
+              <div style={{ gridColumn: '1 / -1', border: '1px solid var(--warn)', borderRadius: 3, padding: '8px 11px' }}>
+                <div style={{ ...mono(400, 9), color: 'var(--warn)', letterSpacing: '.08em', marginBottom: 3 }}>⛔ BLOCKED FROM DONE</div>
+                <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>{ticket.doneBlockedReason}</div>
+              </div>
+            )}
             <div style={{ border: '1px solid var(--line)', borderRadius: 3, padding: '8px 11px' }}>
               <div style={{ ...mono(400, 9), color: 'var(--agent)', letterSpacing: '.08em', marginBottom: 3 }}>◆ AGENT ESTIMATE (H)</div>
               <input

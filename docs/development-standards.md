@@ -31,6 +31,12 @@ the context handed to agent runners.
   (typecheck → lint → build) and only then deploys. A red Actions run means
   the merge shipped nothing — check the Actions tab or the ticket's deploy
   badge before believing a feature is live.
+- **Done means deployed.** The board refuses a move into Done until the
+  ticket's linked PR is merged and its deploy pipeline has succeeded (DAT-213)
+  — by hand, over the API, or through MCP. The rule is not retroactive and
+  never applies to tickets already in Done. Work that ships nothing deployable
+  (docs, spikes, meetings) carries the `no-deploy` tag to opt out, and
+  engagements with no repo connected are outside the rule entirely.
 - **Deploys blink.** Each deploy restarts the app (~1 minute of 502s). Batch
   merges between agent runs rather than mid-run, and never diagnose a 502 as
   a code bug until the Actions run has settled.

@@ -110,6 +110,7 @@ function mapTicket(r: Row): Ticket {
     tags: j(r.tags, []),
     deployState: r.deploy_state == null ? null : (s(r.deploy_state) as DeployState),
     deployUrl: r.deploy_url == null ? null : s(r.deploy_url),
+    doneBlockedReason: nz(r.done_blocked_reason),
     roadmapItem: r.roadmap_item == null ? null : s(r.roadmap_item),
     branch: nz(r.branch) ?? nz(r.active_branch) ?? nz(r.pr_branch),
     runner: nz(r.task_agent) !== null && s(r.task_agent) === s(r.assignee) ? s(r.task_agent) : null,

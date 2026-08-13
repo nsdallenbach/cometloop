@@ -154,7 +154,11 @@ Ticket keys are the join key for everything: a `DAT-nnn` in a branch name or
 PR title auto-links commits and PRs to the ticket. Automation then drives
 the board: PR opened → Review; PR merged → deploy watch (the ticket holds in
 Review while Actions runs for the merge SHA) → Done on green, stays with a
-warning on red. Merging is possible from the ticket drawer itself
+warning on red. The same deploy fact gates the manual path: a user, API or
+MCP move into Done is rejected until the linked PR is merged and its pipeline
+has succeeded, so Done always means shipped (tickets already in Done, tickets
+tagged `no-deploy`, and engagements with no repo connected are exempt).
+Merging is possible from the ticket drawer itself
 (lead-only, click-to-confirm). Conflict tooling gives agents a safe path:
 report conflicts, auto-resolve only trivial ones, escalate anything that
 overlaps another ticket's open PR.

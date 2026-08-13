@@ -25,6 +25,7 @@ import {
 } from './ticket-hours';
 import { invokeModel, setupLlmHealthRoutes } from './llm-health';
 import { normalizeTags } from './ticket-tags';
+import { REPO_CONNECTED_JOIN, doneBlockedReason, gateInputFromRow, loadDeployGates } from './deploy-gate';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
 import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes } from './ticket-consolidate';
 import { setupMcpRoutes } from './mcp';
@@ -672,9 +673,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         // gap between claim and the PR opening), waiting_on = unresolved
         // blocking tickets for dependency chips, and the live review-SLA
         // escalation stage (DAT-201) so a breached PR review flags the card.
+        // repo_connected completes the deploy gate's inputs (DAT-213) — with
+        // it alongside the PR and deploy joins above, every card can carry the
+        // reason it cannot move to Done without a second round trip.
         const tickets = (
           await q(
-            `SELECT t.*, d.deploy_state, d.deploy_url,
+            `SELECT t.*, d.deploy_state, d.deploy_url, (conn.present IS NOT NULL) AS repo_connected,
                     p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url,
                     ba.branch_name AS active_branch,
                     esc.stage AS escalation_stage, esc.pr_number AS escalation_pr,
@@ -705,10 +709,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
                WHERE e.ticket_key = t.key AND e.stage IN ('pinged','flagged')
                ORDER BY (e.stage = 'flagged') DESC, e.id DESC LIMIT 1
              ) esc ON true
+             ${REPO_CONNECTED_JOIN}
              WHERE t.engagement_id = $1 ORDER BY t.seq`,
             [id],
           )
-        ).rows;
+        ).rows.map((r) => ({ ...r, done_blocked_reason: doneBlockedReason(gateInputFromRow(r)) }));
         const sources = (await q('SELECT * FROM app.sources WHERE engagement_id = $1 ORDER BY id', [id])).rows;
         const feed = (await q('SELECT * FROM app.feed_items WHERE engagement_id = $1 AND NOT reverted ORDER BY id', [id])).rows;
         const team = (
@@ -849,6 +854,16 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             review = { engagementId: String(current.engagement_id), from: String(current.status) };
           }
           enteredReview = status === 'review' && String(current.status) !== 'review';
+          // DAT-213: Done means shipped. A move into Done needs the ticket's
+          // linked work actually deployed; tickets already in Done, exempt
+          // tickets and repo-less engagements pass straight through.
+          if (status === 'done' && String(current.status) !== 'done') {
+            const blocked = (await loadDeployGates(q, [req.params.key])).get(req.params.key);
+            if (blocked) {
+              res.status(409).json({ error: blocked });
+              return;
+            }
+          }
         }
         const sets: string[] = [];
         const params: unknown[] = [req.params.key];
@@ -1247,6 +1262,24 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             : targets.filter((t) => reviewStates.includes(String(t.status)));
           for (const engagementId of new Set(gated.map((t) => String(t.engagement_id)))) {
             if (!(await requireLead(req, res, engagementId))) return;
+          }
+          // DAT-213: same deploy gate as the single-ticket PATCH. A bulk move
+          // is all-or-nothing — moving the passing subset silently would leave
+          // the user guessing which tickets actually closed.
+          if (patch.status === 'done') {
+            const blocked: { key: string; reason: string }[] = [];
+            for (const [key, reason] of await loadDeployGates(q, keys)) {
+              if (reason !== null) blocked.push({ key, reason });
+            }
+            if (blocked.length > 0) {
+              res.status(409).json({
+                error:
+                  blocked.length === 1
+                    ? blocked[0].reason
+                    : `${String(blocked.length)} tickets are not deployed yet and can't move to Done: ${blocked.map((b) => b.key).join(', ')}. ${blocked[0].reason}`,
+              });
+              return;
+            }
           }
           await q(
             `UPDATE app.tickets SET status = $1,

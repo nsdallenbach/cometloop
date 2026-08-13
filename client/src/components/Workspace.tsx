@@ -700,6 +700,14 @@ export function Workspace({
       return;
     }
     if (lane !== 'backlog' && lane !== 'review' && lane !== 'done') return;
+    // DAT-213: Done means deployed. Refuse the drop up front rather than let
+    // the card land and snap back on the server's 409 — the toast carries the
+    // server's own reason, so the two can never say different things.
+    const dropped = tickets.find((x) => x.key === payload.key);
+    if (lane === 'done' && dropped?.doneBlockedReason) {
+      toast(dropped.doneBlockedReason);
+      return;
+    }
     // Land exactly where the slot gap previewed it — including a new order
     // within the lane. Optimistic like every board mutation; a failed save
     // refetches so the board falls back to the server's truth.
@@ -1202,13 +1210,18 @@ export function Workspace({
                         <td style={tdBase}>
                           <select
                             value={t.status}
+                            // Done is off the menu until the work is deployed
+                            // (DAT-213); the title says why on hover.
+                            title={t.doneBlockedReason ?? undefined}
                             onChange={(e) => setTicket(t.key, { status: e.target.value as TicketStatus })}
                             style={{ background: 'var(--bg)', border: '1px solid var(--line2)', color: 'var(--tx)', borderRadius: 3, padding: '3px 6px', fontSize: 11.5, cursor: 'pointer' }}
                           >
                             <option value="backlog">Backlog</option>
                             <option value="progress">In Progress</option>
                             <option value="review">In Review</option>
-                            <option value="done">Done</option>
+                            <option value="done" disabled={t.doneBlockedReason !== null}>
+                              {t.doneBlockedReason !== null ? 'Done — not deployed' : 'Done'}
+                            </option>
                           </select>
                         </td>
                         <td style={{ ...tdBase, whiteSpace: 'nowrap' }}>

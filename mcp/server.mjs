@@ -216,7 +216,7 @@ tool(
 
 tool(
   'move_ticket',
-  'Move a ticket to a board status.',
+  'Move a ticket to a board status. Done requires the ticket\'s linked PR to be merged and deployed — otherwise the move is rejected with the reason (tag the ticket "no-deploy" if it ships nothing deployable).',
   { key: z.string(), status: z.enum(['backlog', 'progress', 'review', 'done']) },
   async ({ key, status }) => trimTicket(await call('PATCH', `/api/tickets/${encodeURIComponent(key)}`, { status })),
 );
