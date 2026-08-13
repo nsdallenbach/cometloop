@@ -1869,10 +1869,6 @@ function NewTicketModal({
   // takes the pair or neither, filling one asks for the other.
   const [estHours, setEstHours] = useState('');
   const [humanEstHours, setHumanEstHours] = useState('');
-  // Live Shift tracking so the shortcut hints show which action Ctrl+Enter
-  // will actually fire (leads only — Shift is a no-op for everyone else).
-  const [shiftHeld, setShiftHeld] = useState(false);
-  const [estTouched, setEstTouched] = useState({ agent: false, human: false });
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const deployButtonRef = useRef<HTMLButtonElement>(null);
 
