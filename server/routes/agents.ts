@@ -1,6 +1,7 @@
 import type express from 'express';
 import { z } from 'zod';
 import type { Identity } from './roles';
+import { accessibleProjectIds } from './project-access';
 
 /**
  * Project agents: the entities behind the /agents architecture map. Three
@@ -481,14 +482,25 @@ export function setupProjectAgentRoutes(
   app: express.Application,
   q: Query,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  resolveIdentity: (req: express.Request) => Promise<Identity>,
 ) {
-  app.get('/api/agents/overview', async (_req, res) => {
+  app.get('/api/agents/overview', async (req, res) => {
     try {
       // Persist before reading: the table is the record of truth, refreshed
       // from runner history + live serving state on every overview load. A
       // sync failure must not blank the map.
       await syncProjectAgents(q).catch((err) => console.warn('[agents] sync failed:', (err as Error).message));
-      res.json(await loadAgentsOverview(q));
+      const overview = await loadAgentsOverview(q);
+      const allowed = await accessibleProjectIds(q, await resolveIdentity(req));
+      if (allowed === null) {
+        res.json(overview);
+        return;
+      }
+      const ids = new Set(allowed);
+      res.json({
+        projects: overview.projects.filter((project) => ids.has(project.id)),
+        agents: overview.agents.filter((agent) => ids.has(agent.engagementId)),
+      });
     } catch (err) {
       console.error('agents overview failed:', err);
       res.status(500).json({ error: 'Failed to load the agent map' });

@@ -161,6 +161,7 @@ export interface ContextSource {
 export interface TeamMember {
   id: number;
   name: string;
+  email: string | null;
   role: string;
   skills: number[];
   load: number;
@@ -369,6 +370,7 @@ export interface Me {
   email: string;
   role: Role;
   leadOf: string[];
+  memberOf: string[];
 }
 
 export interface TicketComment {
