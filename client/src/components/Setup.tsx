@@ -198,7 +198,8 @@ export function Setup({
               </div>
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--tx3)', marginBottom: 22, lineHeight: 1.5 }}>
-              Context sources (git repository, documents) connect from the workspace’s Sources tab once the engagement exists.
+              Documents upload from the workspace’s Sources tab once the engagement exists; the git repository and the runner environment
+              are set on its Config tab.
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button

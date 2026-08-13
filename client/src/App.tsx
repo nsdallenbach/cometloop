@@ -303,6 +303,14 @@ export default function App() {
                 setNewTicket(true);
               },
             },
+            {
+              kind: 'NAV',
+              label: `${eng.client} — open Config`,
+              hint: '',
+              description: 'Repository connection and runner environment for this project',
+              keywords: ['config', 'settings', 'repo', 'repository', 'git', 'runner', 'image', 'libraries', 'packages'],
+              run: () => openEngagement(eng.id, 'config'),
+            },
           ]
         : []),
       {

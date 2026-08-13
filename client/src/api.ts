@@ -19,7 +19,9 @@ import type {
   ProjectAgentRole,
   ProjectAgentType,
   PrReview,
+  ProjectRunnerConfig,
   ProjectStandards,
+  RunnerConfigIssue,
   RepoCommit,
   RepoConnection,
   RepoDetail,
@@ -197,9 +199,16 @@ function mapSuggestion(r: Row): Suggestion {
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /**
+   * Field-level validation failures the endpoint sent alongside the message,
+   * so a form can mark the inputs that caused them instead of only toasting
+   * the summary (see the Config tab's runner config, DAT-216).
+   */
+  issues: RunnerConfigIssue[];
+  constructor(message: string, status: number, issues: RunnerConfigIssue[] = []) {
     super(message);
     this.status = status;
+    this.issues = issues;
   }
 }
 
@@ -211,8 +220,8 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError('Network error — check your connection', 0);
   }
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new ApiError(body.error ?? `${res.status} ${res.statusText}`, res.status);
+    const body = (await res.json().catch(() => ({}))) as { error?: string; issues?: RunnerConfigIssue[] };
+    throw new ApiError(body.error ?? `${res.status} ${res.statusText}`, res.status, body.issues ?? []);
   }
   return (await res.json()) as T;
 }
@@ -688,6 +697,20 @@ export const api = {
 
   deleteStandardsFile(engId: string, name: string) {
     return http(`/api/engagements/${engId}/standards/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  },
+
+  // ---- project runner config (Config tab) ----
+
+  runnerConfig(engId: string): Promise<ProjectRunnerConfig> {
+    return http(`/api/engagements/${engId}/runner-config`);
+  },
+
+  /**
+   * Save the base image and library list. Rejected configs come back as an
+   * ApiError carrying `issues` — the caller renders them against the fields.
+   */
+  saveRunnerConfig(engId: string, baseImage: string, libraries: string[]): Promise<ProjectRunnerConfig> {
+    return http(`/api/engagements/${engId}/runner-config`, { method: 'PUT', ...json({ baseImage, libraries }) });
   },
 };
 

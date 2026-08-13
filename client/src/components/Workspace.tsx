@@ -2,12 +2,13 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/react';
 import { Plus, Rocket } from 'lucide-react';
 import { api } from '../api';
-import type { AgentTask, ContextFile, Engagement, EngagementDetail, RepoDetail, Ticket, TicketStatus } from '../types';
+import type { AgentTask, ContextFile, Engagement, EngagementDetail, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { dropBoardTicket, laneOf } from '../lib/board-order';
 import { needsEstimate } from '../lib/ticket-hours';
 import { Analytics } from './Analytics';
+import { ProjectConfig } from './ProjectConfig';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
 import { RichText } from './AgentComment';
@@ -195,6 +196,7 @@ export function Workspace({
     { key: 'roadmap', label: 'Roadmap' },
     { key: 'analytics', label: 'Analytics' },
     { key: 'sources', label: 'Sources' },
+    { key: 'config', label: 'Config' },
     { key: 'standards', label: 'Standards' },
     { key: 'team', label: 'Team' },
     { key: 'feed', label: 'Status Feed' },
@@ -1294,9 +1296,9 @@ export function Workspace({
       {/* ===== ANALYTICS ===== */}
       {detail && tab === 'analytics' && <Analytics eng={eng} detail={detail} />}
 
+      {/* Files and artifacts only — git setup moved to the Config tab (DAT-216). */}
       {detail && tab === 'sources' && (
         <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
-          <RepoCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
           <ContextFilesCard engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />
           <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid var(--line)', background: 'var(--bg2)' }}>
             <thead>
@@ -1331,6 +1333,9 @@ export function Workspace({
           </table>
         </div>
       )}
+
+      {/* ===== CONFIG ===== */}
+      {detail && tab === 'config' && <ProjectConfig engId={eng.id} lead={lead} toast={toast} refreshDetail={refreshDetail} />}
 
       {/* ===== STANDARDS ===== */}
       {detail && tab === 'standards' && <Standards engId={eng.id} lead={lead} toast={toast} />}
@@ -2119,335 +2124,6 @@ function NewTicketModal({
         </div>
       </motion.div>
     </>
-  );
-}
-
-/** Git repository connection card on the Sources tab. */
-function RepoCard({
-  engId,
-  lead,
-  toast,
-  refreshDetail,
-}: {
-  engId: string;
-  lead: boolean;
-  toast: (msg: string) => void;
-  refreshDetail: () => void;
-}) {
-  const [repo, setRepo] = useState<RepoDetail | null>(null);
-  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [url, setUrl] = useState('');
-  const [token, setToken] = useState('');
-  const [connecting, setConnecting] = useState(false);
-  // GitHub App picker: null = probing, 'off' = app not configured/reachable.
-  const [appRepos, setAppRepos] = useState<{ installationId: number; fullName: string }[] | 'off' | null>(null);
-  const [appPick, setAppPick] = useState('');
-  const [syncing, setSyncing] = useState(false);
-  const [disconnectConfirm, setDisconnectConfirm] = useState(false);
-
-  const fetchRepo = () => {
-    api
-      .repo(engId)
-      .then((r) => {
-        setRepo(r);
-        setLoadState('ready');
-      })
-      .catch(() => setLoadState('error'));
-  };
-
-  const load = () => {
-    setLoadState('loading');
-    fetchRepo();
-  };
-
-  // Initial state is already 'loading'; the effect only starts the fetch.
-  useEffect(fetchRepo, [engId]);
-
-  useEffect(() => {
-    if (!lead) return;
-    api
-      .githubAppStatus()
-      .then((s) => (s.configured ? api.githubAppRepos().then((r) => setAppRepos(r.repos)) : setAppRepos('off')))
-      .catch(() => setAppRepos('off'));
-  }, [lead]);
-
-  const connectViaApp = () => {
-    const pick = (Array.isArray(appRepos) ? appRepos : []).find((r) => r.fullName === appPick);
-    if (!pick || connecting) return;
-    setConnecting(true);
-    api
-      .connectRepoViaApp(engId, pick.installationId, pick.fullName)
-      .then(() => {
-        toast('Repository connected via GitHub App — first sync complete');
-        setAppPick('');
-        load();
-        refreshDetail();
-      })
-      .catch((e: Error) => toast(e.message))
-      .finally(() => setConnecting(false));
-  };
-
-  const connect = () => {
-    if (!url.trim() || !token.trim() || connecting) return;
-    setConnecting(true);
-    api
-      .connectRepo(engId, url.trim(), token.trim())
-      .then(() => {
-        toast('Repository connected — first sync complete');
-        setUrl('');
-        setToken('');
-        load();
-        refreshDetail();
-      })
-      .catch((e: Error) => toast(e.message))
-      .finally(() => setConnecting(false));
-  };
-
-  const syncNow = () => {
-    if (syncing) return;
-    setSyncing(true);
-    api
-      .syncRepo(engId)
-      .then((r) => {
-        toast(`Synced — ${r.commits} new commit${r.commits === 1 ? '' : 's'}, ${r.prs} PR update${r.prs === 1 ? '' : 's'}`);
-        load();
-        refreshDetail();
-      })
-      .catch((e: Error) => toast(`Sync failed: ${e.message}`))
-      .finally(() => setSyncing(false));
-  };
-
-  const conn = repo?.connection ?? null;
-  const openPrs = (repo?.prs ?? []).filter((p) => p.state === 'open');
-
-  const inputStyle: React.CSSProperties = {
-    boxSizing: 'border-box',
-    background: 'var(--bg)',
-    border: '1px solid var(--line2)',
-    borderRadius: 3,
-    color: 'var(--tx)',
-    padding: '7px 10px',
-    fontSize: 12.5,
-  };
-
-  return (
-    <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', marginBottom: 14, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--line)' }}>
-        <span style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>REPOSITORY</span>
-        {conn && (
-          <span style={{ ...mono(500, 9), border: '1px solid var(--line2)', color: 'var(--tx2)', borderRadius: 2, padding: '1px 6px', letterSpacing: '.06em' }}>
-            {conn.provider === 'github' ? 'GITHUB' : 'AZURE DEVOPS'}
-          </span>
-        )}
-        <div style={{ flex: 1 }} />
-        {conn && (
-          <button
-            onClick={syncNow}
-            disabled={syncing}
-            style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx)', borderRadius: 3, padding: '4px 12px', fontSize: 11, fontWeight: 600, cursor: 'pointer', opacity: syncing ? 0.5 : 1 }}
-          >
-            {syncing ? 'Syncing…' : 'Sync now'}
-          </button>
-        )}
-        {conn && lead && !disconnectConfirm && (
-          <button
-            className="hv-bad"
-            onClick={() => setDisconnectConfirm(true)}
-            style={{ border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), cursor: 'pointer', letterSpacing: '.06em' }}
-          >
-            DISCONNECT
-          </button>
-        )}
-        {conn && lead && disconnectConfirm && (
-          <span style={{ display: 'inline-flex', gap: 6 }}>
-            <button
-              onClick={() => {
-                api
-                  .disconnectRepo(engId)
-                  .then(() => {
-                    toast('Repository disconnected');
-                    setDisconnectConfirm(false);
-                    load();
-                  })
-                  .catch(() => toast('Disconnect failed'));
-              }}
-              style={{ border: '1px solid var(--bad)', background: 'none', color: 'var(--bad)', borderRadius: 3, padding: '3px 8px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
-            >
-              Confirm
-            </button>
-            <button
-              onClick={() => setDisconnectConfirm(false)}
-              style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '3px 8px', fontSize: 11, cursor: 'pointer' }}
-            >
-              Cancel
-            </button>
-          </span>
-        )}
-      </div>
-
-      {loadState === 'loading' && <Empty label="Loading repository…" />}
-      {loadState === 'error' && (
-        <div style={{ padding: '14px', fontSize: 12, color: 'var(--tx3)', textAlign: 'center' }}>
-          Couldn’t load the repository connection.{' '}
-          <button onClick={load} style={{ border: 'none', background: 'none', color: 'var(--acc)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
-            Retry
-          </button>
-        </div>
-      )}
-
-      {loadState === 'ready' && !conn && !lead && (
-        <Empty label="No repository connected — an engagement lead can connect GitHub or Azure DevOps here." />
-      )}
-
-      {loadState === 'ready' && !conn && lead && (
-        <div style={{ padding: '14px 16px' }}>
-          <div style={{ fontSize: 12.5, color: 'var(--tx2)', marginBottom: 10, lineHeight: 1.5 }}>
-            Connect the delivery repo to link commits and PRs to tickets by key (e.g. <span className="mono">ABC-104</span> in a branch or PR
-            title). Opening a linked PR moves its ticket to Review; merging holds it in Review while the deploy pipeline runs, then Done
-            once the pipeline succeeds.
-          </div>
-          {Array.isArray(appRepos) && appRepos.length > 0 && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-              <span style={{ ...mono(500, 9), border: '1px solid var(--line2)', color: 'var(--tx2)', borderRadius: 2, padding: '2px 6px', letterSpacing: '.06em' }}>
-                GITHUB APP
-              </span>
-              <select value={appPick} onChange={(e) => setAppPick(e.target.value)} style={{ ...inputStyle, flex: '1 1 300px', cursor: 'pointer' }}>
-                <option value="">Pick an installed repository…</option>
-                {appRepos.map((r) => (
-                  <option key={r.fullName} value={r.fullName}>
-                    {r.fullName}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={connectViaApp}
-                disabled={!appPick || connecting}
-                style={{
-                  background: 'var(--acc)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 3,
-                  padding: '7px 16px',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  opacity: !appPick || connecting ? 0.45 : 1,
-                }}
-              >
-                {connecting ? 'Connecting…' : 'Connect'}
-              </button>
-              <div style={{ flexBasis: '100%', ...mono(400, 10), color: 'var(--tx3)' }}>
-                No stored tokens — the console mints short-lived credentials per sync. Or paste a token below.
-              </div>
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://github.com/owner/repo or https://dev.azure.com/org/project/_git/repo"
-              style={{ ...inputStyle, flex: '1 1 340px' }}
-            />
-            <input
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              type="password"
-              placeholder="Access token (read-only scope)"
-              autoComplete="off"
-              style={{ ...inputStyle, flex: '1 1 180px' }}
-            />
-            <button
-              onClick={connect}
-              disabled={!url.trim() || !token.trim() || connecting}
-              style={{
-                background: 'var(--acc)',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 3,
-                padding: '7px 16px',
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: 'pointer',
-                opacity: !url.trim() || !token.trim() || connecting ? 0.45 : 1,
-              }}
-            >
-              {connecting ? 'Connecting…' : 'Connect'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {loadState === 'ready' && conn && (
-        <div style={{ padding: '12px 16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: repo && (repo.prs.length > 0 || repo.commits.length > 0) ? 12 : 0 }}>
-            <a href={conn.repoUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13, fontWeight: 600, color: 'var(--tx)', textDecoration: 'none' }}>
-              {conn.repoName}
-            </a>
-            <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{conn.defaultBranch}</span>
-            <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
-              {openPrs.length} OPEN PR{openPrs.length === 1 ? '' : 'S'}
-            </span>
-            <span style={{ ...mono(400, 10), color: conn.status === 'error' ? 'var(--bad)' : 'var(--ok)', letterSpacing: '.06em' }}>
-              {conn.status === 'error' ? 'SYNC ERROR' : 'CONNECTED'}
-            </span>
-            {conn.lastSyncAt && (
-              <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
-                SYNCED{' '}
-                {new Date(conn.lastSyncAt).toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).toUpperCase()}
-              </span>
-            )}
-            <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>TOKEN {conn.tokenHint}</span>
-          </div>
-          {conn.status === 'error' && conn.lastError && (
-            <div style={{ fontSize: 12, color: 'var(--bad)', marginBottom: 10 }}>{conn.lastError}</div>
-          )}
-          {repo && (repo.prs.length > 0 || repo.commits.length > 0) && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div>
-                <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>PULL REQUESTS</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {repo.prs.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>None synced yet.</span>}
-                  {repo.prs.slice(0, 6).map((pr) => (
-                    <a
-                      key={pr.number}
-                      href={pr.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--tx2)', textDecoration: 'none', minWidth: 0 }}
-                    >
-                      <span style={{ ...mono(500, 9), color: PR_STATE_COLOR[pr.state], flex: 'none' }}>{pr.state.toUpperCase()}</span>
-                      <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        #{pr.number} {pr.title}
-                      </span>
-                      {pr.ticketKey && <span style={{ ...mono(400, 9), color: 'var(--agent)', flex: 'none' }}>{pr.ticketKey}</span>}
-                    </a>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>RECENT COMMITS</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {repo.commits.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>None synced yet.</span>}
-                  {repo.commits.slice(0, 6).map((c) => (
-                    <a
-                      key={c.sha}
-                      href={c.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--tx2)', textDecoration: 'none', minWidth: 0 }}
-                    >
-                      <span style={{ ...mono(400, 9), color: 'var(--tx3)', flex: 'none' }}>{c.sha.slice(0, 7)}</span>
-                      <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.message.split('\n')[0]}</span>
-                      {c.ticketKey && <span style={{ ...mono(400, 9), color: 'var(--agent)', flex: 'none' }}>{c.ticketKey}</span>}
-                    </a>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 

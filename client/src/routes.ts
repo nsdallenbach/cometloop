@@ -1,4 +1,4 @@
-export const TABS = ['board', 'roadmap', 'analytics', 'sources', 'standards', 'team', 'feed'] as const;
+export const TABS = ['board', 'roadmap', 'analytics', 'sources', 'config', 'standards', 'team', 'feed'] as const;
 export type Tab = (typeof TABS)[number];
 
 export type Screen =

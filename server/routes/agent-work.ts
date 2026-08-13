@@ -9,6 +9,7 @@ import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
+import { runnerConfigForWorkPackage } from './project-config';
 
 /**
  * Agent work queue: leads queue tickets for autonomous agents; external agent
@@ -253,6 +254,9 @@ export function setupAgentRoutes(
       ).rows[0] ?? null;
     const contextFiles = await listContextFiles(files, engagementId);
     const attachments = await listTicketAttachments(q, ticketKey).catch(() => []);
+    // The project's Config tab, resolved to a base image plus ready-to-spawn
+    // install argv — the runner provisions from this before the agent starts.
+    const runnerConfig = await runnerConfigForWorkPackage(q, engagementId);
     return {
       task,
       ticket,
@@ -261,6 +265,7 @@ export function setupAgentRoutes(
       repo,
       contextFiles,
       attachments,
+      runnerConfig,
       prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, comments, attachments),
     };
   };

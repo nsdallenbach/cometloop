@@ -6,7 +6,7 @@
 // tickets. This prompt instructs a human or AI agent working inside the
 // existing project to gather its context and distill it into a brief that
 // survives that pipeline accurately, then lists what to attach after
-// creation (Sources, Standards, repo connection).
+// creation (Sources, Standards, Config/repo connection).
 
 export const CLIENT_PLACEHOLDER = '<CLIENT NAME>';
 export const NAME_PLACEHOLDER = '<PROJECT NAME>';
@@ -49,7 +49,7 @@ STEP 4 — ATTACH THE REMAINING CONTEXT
 After the engagement exists, from its workspace:
 - Sources tab: upload the key documents listed in Step 1 (SOW, runbooks, designs) so agents and teammates get the project's context.
 - Standards tab: paste the project's engineering/working standards document if one exists.
-- Connect the git repository so PRs and commits auto-link to tickets by key.
+- Config tab: connect the git repository so PRs and commits auto-link to tickets by key, and set the runner base image plus any libraries this project's agents need preinstalled.
 - Fix up the board: adjust ticket estimates or phases the parser got wrong, and add any items the brief left out.
 
 Result: the engagement's roadmap, milestones and board reflect the project as it actually stands, and its documents are attached where the console expects them.`;

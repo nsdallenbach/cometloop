@@ -81,7 +81,7 @@ installations.
 
 ## 4. Connect a repo
 
-Engagement → Sources → Repository: leads now see a **GitHub App** picker
+Engagement → Config → Repository: leads now see a **GitHub App** picker
 listing every installed repo — pick one and Connect. No token field.
 
 ## 5. Devbox runners get credentials vended

@@ -14,6 +14,7 @@ import { PR_ESCALATION_SCHEMA_SQL, setupPrEscalationRoutes, startEscalationPolli
 import { setupContextFileRoutes } from './context-files';
 import { ATTACHMENT_SCHEMA_SQL, deleteAttachmentFiles, setupTicketAttachmentRoutes } from './ticket-attachments';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
+import { PROJECT_CONFIG_SCHEMA_SQL, setupProjectConfigRoutes } from './project-config';
 import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
 import {
   NEEDS_ESTIMATE_TAG,
@@ -182,7 +183,7 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL, ...PR_REVIEW_SCHEMA_SQL, ...PR_ESCALATION_SCHEMA_SQL]) {
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL, ...PR_REVIEW_SCHEMA_SQL, ...PR_ESCALATION_SCHEMA_SQL, ...PROJECT_CONFIG_SCHEMA_SQL]) {
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -1804,6 +1805,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
     setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
+    setupProjectConfigRoutes(app, q, requireLead);
     setupLlmHealthRoutes(app, appkit.serving.bind(appkit));
 
     app.post('/api/tickets/:key/comments', async (req, res) => {

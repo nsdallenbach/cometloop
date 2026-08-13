@@ -120,6 +120,12 @@ that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
 - **Be chatty**: progress note at claim, at plan, and before pushing;
   silent heartbeat at least every 2 minutes during long runs; raise a flag
   (`/flag`) when stuck instead of guessing or dying quietly.
+- Environment is per project, not per runner: the Config tab's base image and
+  preferred libraries ride along in the claim payload as `runnerConfig`, and
+  the runner provisions from it before launching the agent. Entries are
+  validated when a lead saves them, so a provisioning failure means the
+  environment is broken (network, registry, missing wheel) — flag and fail the
+  task rather than working in a half-built environment.
 - Auth: mint workspace tokens via the CLI, cache no longer than 10 minutes,
   and treat any 401 as "refresh and retry once" — long-lived daemons that
   cache tokens without a 401 path will eventually replay a dead token forever.
