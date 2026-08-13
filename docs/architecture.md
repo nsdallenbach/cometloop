@@ -93,6 +93,7 @@ with a Lakebase credential.
 - `pr-review.ts` — the PR review gate: case assembly, reviewer prompt, verdict parsing, PR + ticket publication
 - `pr-requeue.ts` — merge-conflict requeue: classify the review outcome, put the ticket back at the top of the runner queue, cap the retries
 - `pr-escalation.ts` — review-SLA watch: 24h lead ping, 48h PR comment + board flag, lead dismissal resets the timers
+- `ticket-review.ts` — reason-based rejection out of Review: rejection history, requeue, prompt context
 - `estimates.ts` — agent + human hour estimates, per-engagement calibration from actuals
 - `planning-review.ts` — "agent reviewing" status while a planning pass rewrites a ticket: `app.planning_reviews` rows with a TTL, so a pass that dies mid-flight clears its own badge
 - `ticket-events / -links / -tags / -order / -attachments` — the event trail, dependencies, tags, board ordering, file attachments
@@ -186,6 +187,15 @@ board. Every stage transition is claimed with a conditional UPDATE, so a
 threshold checked repeatedly still notifies exactly once; a lead can dismiss
 the escalation from the ticket drawer, which resets both timers, and review,
 merge or closure stops the clock for good.
+
+Review has a second exit next to approval: a lead can reject a ticket that is
+in Review with a reason (`POST /api/tickets/:key/reject`, the drawer's REVIEW
+panel). The reason is mandatory — a blank one is refused before anything is
+written — and the ticket goes back to Backlog, never Done, re-queued for an
+agent by default. Reasons accumulate in `app.ticket_rejections` (one row per
+cycle, so a third rejection does not erase the first two) and the newest five
+are rendered into the runner prompt above the lead instructions, so the next
+run starts from the reviewer's words instead of a cold re-read.
 
 CI (`deploy.yml`) runs typecheck → lint → build → `databricks bundle
 deploy` → `bundle run app` on every push to main, serialized by a

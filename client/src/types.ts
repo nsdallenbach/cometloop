@@ -395,6 +395,14 @@ export interface TicketComment {
   createdAt: string;
 }
 
+/** One review rejection cycle (DAT-217); a ticket accumulates these, oldest first. */
+export interface TicketRejection {
+  id: number;
+  reason: string;
+  rejectedBy: string;
+  rejectedAt: string;
+}
+
 export interface RepoConnection {
   id: number;
   provider: 'github' | 'ado';

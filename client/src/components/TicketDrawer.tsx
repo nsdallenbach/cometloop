@@ -11,6 +11,7 @@ import type {
   TicketEscalation,
   TicketLinkType,
   TicketLinks,
+  TicketRejection,
   ToolCall,
 } from '../types';
 import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
@@ -340,6 +341,55 @@ export function TicketDrawer({
       })
       .catch((e: Error) => toast(`Dismiss failed — ${e.message}`))
       .finally(() => setDismissing(false));
+  };
+
+  // ---- review rejections (DAT-217) ----
+  // Rejecting is the counterpart to approving a ticket out of Review: the
+  // reason is mandatory client-side too, so the reviewer sees why the button is
+  // dead instead of a 400 after the fact. History is shown on any status — a
+  // ticket that got kicked back twice should say so while it is being reworked.
+  const [rejects, setRejects] = useState<{ key: string; list: TicketRejection[] } | null>(null);
+  // The reason draft is keyed to the ticket, like the branch/description/estimate
+  // edits above: opening another ticket never inherits the previous draft, and
+  // board polls can't clobber half-typed feedback.
+  const [rejectDraft, setRejectDraft] = useState<{ key: string; reason: string; requeue: boolean } | null>(null);
+  const [rejectError, setRejectError] = useState<{ key: string; msg: string } | null>(null);
+  const [rejecting, setRejecting] = useState(false);
+
+  const loadRejections = useCallback(() => {
+    void api
+      .rejections(ticket.key)
+      .then((list) => setRejects({ key: ticket.key, list }))
+      .catch(() => setRejects({ key: ticket.key, list: [] }));
+  }, [ticket.key]);
+
+  useEffect(loadRejections, [loadRejections]);
+
+  const rejections = rejects && rejects.key === ticket.key ? rejects.list : [];
+  const canReject = lead && ticket.status === 'review';
+  const rejectForm = rejectDraft && rejectDraft.key === ticket.key ? rejectDraft : null;
+  const rejectErrorMsg = rejectError && rejectError.key === ticket.key ? rejectError.msg : '';
+
+  const submitRejection = () => {
+    const reason = rejectForm?.reason.trim() ?? '';
+    if (!reason) {
+      setRejectError({ key: ticket.key, msg: 'A rejection reason is required — the next runner works from it.' });
+      return;
+    }
+    if (rejecting) return;
+    setRejecting(true);
+    api
+      .rejectTicket(ticket.key, reason, rejectForm?.requeue ?? true)
+      .then((r) => {
+        setRejectDraft(null);
+        setRejectError(null);
+        toast(`${ticket.key} rejected — back to Backlog${r.requeued ? ' and re-queued for an agent' : ''}`);
+        loadRejections();
+        loadComments();
+        refreshDetail();
+      })
+      .catch((e: Error) => setRejectError({ key: ticket.key, msg: e.message }))
+      .finally(() => setRejecting(false));
   };
 
   // ---- linked tickets & branches ----
@@ -1084,6 +1134,128 @@ export function TicketDrawer({
               </div>
             ))}
           </div>
+          {(canReject || rejections.length > 0) && (
+            <>
+              <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+                REVIEW{rejections.length > 0 ? ` · ${rejections.length} REJECTION${rejections.length > 1 ? 'S' : ''}` : ''}
+              </div>
+              <div
+                style={{
+                  border: `1px solid ${rejections.length > 0 ? 'var(--bad)' : 'var(--line)'}`,
+                  borderRadius: 3,
+                  padding: '10px 12px',
+                  marginBottom: 18,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                }}
+              >
+                {rejections.map((r, i) => (
+                  <div key={r.id} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ ...mono(500, 9), color: 'var(--bad)', border: '1px solid var(--bad)', borderRadius: 2, padding: '1px 5px', letterSpacing: '.06em' }}>
+                        ⨯ REJECTED{rejections.length > 1 ? ` #${i + 1}` : ''}
+                      </span>
+                      <span style={{ ...mono(400, 10), color: 'var(--tx2)' }}>{r.rejectedBy || 'reviewer'}</span>
+                      {r.rejectedAt && <span style={{ ...mono(400, 9), color: 'var(--tx3)' }}>{fmtTime(r.rejectedAt)}</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{r.reason}</div>
+                  </div>
+                ))}
+                {rejections.length > 0 && (
+                  <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', lineHeight: 1.5 }}>
+                    Every reason above is handed to the next runner that claims this ticket.
+                  </div>
+                )}
+                {canReject && rejectForm === null && (
+                  <button
+                    className="hv-bad"
+                    onClick={() => setRejectDraft({ key: ticket.key, reason: '', requeue: true })}
+                    title="Send this ticket back for rework with a reason — it returns to Backlog, not Done"
+                    style={{
+                      alignSelf: 'flex-start',
+                      border: '1px solid var(--bad)',
+                      background: 'none',
+                      color: 'var(--bad)',
+                      borderRadius: 3,
+                      padding: '6px 12px',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ⨯ Reject with reason
+                  </button>
+                )}
+                {canReject && rejectForm !== null && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <textarea
+                      autoFocus
+                      value={rejectForm.reason}
+                      onChange={(e) => {
+                        setRejectDraft({ ...rejectForm, reason: e.target.value });
+                        if (rejectErrorMsg) setRejectError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submitRejection();
+                        if (e.key === 'Escape' && !rejecting) setRejectDraft(null);
+                      }}
+                      rows={4}
+                      maxLength={4000}
+                      placeholder="Why is this being sent back? Be specific — this text is the brief the next agent run works from."
+                      style={{
+                        boxSizing: 'border-box',
+                        background: 'var(--bg)',
+                        border: `1px solid ${rejectErrorMsg ? 'var(--bad)' : 'var(--line2)'}`,
+                        borderRadius: 3,
+                        color: 'var(--tx)',
+                        padding: '8px 10px',
+                        fontSize: 12.5,
+                        lineHeight: 1.5,
+                        resize: 'vertical',
+                      }}
+                    />
+                    {rejectErrorMsg && <div style={{ ...mono(400, 9.5), color: 'var(--bad)' }}>{rejectErrorMsg}</div>}
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--tx2)', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={rejectForm.requeue}
+                        onChange={(e) => setRejectDraft({ ...rejectForm, requeue: e.target.checked })}
+                      />
+                      Queue it straight back for an agent run
+                    </label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        onClick={submitRejection}
+                        disabled={rejecting || !rejectForm.reason.trim()}
+                        title={rejectForm.reason.trim() ? 'Reject this review (Ctrl+Enter)' : 'Enter a reason first'}
+                        style={{
+                          border: 'none',
+                          background: 'var(--bad)',
+                          color: '#fff',
+                          borderRadius: 3,
+                          padding: '6px 14px',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: rejecting || !rejectForm.reason.trim() ? 'not-allowed' : 'pointer',
+                          opacity: rejecting || !rejectForm.reason.trim() ? 0.5 : 1,
+                        }}
+                      >
+                        {rejecting ? 'Rejecting…' : 'Reject'}
+                      </button>
+                      <button
+                        onClick={() => setRejectDraft(null)}
+                        disabled={rejecting}
+                        style={{ border: '1px solid var(--line2)', background: 'none', color: 'var(--tx2)', borderRadius: 3, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
           {(agentTask || canQueue) && (
             <>
               <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>AGENT WORK</div>

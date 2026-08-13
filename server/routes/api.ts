@@ -46,6 +46,7 @@ import { setupTicketOrderRoutes } from './ticket-order';
 import { clipText, installUtf8BodyRecovery } from './utf8-body';
 import { setupVelocityRoutes } from './velocity';
 import { TICKET_EVENTS_SCHEMA_SQL, TICKET_EVENTS_BACKFILL_SQL, recordTicketEvent, computeBurndown } from './ticket-events';
+import { TICKET_REVIEW_SCHEMA_SQL, setupTicketReviewRoutes } from './ticket-review';
 import {
   SEED_ENGAGEMENTS,
   SEED_TICKETS,
@@ -197,7 +198,9 @@ const SCHEMA_SQL = [
 async function initSchema(appkit: AppKitServices) {
   // Statements run independently: legacy tables the app SP doesn't own can
   // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL, ...PR_REVIEW_SCHEMA_SQL, ...PR_REQUEUE_SCHEMA_SQL, ...PR_ESCALATION_SCHEMA_SQL, ...PLANNING_REVIEW_SCHEMA_SQL]) {
+
+  for (const sql of [...SCHEMA_SQL, ...REPO_SCHEMA_SQL, ...AGENT_SCHEMA_SQL, ...PROJECT_AGENTS_SCHEMA_SQL, ...TOOL_CALL_SCHEMA_SQL, ...COORDINATION_SCHEMA_SQL, ...STANDARDS_SCHEMA_SQL, ...TICKET_EVENTS_SCHEMA_SQL, ...LINKS_SCHEMA_SQL, ...ESTIMATE_SCHEMA_SQL, ...ATTACHMENT_SCHEMA_SQL, ...PR_REVIEW_SCHEMA_SQL, ...PR_REQUEUE_SCHEMA_SQL, ...PR_ESCALATION_SCHEMA_SQL, ...PLANNING_REVIEW_SCHEMA_SQL, ...TICKET_REVIEW_SCHEMA_SQL]) {
+
     try {
       await appkit.lakebase.query(sql);
     } catch (err) {
@@ -1937,6 +1940,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupToolCallRoutes(app, q);
     setupCoordinationRoutes(app, q);
     setupPrConflictRoutes(app, q);
+    setupTicketReviewRoutes(app, q, requireLead);
     setupPrReviewRoutes(app, q, requireLead);
     setupPrEscalationRoutes(app, q, requireLead);
     setupEstimateRoutes(app, q, appkit.serving.bind(appkit), requireLead);
