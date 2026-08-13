@@ -3,17 +3,42 @@
 Reference implementation of the devbox side of the agent loop:
 
 ```
-wait (long-poll) → claim → materialize workdir → claude -p → complete
+wait (long-poll) → claim → materialize workdir → coding agent → complete
 ```
 
 No ingress required — the runner only makes outbound calls to the console.
 Claims are atomic server-side, so any number of devboxes can run this
 concurrently against the same queue.
 
+## Harnesses — run any coding agent
+
+The runner's lifecycle is agent-agnostic; the only harness-specific parts
+(launch command, output parsing, MCP wiring) live in `harnesses.mjs`, selected
+by the `HARNESS` env var. Built in:
+
+| `HARNESS` | Agent | Notes |
+|---|---|---|
+| `claude` (default) | Claude Code | `claude -p` stream-json, workdir `.mcp.json` |
+| `codex` | OpenAI Codex CLI | `codex exec --json`, prompt on stdin; MCP via Codex's global config |
+| `generic` | any prompt-taking CLI | set `AGENT_BIN`/`AGENT_ARGS`; raw output feed, no MCP |
+
+Because nothing is shared or stateful between runs, a **mixed fleet just
+works**: point some boxes at `HARNESS=claude` and others at `HARNESS=codex`
+against the same queue — they claim atomically and show up side by side on the
+board (`claude-1`, `codex-2`, …). This is how you spread work across model
+budgets. Adding a new harness is one entry in `harnesses.mjs`; nothing in
+`runner.mjs` changes.
+
+```bash
+HARNESS=codex AGENT_NAME=codex-1 node devbox-runner/runner.mjs
+HARNESS=generic AGENT_BIN=aider AGENT_ARGS='--yes --no-git' node devbox-runner/runner.mjs
+```
+
 ## Requirements
 
 Node 18+, git, the Databricks CLI authenticated against the workspace (or a
-`DATABRICKS_TOKEN` env), and Claude Code (`claude`) on PATH.
+`DATABRICKS_TOKEN` env), and the coding agent for your chosen `HARNESS` on
+PATH (`claude`, `codex`, …).
 
 ## Run
 

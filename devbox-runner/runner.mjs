@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// Delivery Console devbox runner: wait → claim → Claude Code → complete.
+// Delivery Console devbox runner: wait → claim → coding agent → complete.
 //
 //   node devbox-runner/runner.mjs
 //
 // Long-polls the console's /api/agent/work/wait endpoint (outbound-only, no
 // ingress needed), atomically claims queued work, materializes a working
 // directory (work package, context files, repo clone via a vended GitHub App
-// credential), hands the server-rendered prompt to `claude -p` (stream-json
-// output rendered as a compact live activity feed), heartbeats while it runs,
-// and completes with done/failed + the agent's RESULT.md.
+// credential), hands the server-rendered prompt to a coding agent (Claude
+// Code, Codex, …) selected by HARNESS, streams its output as a compact live
+// activity feed, heartbeats while it runs, and completes with done/failed +
+// the agent's RESULT.md. The lifecycle is harness-agnostic; per-harness launch,
+// output parsing and MCP wiring live in harnesses.mjs.
 //
 // Env:
 //   APP_URL           console base URL
@@ -18,18 +20,20 @@
 //   AGENT_NAME        runner name shown in the console (default: devbox-<host>)
 //   ENGAGEMENT        only work one engagement's queue (optional)
 //   WORK_ROOT         where task workdirs are created (default: ~/agent-work)
-//   CLAUDE_BIN        claude binary (default: "claude")
-//   CLAUDE_ARGS       extra args, space-separated
-//                     (default: "--permission-mode acceptEdits")
-//   MCP_SERVER        path to mcp/server.mjs — written into the workdir's
-//                     .mcp.json so Claude can post progress/flags (optional)
-//   MAX_RUN_MINUTES   watchdog: kill the Claude child and fail the task after
-//                     this many minutes (default 180; "0" disables)
+//   HARNESS           coding agent: claude | codex | generic (default: claude)
+//   CLAUDE_BIN / CLAUDE_ARGS      claude harness (see harnesses.mjs)
+//   CODEX_BIN / CODEX_ARGS        codex harness
+//   AGENT_BIN / AGENT_ARGS / AGENT_LABEL   generic harness
+//   MCP_SERVER        path to mcp/server.mjs — wired into the workdir so the
+//                     agent can post its own progress/flags (harness-dependent)
+//   MAX_RUN_MINUTES   watchdog: kill the agent and fail the task after this
+//                     many minutes (default 180; "0" disables)
 //   ONCE              "1" = run a single task then exit (local testing)
 import { execFileSync, spawn } from 'child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import { getHarness, toolLabel } from './harnesses.mjs';
 
 const APP = (process.env.APP_URL ?? 'https://delivery-console-7474645607548631.aws.databricksapps.com').replace(/\/+$/, '');
 const HOST = process.env.DATABRICKS_HOST ?? 'https://dbc-96494b8f-6b86.cloud.databricks.com';
@@ -37,8 +41,7 @@ const CLI = process.env.DATABRICKS_CLI ?? 'databricks';
 const AGENT = process.env.AGENT_NAME ?? `devbox-${os.hostname()}`;
 const ENGAGEMENT = process.env.ENGAGEMENT ?? null;
 const WORK_ROOT = process.env.WORK_ROOT ?? path.join(os.homedir(), 'agent-work');
-const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
-const CLAUDE_ARGS = (process.env.CLAUDE_ARGS ?? '--permission-mode acceptEdits').split(' ').filter(Boolean);
+const HARNESS = getHarness(process.env.HARNESS);
 const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES ?? 180);
 const ONCE = process.env.ONCE === '1';
 
@@ -111,15 +114,6 @@ function fallbackPrompt(pkg) {
   ].join('\n');
 }
 
-/** Short one-line label for a tool_use event: file path, command, or a prefix of the input JSON. */
-function toolLabel(input) {
-  if (input && typeof input === 'object') {
-    if (typeof input.file_path === 'string') return input.file_path;
-    if (typeof input.command === 'string') return input.command;
-  }
-  return JSON.stringify(input ?? {}).slice(0, 60);
-}
-
 /**
  * Streams tool_use events to the console's ticket preview in small batches:
  * flushed every few seconds (or every 25 events) so the drawer feels live
@@ -165,40 +159,27 @@ class ToolCallStream {
   }
 }
 
-/** Print one NDJSON line from Claude's stream-json output as a compact live feed. */
-function printEvent(line, tools) {
-  let evt;
-  try {
-    evt = JSON.parse(line);
-  } catch {
-    console.log(line); // malformed line — pass through raw
-    return;
-  }
-  if (evt.type === 'assistant') {
-    for (const block of evt.message?.content ?? []) {
-      if (block.type === 'text' && block.text) console.log(block.text);
-      else if (block.type === 'tool_use') {
-        console.log(`  > ${block.name} ${toolLabel(block.input)}`);
-        tools?.push(block.name, block.input);
-      }
-    }
-  } else if (evt.type === 'result') {
-    console.log(JSON.stringify(evt, null, 2)); // final result event in full
-  } else if (evt.type !== 'system' && evt.type !== 'user') {
-    console.log(line); // unknown event type — pass through raw
-  }
+/** Render one parsed event to the terminal + push tool calls to the live feed. */
+function makeEmit(tools) {
+  return {
+    print: (text) => console.log(text),
+    tool: (name, input) => {
+      console.log(`  > ${name} ${toolLabel(input)}`);
+      tools?.push(name, input);
+    },
+  };
 }
 
 /**
- * Kill the Claude child for a run being abandoned (task cancelled/recalled,
- * or watchdog expiry). On Windows the spawn goes through a shell, so the pid
- * is the wrapper's — taskkill /T takes down the whole tree; elsewhere a
- * SIGTERM with a SIGKILL chaser is enough.
+ * Kill the agent child for a run being abandoned (task cancelled/recalled, or
+ * watchdog expiry). On Windows the spawn goes through a shell, so the pid is
+ * the wrapper's — taskkill /T takes down the whole tree; elsewhere a SIGTERM
+ * with a SIGKILL chaser is enough.
  */
-function killClaude(run, why) {
+function killAgent(run, why) {
   const child = run.child;
   if (!child || child.exitCode !== null || child.killed) return;
-  log(`terminating Claude run: ${why}`);
+  log(`terminating ${HARNESS.name} run: ${why}`);
   try {
     if (process.platform === 'win32') {
       execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
@@ -213,32 +194,41 @@ function killClaude(run, why) {
   }
 }
 
-/** run.child is exposed so the heartbeat/watchdog sidecars can kill the run. */
-function runClaude(prompt, cwd, extraEnv, tools, run) {
+/**
+ * Launch the selected harness on the prompt, streaming its output through the
+ * harness's parser. run.child is exposed so the heartbeat/watchdog sidecars can
+ * kill the run.
+ */
+function runAgent(prompt, cwd, extraEnv, tools, run) {
   return new Promise((resolve) => {
-    const child = spawn(CLAUDE_BIN, ['-p', '--output-format', 'stream-json', '--verbose', ...CLAUDE_ARGS], {
+    const viaArg = HARNESS.promptVia === 'arg';
+    const args = viaArg ? [...HARNESS.args, prompt] : HARNESS.args;
+    const child = spawn(HARNESS.bin, args, {
       cwd,
       env: { ...process.env, ...extraEnv },
-      stdio: ['pipe', 'pipe', 'inherit'],
+      stdio: [viaArg ? 'ignore' : 'pipe', 'pipe', 'inherit'],
       shell: process.platform === 'win32',
     });
     run.child = child;
+    const emit = makeEmit(tools);
     let buf = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
       buf += chunk;
       const lines = buf.split('\n');
       buf = lines.pop();
-      for (const l of lines) if (l.trim()) printEvent(l, tools);
+      for (const l of lines) if (l.trim()) HARNESS.parseLine(l, emit);
     });
     child.stdout.on('end', () => {
-      if (buf.trim()) printEvent(buf, tools);
+      if (buf.trim()) HARNESS.parseLine(buf, emit);
     });
-    child.stdin.write(prompt);
-    child.stdin.end();
+    if (!viaArg) {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    }
     child.on('close', (code) => resolve(code ?? 1));
     child.on('error', (err) => {
-      log(`claude spawn failed: ${err.message}`);
+      log(`${HARNESS.name} spawn failed: ${err.message}`);
       resolve(1);
     });
   });
@@ -282,18 +272,16 @@ async function runTask(pkg) {
     }
   }
 
-  // Let Claude talk to the console (progress notes, flags) from the workdir.
+  // Let the agent talk to the console (progress notes, flags) — wiring is
+  // harness-specific (Claude: workdir .mcp.json; Codex: global config; …).
   if (process.env.MCP_SERVER && existsSync(process.env.MCP_SERVER)) {
-    writeFileSync(
-      path.join(dir, '.mcp.json'),
-      JSON.stringify({ mcpServers: { 'delivery-console': { command: 'node', args: [path.resolve(process.env.MCP_SERVER)] } } }, null, 2),
-    );
+    HARNESS.writeConfig(dir, process.env.MCP_SERVER);
   }
 
   // Liveness contract: the heartbeat endpoint answers 404 the moment the
   // task leaves claimed/working for this agent (cancelled, recalled, or
   // reassigned), and 409 if another agent somehow owns it. Either means the
-  // console no longer wants this run — kill the Claude child and abandon,
+  // console no longer wants this run — kill the agent child and abandon,
   // instead of sitting wedged behind a dead run until it exits on its own.
   // Anything else (network blips, 5xx) is transient and never kills a run.
   const run = { child: null, abandoned: null };
@@ -301,18 +289,18 @@ async function runTask(pkg) {
     call('POST', `/api/agent/work/${id}/heartbeat`, { agent: AGENT }).catch((e) => {
       if (e.status === 404 || e.status === 409) {
         run.abandoned ??= 'cancelled';
-        killClaude(run, `console reports task ${id} is no longer ours (${e.status}: ${e.message}) — abandoning the run`);
+        killAgent(run, `console reports task ${id} is no longer ours (${e.status}: ${e.message}) — abandoning the run`);
       }
     });
   }, 120_000);
 
-  // Watchdog: a genuinely hung Claude must never wedge the runner forever.
+  // Watchdog: a genuinely hung agent must never wedge the runner forever.
   const watchdog =
     MAX_RUN_MINUTES > 0
       ? setTimeout(
           () => {
             run.abandoned ??= 'watchdog';
-            killClaude(run, `run exceeded MAX_RUN_MINUTES=${MAX_RUN_MINUTES} — failing the task`);
+            killAgent(run, `run exceeded MAX_RUN_MINUTES=${MAX_RUN_MINUTES} — failing the task`);
           },
           MAX_RUN_MINUTES * 60_000,
         )
@@ -320,12 +308,12 @@ async function runTask(pkg) {
 
   await call('POST', `/api/agent/work/${id}/progress`, {
     agent: AGENT,
-    note: `Claimed on ${os.hostname()}; starting Claude Code run.`,
+    note: `Claimed on ${os.hostname()}; starting ${HARNESS.name} run.`,
   }).catch(() => {});
 
   const prompt = pkg.prompt ?? fallbackPrompt(pkg);
   const tools = new ToolCallStream(id);
-  const code = await runClaude(prompt, dir, gitToken ? { GIT_TOKEN: gitToken } : {}, tools, run);
+  const code = await runAgent(prompt, dir, gitToken ? { GIT_TOKEN: gitToken } : {}, tools, run);
   await tools.flush(); // drain the tail of the feed before completing
   clearInterval(heartbeat);
   if (watchdog) clearTimeout(watchdog);
@@ -351,14 +339,14 @@ async function runTask(pkg) {
       : result.slice(0, 7900) ||
         (code === 0
           ? `Run exited cleanly but wrote no RESULT.md — delivery unverified (no PR, no summary). Work may be stranded uncommitted in the runner workdir on ${os.hostname()}.`
-          : `Claude Code exited with code ${code}; see runner logs on ${os.hostname()}.`);
+          : `${HARNESS.name} exited with code ${code}; see runner logs on ${os.hostname()}.`);
 
   try {
     await call('POST', `/api/agent/work/${id}/complete`, { agent: AGENT, outcome, summary, ...(prUrl ? { url: prUrl } : {}) });
     log(`task ${id} completed ${outcome}`);
   } catch (e) {
     // The console rejected the completion (task cancelled/reassigned while
-    // Claude was finishing) — nothing left to report, just go back to waiting.
+    // the agent was finishing) — nothing left to report, just go back to waiting.
     if (e.status === 404 || e.status === 409) {
       log(`task ${id} completion rejected (${e.status}: ${e.message}) — task was cancelled or reassigned; returning to wait`);
       return;
