@@ -4,6 +4,7 @@ import { api } from '../api';
 import { canonicalTag, suggestedTags } from '../lib/ticket-tags';
 import type {
   AgentTask,
+  FileFolder,
   Ticket,
   TicketAttachment,
   TicketComment,
@@ -271,6 +272,8 @@ export function TicketDrawer({
   const [attach, setAttach] = useState<{ key: string; list: TicketAttachment[] | null } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [attachArm, setAttachArm] = useState<string | null>(null);
+  const [attachFolders, setAttachFolders] = useState<FileFolder[]>([]);
+  const [attachFolder, setAttachFolder] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const loadAttachments = useCallback(() => {
@@ -281,11 +284,22 @@ export function TicketDrawer({
   }, [ticket.key]);
 
   useEffect(loadAttachments, [loadAttachments]);
+  // Volume folders the attachment can be filed into (DAT-202); failure just
+  // leaves the picker on "ticket attachments only".
+  useEffect(() => {
+    void api
+      .fileLibrary(ticket.engagementId)
+      .then((d) => {
+        setAttachFolders(d.folders);
+        setAttachFolder((v) => v || d.folders[0]?.id || '');
+      })
+      .catch(() => undefined);
+  }, [ticket.engagementId]);
 
   const uploadAttachment = (file: File) => {
     setUploading(true);
     api
-      .uploadAttachment(ticket.key, file)
+      .uploadAttachment(ticket.key, file, attachFolder || undefined)
       .then(() => {
         toast(`Attached ${file.name}`);
         loadAttachments();
@@ -1067,6 +1081,28 @@ export function TicketDrawer({
                 if (file) uploadAttachment(file);
               }}
             />
+            {attachFolders.length > 0 && (
+              <select
+                value={attachFolder}
+                onChange={(e) => setAttachFolder(e.target.value)}
+                title="Volume folder this file is filed into"
+                style={{
+                  background: 'var(--bg)',
+                  border: '1px solid var(--line2)',
+                  color: 'var(--tx2)',
+                  borderRadius: 3,
+                  fontSize: 11,
+                  padding: '2px 4px',
+                }}
+              >
+                <option value="">Ticket attachments only</option>
+                {attachFolders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               className="hv-border"
               disabled={uploading}

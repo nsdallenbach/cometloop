@@ -56,8 +56,10 @@ const MIGRATIONS = [
   // estimation code uses when the model returns no human figure; new tickets
   // get an independently reasoned value from the model.
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS human_est_hours REAL` },
-  { sql: `UPDATE app.tickets SET human_est_hours = LEAST(999, round((est_hours * 4)::numeric, 1))
-          WHERE human_est_hours IS NULL AND est_hours IS NOT NULL` },
+  {
+    sql: `UPDATE app.tickets SET human_est_hours = LEAST(999, round((est_hours * 4)::numeric, 1))
+          WHERE human_est_hours IS NULL AND est_hours IS NOT NULL`,
+  },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'` },
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS branch TEXT` },
@@ -161,12 +163,16 @@ const MIGRATIONS = [
     WHERE est_hours IS NULL AND est ~ '^[0-9]+\\.?[0-9]*\\s*[hH]$'`,
   },
   { sql: `UPDATE app.tickets SET est_hours = 1 WHERE est_hours IS NULL` },
-  { sql: `UPDATE app.tickets SET human_est_hours = LEAST(999, round((est_hours * 4)::numeric, 1))
-          WHERE human_est_hours IS NULL` },
+  {
+    sql: `UPDATE app.tickets SET human_est_hours = LEAST(999, round((est_hours * 4)::numeric, 1))
+          WHERE human_est_hours IS NULL`,
+  },
   { sql: `ALTER TABLE app.tickets ALTER COLUMN est_hours SET NOT NULL` },
   { sql: `ALTER TABLE app.tickets ALTER COLUMN human_est_hours SET NOT NULL` },
   // Attachments metadata: FK onto dev-owned tickets, so the table is created
   // here as the dev role; dev default privileges auto-grant the app SP.
+  {
+    sql: `CREATE TABLE IF NOT EXISTS app.ticket_attachments (
   // DAT-201 review-SLA escalation. `opened_at` starts the review clock (the
   // boot ALTER in REPO_SCHEMA_SQL is rejected on this dev-owned table, and the
   // PR upsert writes the column, so this must run before the next deploy).
@@ -220,7 +226,42 @@ const MIGRATIONS = [
     uploader TEXT NOT NULL,
     storage_path TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  )` },
+  )`,
+  },
+  {
+    sql: `CREATE TABLE IF NOT EXISTS app.file_folders (
+    id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL REFERENCES app.engagements(id) ON DELETE CASCADE,
+    parent_id TEXT REFERENCES app.file_folders(id) ON DELETE RESTRICT, name TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (engagement_id, parent_id, name)
+  )`,
+  },
+  {
+    sql: `CREATE TABLE IF NOT EXISTS app.file_entries (
+    id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL REFERENCES app.engagements(id) ON DELETE CASCADE,
+    folder_id TEXT NOT NULL REFERENCES app.file_folders(id) ON DELETE RESTRICT, filename TEXT NOT NULL,
+    size BIGINT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/octet-stream', sha256 TEXT NOT NULL,
+    uploader TEXT NOT NULL, storage_path TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  },
+  {
+    sql: `CREATE TABLE IF NOT EXISTS app.file_rules (
+    id TEXT PRIMARY KEY, engagement_id TEXT NOT NULL REFERENCES app.engagements(id) ON DELETE CASCADE,
+    name TEXT NOT NULL, folder_id TEXT NOT NULL REFERENCES app.file_folders(id) ON DELETE CASCADE,
+    file_pattern TEXT NOT NULL DEFAULT '*', action_type TEXT NOT NULL,
+    target_ticket TEXT REFERENCES app.tickets(key) ON DELETE SET NULL, enabled BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  },
+  {
+    sql: `CREATE TABLE IF NOT EXISTS app.file_rule_runs (
+    id TEXT PRIMARY KEY, rule_id TEXT NOT NULL REFERENCES app.file_rules(id) ON DELETE CASCADE,
+    file_id TEXT NOT NULL, result_ticket TEXT REFERENCES app.tickets(key) ON DELETE SET NULL,
+    action_type TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(rule_id, file_id)
+  )`,
+  },
+  {
+    sql: `ALTER TABLE app.ticket_attachments ADD COLUMN IF NOT EXISTS folder_id TEXT REFERENCES app.file_folders(id) ON DELETE SET NULL`,
+  },
 ];
 
 (async () => {

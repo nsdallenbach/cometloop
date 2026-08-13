@@ -53,6 +53,7 @@ import {
   recordTicketEvent,
   computeBurndown,
 } from './ticket-events';
+import { FILE_LIBRARY_SCHEMA_SQL, setupFileLibraryRoutes } from './file-library';
 import { TICKET_REVIEW_SCHEMA_SQL, setupTicketReviewRoutes } from './ticket-review';
 import { createNotification, mentionedEmails, NOTIFICATION_SCHEMA_SQL, setupNotificationRoutes } from './notifications';
 import { SEED_ENGAGEMENTS, SEED_TICKETS, SEED_SOURCES, SEED_FEED, SEED_TEAM, SEED_SUGGESTIONS } from './seed-data';
@@ -215,6 +216,7 @@ async function initSchema(appkit: AppKitServices) {
     ...LINKS_SCHEMA_SQL,
     ...ESTIMATE_SCHEMA_SQL,
     ...ATTACHMENT_SCHEMA_SQL,
+    ...FILE_LIBRARY_SCHEMA_SQL,
     ...PR_REVIEW_SCHEMA_SQL,
     ...PR_REQUEUE_SCHEMA_SQL,
     ...PR_ESCALATION_SCHEMA_SQL,
@@ -431,7 +433,7 @@ function activeRoadmapItem(phasesRaw: unknown): string | null {
  * the drawer). Runs in the background after the comment posts; any failure
  * leaves the comment as a plain comment.
  */
-async function applyCommentFeedback(
+export async function applyCommentFeedback(
   appkit: AppKitServices,
   key: string,
   author: string,
@@ -2138,7 +2140,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupEstimateRoutes(app, q, appkit.serving.bind(appkit), requireLead);
     setupTicketHoursRoutes(app, q, appkit.serving.bind(appkit), requireLead);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
-    setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead);
+    const refineFromFile = (key: string, feedback: string) =>
+      applyCommentFeedback(appkit, key, 'Files automation', feedback);
+    setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead, refineFromFile);
+    setupFileLibraryRoutes(app, q, appkit.files('files'), requireLead, refineFromFile);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
     setupLlmHealthRoutes(app, appkit.serving.bind(appkit));
 

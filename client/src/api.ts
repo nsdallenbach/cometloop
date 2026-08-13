@@ -11,6 +11,9 @@ import type {
   BurndownDay,
   CommitDay,
   ContextFile,
+  FileLibrary,
+  FileFolder,
+  FileRule,
   ContextSource,
   DeployState,
   Engagement,
@@ -764,15 +767,18 @@ export const api = {
     return d.attachments;
   },
 
-  uploadAttachment(ticketKey: string, file: File): Promise<TicketAttachment> {
-    return http(`/api/tickets/${encodeURIComponent(ticketKey)}/attachments?filename=${encodeURIComponent(file.name)}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        ...(file.type ? { 'X-Attachment-Content-Type': file.type } : {}),
-      },
-      body: file,
-    });
+  uploadAttachment(ticketKey: string, file: File, folderId?: string): Promise<TicketAttachment> {
+    return http(
+      `/api/tickets/${encodeURIComponent(ticketKey)}/attachments?filename=${encodeURIComponent(file.name)}${folderId ? `&folderId=${encodeURIComponent(folderId)}` : ''}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          ...(file.type ? { 'X-Attachment-Content-Type': file.type } : {}),
+        },
+        body: file,
+      }
+    );
   },
 
   deleteAttachment(ticketKey: string, id: string) {
@@ -813,6 +819,40 @@ export const api = {
 
   deleteContextFile(engId: string, name: string) {
     return http(`/api/engagements/${engId}/context-files/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  },
+
+  fileLibrary(engId: string): Promise<FileLibrary> {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/files`);
+  },
+  createFolder(engId: string, name: string, parentId: string | null): Promise<FileFolder> {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/folders`, {
+      method: 'POST',
+      ...json({ name, parentId }),
+    });
+  },
+  renameFolder(engId: string, folderId: string, name: string): Promise<FileFolder> {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/folders/${folderId}`, {
+      method: 'PATCH',
+      ...json({ name }),
+    });
+  },
+  deleteFolder(engId: string, folderId: string) {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/folders/${folderId}`, { method: 'DELETE' });
+  },
+  uploadLibraryFile(engId: string, folderId: string, file: File): Promise<{ fired: { ticketKey: string }[] }> {
+    return http(
+      `/api/engagements/${encodeURIComponent(engId)}/files?folderId=${encodeURIComponent(folderId)}&filename=${encodeURIComponent(file.name)}`,
+      { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file }
+    );
+  },
+  deleteLibraryFile(engId: string, fileId: string) {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/files/${fileId}`, { method: 'DELETE' });
+  },
+  createFileRule(engId: string, rule: Omit<FileRule, 'id'>): Promise<FileRule> {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/file-rules`, { method: 'POST', ...json(rule) });
+  },
+  deleteFileRule(engId: string, ruleId: string) {
+    return http(`/api/engagements/${encodeURIComponent(engId)}/file-rules/${ruleId}`, { method: 'DELETE' });
   },
 
   // ---- project standards ----

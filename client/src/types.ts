@@ -332,6 +332,35 @@ export interface ContextFile {
   url: string;
 }
 
+export interface FileFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+export interface LibraryFile {
+  id: string;
+  filename: string;
+  size: number;
+  folderId: string;
+  ticketKey: string | null;
+  createdAt: string | null;
+  url: string;
+}
+export interface FileRule {
+  id: string;
+  name: string;
+  folderId: string;
+  filePattern: string;
+  actionType: 'create_ticket' | 'refine_ticket';
+  targetTicket: string | null;
+  enabled: boolean;
+}
+export interface FileLibrary {
+  folders: FileFolder[];
+  files: LibraryFile[];
+  rules: FileRule[];
+}
+
 export interface TicketAttachment {
   id: string;
   filename: string;
