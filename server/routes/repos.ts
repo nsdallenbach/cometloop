@@ -437,6 +437,45 @@ export function findTicketKey(...texts: string[]): string | null {
   return null;
 }
 
+/**
+ * Pull requests referenced by URL in free text. Completion comments commonly
+ * contain only the PR URL, so this gives a later repository sync a durable
+ * fallback when the PR was not linkable when it was first observed.
+ */
+export function extractPullRequestNumbers(text: string, conn: Pick<Connection, 'provider' | 'repo_url'>): number[] {
+  const out = new Set<number>();
+  const expected = new URL(conn.repo_url);
+  const expectedPath = expected.pathname.replace(/\.git\/?$/i, '').replace(/\/$/, '').toLowerCase();
+  for (const match of text.matchAll(/https?:\/\/[^\s<>()\]]+/gi)) {
+    const candidate = match[0].replace(/[.,;:!?`'"}]+$/, '');
+    try {
+      const url = new URL(candidate);
+      if (url.host.toLowerCase() !== expected.host.toLowerCase()) continue;
+      const path = url.pathname.replace(/\/$/, '');
+      const suffix = conn.provider === 'github' ? '/pull/' : '/pullrequest/';
+      if (!path.toLowerCase().startsWith(`${expectedPath}${suffix}`)) continue;
+      const number = Number(path.slice(expectedPath.length + suffix.length).split('/')[0]);
+      if (Number.isSafeInteger(number) && number > 0) out.add(number);
+    } catch {
+      // Ignore malformed prose URLs; repository sync must remain best-effort.
+    }
+  }
+  return [...out];
+}
+
+export function matchPullRequestTicket(
+  pr: Pick<PrItem, 'number' | 'branch' | 'title'>,
+  knownTickets: ReadonlySet<string>,
+  commentPrTickets: ReadonlyMap<number, ReadonlySet<string>>,
+): string | null {
+  const direct = findTicketKey(pr.branch, pr.title);
+  if (direct && knownTickets.has(direct)) return direct;
+  const mentionedBy = commentPrTickets.get(pr.number);
+  if (mentionedBy?.size !== 1) return null;
+  const [commentTicket] = mentionedBy;
+  return knownTickets.has(commentTicket) ? commentTicket : null;
+}
+
 function maskToken(token: string): string {
   return token.length <= 8 ? '····' : `${token.slice(0, 4)}····${token.slice(-4)}`;
 }
@@ -469,6 +508,28 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
     await q('SELECT key, status, assignee, title FROM app.tickets WHERE engagement_id = $1', [conn.engagement_id])
   ).rows;
   const ticketStatus = new Map(ticketRows.map((r) => [String(r.key), String(r.status)]));
+  const knownTickets = new Set(ticketStatus.keys());
+
+  // A completion comment can be written before the provider has exposed the
+  // PR (or while a webhook/sync is failing). Re-read those durable references
+  // on every sync so the association is eventually backfilled.
+  const commentRows = (
+    await q(
+      `SELECT c.ticket_key, c.body FROM app.ticket_comments c
+       JOIN app.tickets t ON t.key = c.ticket_key WHERE t.engagement_id = $1`,
+      [conn.engagement_id],
+    )
+  ).rows;
+  const commentPrTickets = new Map<number, Set<string>>();
+  for (const row of commentRows) {
+    const ticketKey = String(row.ticket_key);
+    const body = typeof row.body === 'string' ? row.body : '';
+    for (const number of extractPullRequestNumbers(body, conn)) {
+      const keys = commentPrTickets.get(number) ?? new Set<string>();
+      keys.add(ticketKey);
+      commentPrTickets.set(number, keys);
+    }
+  }
   const ticketsByKey = new Map(ticketRows.map((r) => [String(r.key), r]));
 
   const lastSync = (await q('SELECT last_sync_at FROM app.repo_connections WHERE id = $1', [conn.id])).rows[0];
@@ -496,8 +557,7 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
 
   let changedPrs = 0;
   for (const p of prs) {
-    const key = findTicketKey(p.branch, p.title);
-    const ticketKey = key && ticketStatus.has(key) ? key : null;
+    const ticketKey = matchPullRequestTicket(p, knownTickets, commentPrTickets);
     const prev = (
       await q('SELECT state FROM app.repo_prs WHERE connection_id = $1 AND number = $2', [conn.id, p.number])
     ).rows[0];

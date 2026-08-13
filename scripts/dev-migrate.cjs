@@ -169,10 +169,6 @@ const MIGRATIONS = [
   },
   { sql: `ALTER TABLE app.tickets ALTER COLUMN est_hours SET NOT NULL` },
   { sql: `ALTER TABLE app.tickets ALTER COLUMN human_est_hours SET NOT NULL` },
-  // Attachments metadata: FK onto dev-owned tickets, so the table is created
-  // here as the dev role; dev default privileges auto-grant the app SP.
-  {
-    sql: `CREATE TABLE IF NOT EXISTS app.ticket_attachments (
   // DAT-201 review-SLA escalation. `opened_at` starts the review clock (the
   // boot ALTER in REPO_SCHEMA_SQL is rejected on this dev-owned table, and the
   // PR upsert writes the column, so this must run before the next deploy).
@@ -200,8 +196,11 @@ const MIGRATIONS = [
     lead_email TEXT,
     UNIQUE (connection_id, pr_number)
   )` },
-  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_ticket ON app.pr_review_escalations (ticket_key)` },
-  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_stage ON app.pr_review_escalations (stage)` },
+  // On environments where boot created this SP-owned table first, the dev
+  // role cannot add its optional indexes. Do not block required owner-role
+  // migrations (such as repo_prs columns) on that harmless ownership split.
+  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_ticket ON app.pr_review_escalations (ticket_key)`, bestEffort: true },
+  { sql: `CREATE INDEX IF NOT EXISTS pr_review_escalations_stage ON app.pr_review_escalations (stage)`, bestEffort: true },
   // DAT-217 review rejections. Like the tables above it FKs onto dev-owned
   // app.tickets, so it is created here as the dev role; the boot schema creates
   // the identical table on a fresh install. Nothing reads it before the first
