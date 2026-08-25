@@ -1,0 +1,24 @@
+appId: com.datavail.delivery-console
+productName: Delivery Console
+directories:
+  output: release
+files:
+  - out/**
+win:
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: true
+  perMachine: false
+mac:
+  target: dmg
+linux:
+  target: AppImage
+# Code signing intentionally unconfigured in phase 1 — see
+# docs/local-client-architecture.md (procurement item; blocks silent
+# auto-update, not local installs).
+publish:
+  provider: github
+  owner: datavail-solutions
+  repo: engagement-console

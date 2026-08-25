@@ -1,0 +1,95 @@
+/* ============================================================
+   Delivery Console design tokens — shared between the web client
+   and the desktop app so both shells read as one product.
+
+   NOTE (DAT-226): client/src/index.css still holds its own copy of
+   these blocks — it remains the source of truth until the client is
+   rewired to import this file (follow-up ticket). If you change a
+   token, change it in BOTH places until then.
+   ============================================================ */
+
+[data-theme='dark'] {
+  --bg: #0a0d10;
+  --bg2: #10151a;
+  --bg3: #171e25;
+  --line: #232c34;
+  --line2: #2f3b45;
+  --tx: #e7ebef;
+  --tx2: #95a3af;
+  --tx3: #5e6e7b;
+  --acc: #ff3621;
+  --accsoft: rgba(255, 54, 33, 0.12);
+  --ok: #37b57a;
+  --warn: #e8a13c;
+  --bad: #ff4d33;
+  --agent: #7a8ff5;
+  --agentsoft: rgba(122, 143, 245, 0.13);
+  --link: #6ba5ff;
+  --rowpad: 9px 12px;
+}
+
+[data-theme='light'] {
+  --bg: #f5f6f7;
+  --bg2: #ffffff;
+  --bg3: #eceff1;
+  --line: #dce2e7;
+  --line2: #c6cfd6;
+  --tx: #151c22;
+  --tx2: #57646e;
+  --tx3: #8b98a2;
+  --acc: #e22a16;
+  --accsoft: rgba(226, 42, 22, 0.09);
+  --ok: #1e8f5c;
+  --warn: #b57818;
+  --bad: #d42b14;
+  --agent: #4a63d8;
+  --agentsoft: rgba(74, 99, 216, 0.1);
+  --link: #2563eb;
+  --rowpad: 9px 12px;
+}
+
+@keyframes eec-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes eec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes eec-fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes eec-slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.hv-lift {
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease,
+    filter 0.16s ease;
+}
+.hv-lift:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.06);
+}
