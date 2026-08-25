@@ -264,8 +264,8 @@ tool(
 
 tool(
   'queue_ticket_for_agent',
-  'Queue a ticket in the Deploy to Agent lane (lead only). Higher priority claims first. Works for backlog, in-progress and review tickets — queueing from Review sends the ticket back to a runner as rework, with review comments included in the work package.',
-  { key: z.string(), instructions: z.string().optional(), priority: z.number().int().min(0).max(9).optional() },
+  'Queue a ticket in the Deploy to Agent lane (lead only). Higher priority claims first. Works for backlog, in-progress and review tickets — queueing from Review sends the ticket back to a runner as rework, with review comments included in the work package. Pass assignee (workspace identity email) to route the task to one person\'s local runner; omit it for the shared fleet pool.',
+  { key: z.string(), instructions: z.string().optional(), priority: z.number().int().min(0).max(9).optional(), assignee: z.string().optional() },
   async ({ key, ...body }) => call('POST', `/api/tickets/${encodeURIComponent(key)}/queue`, body),
 );
 
