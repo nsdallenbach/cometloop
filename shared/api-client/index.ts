@@ -56,9 +56,17 @@ export class ConsoleClient {
 
     let res = await attempt(false);
     if (res.status === 401) res = await attempt(true);
+    if (res.status === 204) return null as T; // long-poll timeout etc.
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new ConsoleApiError(res.status, path, body.slice(0, 300) || res.statusText);
+      let message = body.slice(0, 300) || res.statusText;
+      try {
+        const parsed = JSON.parse(body) as { error?: string };
+        if (parsed.error) message = parsed.error;
+      } catch {
+        // non-JSON error body — keep the raw slice
+      }
+      throw new ConsoleApiError(res.status, path, message);
     }
     return (await res.json()) as T;
   }
@@ -66,4 +74,51 @@ export class ConsoleClient {
   listEngagements(): Promise<Engagement[]> {
     return this.request<Engagement[]>('/api/engagements');
   }
+
+  /** Fetch a binary body (context-file downloads) with the same auth/401 handling. */
+  async requestRaw(path: string): Promise<Uint8Array> {
+    const attempt = async (forceRefresh: boolean): Promise<Response> => {
+      const token = await this.getToken({ forceRefresh });
+      return this.fetchImpl(`${this.baseUrl}${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(60_000),
+      });
+    };
+    let res = await attempt(false);
+    if (res.status === 401) res = await attempt(true);
+    if (!res.ok) throw new ConsoleApiError(res.status, path, res.statusText);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /**
+   * Queue snapshot as this identity: `queued` is server-scoped (DAT-227) to
+   * the shared pool plus tasks routed to the caller; `active` is what the
+   * named runner currently holds.
+   */
+  listAgentWork(agent: string, engagement?: string): Promise<AgentWork> {
+    const params = new URLSearchParams({ agent });
+    if (engagement) params.set('engagement', engagement);
+    return this.request<AgentWork>(`/api/agent/work?${params.toString()}`);
+  }
+}
+
+export interface AgentTaskRow {
+  id: number;
+  ticket_key: string;
+  engagement_id: string;
+  state: 'queued' | 'claimed' | 'working' | 'done' | 'failed' | 'cancelled';
+  priority: number;
+  instructions: string;
+  assignee: string | null;
+  queued_by: string;
+  agent: string | null;
+  last_heartbeat: string | null;
+  last_note: string | null;
+  flag: string | null;
+  created_at: string;
+}
+
+export interface AgentWork {
+  queued: AgentTaskRow[];
+  active: AgentTaskRow[];
 }

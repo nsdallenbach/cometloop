@@ -6,10 +6,12 @@ import path from 'node:path';
 import { ConsoleClient } from '../../../shared/api-client';
 import { loadConfig, type DesktopConfig } from './config';
 import { CredentialManager, SIGN_IN_REQUIRED } from './credentials';
+import { RunnerHost, type RunnerEvent } from './runner';
 
 let cfg: DesktopConfig;
 let creds: CredentialManager;
 let client: ConsoleClient;
+let runner: RunnerHost;
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -60,6 +62,15 @@ function registerIpc(): void {
     }
   });
 
+  ipcMain.handle('queue:list', async () => {
+    try {
+      return { ok: true as const, work: await client.listAgentWork(cfg.agentName) };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false as const, signInRequired: msg === SIGN_IN_REQUIRED, error: msg === SIGN_IN_REQUIRED ? 'Not signed in to Databricks.' : msg };
+    }
+  });
+
   ipcMain.handle('auth:status', () => creds.status());
 
   ipcMain.handle('auth:login', async () => {
@@ -71,6 +82,23 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('auth:sign-out', () => creds.signOut());
+
+  ipcMain.handle('runner:state', () => runner.snapshot());
+  ipcMain.handle('runner:start', () => {
+    runner.start();
+    return runner.snapshot();
+  });
+  ipcMain.handle('runner:stop', () => {
+    runner.stop();
+    return runner.snapshot();
+  });
+  ipcMain.handle('runner:kill', () => {
+    runner.killRun();
+    return runner.snapshot();
+  });
+  ipcMain.handle('runner:run-ticket', (_e, ticketKey: unknown) =>
+    typeof ticketKey === 'string' && ticketKey ? runner.runTicket(ticketKey) : { ok: false, error: 'ticket key required' },
+  );
 
   ipcMain.on('window:control', (event, action: string) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -87,6 +115,9 @@ void app.whenReady().then(() => {
   client = new ConsoleClient({
     baseUrl: cfg.consoleUrl,
     getToken: (o) => creds.getToken(o),
+  });
+  runner = new RunnerHost(cfg, client, (ev: RunnerEvent) => {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('runner:event', ev);
   });
   registerIpc();
   createWindow();

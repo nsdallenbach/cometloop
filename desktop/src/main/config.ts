@@ -20,6 +20,14 @@ const ConfigSchema = z.object({
   databricksCli: z.string().default('databricks'),
   /** Runner identity shown on the board. */
   agentName: z.string().default(`desktop-${os.hostname()}`),
+  /** Coding agent the embedded runner drives (harness adapter name). */
+  harness: z.enum(['claude', 'codex']).default('claude'),
+  /** Where task workdirs are materialized. */
+  workRoot: z.string().default(path.join(os.homedir(), 'agent-work')),
+  /** Watchdog: kill a run after this many minutes (0 disables). */
+  maxRunMinutes: z.number().int().min(0).default(180),
+  /** Path to the delivery-console MCP server to wire into workdirs (optional). */
+  mcpServer: z.string().optional(),
 });
 
 export type DesktopConfig = z.infer<typeof ConfigSchema> & {
@@ -46,6 +54,10 @@ export function loadConfig(): DesktopConfig {
   if (process.env.DATABRICKS_PROFILE) envValues.databricksProfile = process.env.DATABRICKS_PROFILE;
   if (process.env.DATABRICKS_CLI) envValues.databricksCli = process.env.DATABRICKS_CLI;
   if (process.env.AGENT_NAME) envValues.agentName = process.env.AGENT_NAME;
+  if (process.env.HARNESS) envValues.harness = process.env.HARNESS;
+  if (process.env.WORK_ROOT) envValues.workRoot = process.env.WORK_ROOT;
+  if (process.env.MAX_RUN_MINUTES) envValues.maxRunMinutes = Number(process.env.MAX_RUN_MINUTES);
+  if (process.env.MCP_SERVER) envValues.mcpServer = process.env.MCP_SERVER;
 
   const parsed = ConfigSchema.parse({ ...fileValues, ...envValues });
 
