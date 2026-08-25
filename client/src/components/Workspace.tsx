@@ -891,6 +891,15 @@ export function Workspace({
             {at.instructions}
           </div>
         )}
+        {/* Routed task (DAT-227): only this person's runner can claim it. */}
+        {!running && at.assignee && (
+          <div
+            title={`Routed to ${at.assignee} — only their runner can claim it`}
+            style={{ marginTop: 5, ...mono(400, 9.5), color: 'var(--agent)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          >
+            → {detail?.team.find((m) => m.email?.toLowerCase() === at.assignee.toLowerCase())?.name ?? at.assignee}
+          </div>
+        )}
         {flagged && (
           <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--warn)', fontWeight: 600, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             ⚠ {at.flag}

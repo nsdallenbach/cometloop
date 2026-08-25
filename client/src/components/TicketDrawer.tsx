@@ -76,6 +76,7 @@ export function TicketDrawer({
   theme,
   ticket,
   team,
+  routableTeam,
   lead,
   runnerAccess,
   agentTask,
@@ -96,12 +97,14 @@ export function TicketDrawer({
   theme: 'dark' | 'light';
   ticket: Ticket;
   team: string[];
+  /** Team members with a workspace email — the ones agent work can be routed to (DAT-227). */
+  routableTeam: { name: string; email: string }[];
   lead: boolean;
   runnerAccess: boolean;
   agentTask: AgentTask | null;
   allTickets: Ticket[];
   onOpenTicket: (key: string) => void;
-  onQueueAgent: (instructions: string) => void;
+  onQueueAgent: (instructions: string, assignee?: string) => void;
   onCancelAgent: () => void;
   onAssign: (assignee: string) => void;
   onTags: (tags: string[]) => void;
@@ -136,6 +139,8 @@ export function TicketDrawer({
   };
   const [queueOpen, setQueueOpen] = useState(false);
   const [instructions, setInstructions] = useState('');
+  // '' = shared fleet pool; otherwise a workspace email the task is routed to.
+  const [routeTo, setRouteTo] = useState('');
   const agentActive = agentTask !== null && ['queued', 'claimed', 'working'].includes(agentTask.state);
   const canQueue = runnerAccess && !agentActive && ['backlog', 'progress'].includes(ticket.status);
   const [refining, setRefining] = useState(false);
@@ -1370,6 +1375,11 @@ export function TicketDrawer({
                         </button>
                       )}
                     </div>
+                    {agentTask.assignee && (
+                      <div style={{ ...mono(400, 10.5), color: 'var(--agent)' }} title="Only this person's runner can claim it">
+                        → routed to {routableTeam.find((m) => m.email.toLowerCase() === agentTask.assignee.toLowerCase())?.name ?? agentTask.assignee}
+                      </div>
+                    )}
                     {agentTask.instructions && (
                       <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>{agentTask.instructions}</div>
                     )}
@@ -1468,12 +1478,35 @@ export function TicketDrawer({
                         resize: 'vertical',
                       }}
                     />
+                    {routableTeam.length > 0 && (
+                      <select
+                        value={routeTo}
+                        onChange={(e) => setRouteTo(e.target.value)}
+                        title="Route this task to one person's local runner, or leave it for any runner"
+                        style={{
+                          background: 'var(--bg)',
+                          border: '1px solid var(--line2)',
+                          borderRadius: 3,
+                          color: routeTo ? 'var(--agent)' : 'var(--tx2)',
+                          padding: '6px 8px',
+                          fontSize: 12,
+                        }}
+                      >
+                        <option value="">Any runner (shared pool)</option>
+                        {routableTeam.map((m) => (
+                          <option key={m.email} value={m.email}>
+                            Only {m.name}’s runner
+                          </option>
+                        ))}
+                      </select>
+                    )}
                     <div style={{ display: 'flex', gap: 8 }}>
                       <button
                         onClick={() => {
-                          onQueueAgent(instructions.trim());
+                          onQueueAgent(instructions.trim(), routeTo || undefined);
                           setQueueOpen(false);
                           setInstructions('');
+                          setRouteTo('');
                         }}
                         style={{ border: 'none', background: 'var(--agent)', color: '#fff', borderRadius: 3, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
                       >
