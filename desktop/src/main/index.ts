@@ -5,9 +5,10 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { ConsoleClient } from '../../../shared/api-client';
 import { loadConfig, type DesktopConfig } from './config';
-import { CredentialManager } from './credentials';
+import { CredentialManager, SIGN_IN_REQUIRED } from './credentials';
 
 let cfg: DesktopConfig;
+let creds: CredentialManager;
 let client: ConsoleClient;
 
 function createWindow(): BrowserWindow {
@@ -50,9 +51,26 @@ function registerIpc(): void {
     try {
       return { ok: true as const, engagements: await client.listEngagements() };
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false as const,
+        signInRequired: msg === SIGN_IN_REQUIRED,
+        error: msg === SIGN_IN_REQUIRED ? 'Not signed in to Databricks.' : msg,
+      };
+    }
+  });
+
+  ipcMain.handle('auth:status', () => creds.status());
+
+  ipcMain.handle('auth:login', async () => {
+    try {
+      return { ok: true as const, ...(await creds.login()) };
+    } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+
+  ipcMain.handle('auth:sign-out', () => creds.signOut());
 
   ipcMain.on('window:control', (event, action: string) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -65,7 +83,7 @@ function registerIpc(): void {
 
 void app.whenReady().then(() => {
   cfg = loadConfig();
-  const creds = new CredentialManager(cfg);
+  creds = new CredentialManager(cfg);
   client = new ConsoleClient({
     baseUrl: cfg.consoleUrl,
     getToken: (o) => creds.getToken(o),

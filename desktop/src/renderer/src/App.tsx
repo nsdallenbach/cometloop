@@ -89,23 +89,51 @@ function Placeholder({ title, note }: { title: string; note: string }) {
   );
 }
 
+const AUTH_LABEL: Record<AuthMode, { text: string; color: string }> = {
+  oauth: { text: 'signed in (browser OAuth)', color: 'var(--ok)' },
+  cli: { text: 'signed in via Databricks CLI', color: 'var(--ok)' },
+  'dev-token': { text: 'dev token from env', color: 'var(--warn)' },
+  'signed-out': { text: 'not signed in', color: 'var(--tx3)' },
+};
+
 function TicketsView() {
   const [cfg, setCfg] = useState<Awaited<ReturnType<DesktopBridge['getConfig']>> | null>(null);
-  const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
+  const [auth, setAuth] = useState<AuthMode>('signed-out');
+  const [state, setState] = useState<'idle' | 'signing-in' | 'testing' | 'ok' | 'error'>('idle');
   const [engagements, setEngagements] = useState<EngagementRow[]>([]);
   const [error, setError] = useState('');
+  const [needSignIn, setNeedSignIn] = useState(false);
 
   useEffect(() => {
     void window.desktopBridge.getConfig().then(setCfg);
+    void window.desktopBridge.authStatus().then((s) => setAuth(s.mode));
   }, []);
 
   const test = async () => {
     setState('testing');
     setError('');
+    setNeedSignIn(false);
     const res = await window.desktopBridge.listEngagements();
+    void window.desktopBridge.authStatus().then((s) => setAuth(s.mode));
     if (res.ok) {
       setEngagements(res.engagements);
       setState('ok');
+    } else {
+      setError(res.error);
+      setNeedSignIn(Boolean(res.signInRequired));
+      setState('error');
+    }
+  };
+
+  // Browser round trip: the workspace sign-in page opens in the default
+  // browser; we hold "signing in…" until the loopback redirect lands.
+  const signIn = async () => {
+    setState('signing-in');
+    setError('');
+    const res = await window.desktopBridge.authLogin();
+    if (res.ok) {
+      setAuth(res.mode);
+      await test();
     } else {
       setError(res.error);
       setState('error');
@@ -138,29 +166,60 @@ function TicketsView() {
           <div style={{ display: 'grid', gap: 4, marginBottom: 14 }}>
             <Row k="console" v={cfg.consoleUrl} />
             <Row k="workspace" v={cfg.databricksHost} />
-            <Row k="profile" v={cfg.databricksProfile ?? '(default)'} />
             <Row k="agent" v={cfg.agentName} />
-            {cfg.devMode && <Row k="auth" v="dev token from env" warn />}
+            <div style={{ display: 'flex', gap: 10, fontSize: 12.5, alignItems: 'center' }}>
+              <span style={{ ...mono(400, 11), color: 'var(--tx3)', width: 78, flex: 'none' }}>auth</span>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: AUTH_LABEL[auth].color, flex: 'none' }} />
+              <span style={{ color: AUTH_LABEL[auth].color }}>{AUTH_LABEL[auth].text}</span>
+            </div>
           </div>
         )}
-        <button
-          className="no-drag hv-lift"
-          onClick={() => void test()}
-          disabled={state === 'testing'}
-          style={{
-            background: 'var(--acc)',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 6,
-            padding: '9px 18px',
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: state === 'testing' ? 'wait' : 'pointer',
-            fontFamily: 'inherit',
-          }}
-        >
-          {state === 'testing' ? 'Connecting…' : 'Test connection'}
-        </button>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {(auth === 'signed-out' || needSignIn) && (
+            <button
+              className="no-drag hv-lift"
+              onClick={() => void signIn()}
+              disabled={state === 'signing-in'}
+              style={{
+                background: 'var(--acc)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 6,
+                padding: '9px 18px',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: state === 'signing-in' ? 'wait' : 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              {state === 'signing-in' ? 'Waiting for browser…' : 'Sign in to Databricks'}
+            </button>
+          )}
+          <button
+            className="no-drag hv-lift"
+            onClick={() => void test()}
+            disabled={state === 'testing' || state === 'signing-in'}
+            style={{
+              background: auth === 'signed-out' || needSignIn ? 'var(--bg3)' : 'var(--acc)',
+              color: auth === 'signed-out' || needSignIn ? 'var(--tx2)' : '#fff',
+              border: '1px solid var(--line2)',
+              borderRadius: 6,
+              padding: '9px 18px',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: state === 'testing' ? 'wait' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {state === 'testing' ? 'Connecting…' : 'Test connection'}
+          </button>
+        </div>
+        {state === 'signing-in' && (
+          <div style={{ marginTop: 12, fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>
+            Your browser opened the workspace sign-in page — finish there and this window picks it
+            up automatically.
+          </div>
+        )}
         {state === 'error' && (
           <div style={{ marginTop: 12, fontSize: 12, color: 'var(--bad)', lineHeight: 1.5 }}>
             {error}

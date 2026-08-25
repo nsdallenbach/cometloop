@@ -3,9 +3,11 @@
 Phase 1 scaffold of the local client
 ([docs/local-client-architecture.md](../docs/local-client-architecture.md)):
 an Electron shell with the console's design tokens, a zod-validated config, a
-Databricks credential manager (CLI-minted workspace tokens, ≤10 min cache,
-401 → refresh-once), and a typed IPC bridge. The My Tickets view proves the
-loop: it lists engagements from the console API authenticated as *you*.
+Databricks credential manager with **native browser OAuth** (authorization
+code + PKCE, refresh token encrypted via `safeStorage`, silent renewal,
+≤10 min access-token cache, 401 → refresh-once), and a typed IPC bridge. The
+My Tickets view proves the loop: it lists engagements from the console API
+authenticated as *you*.
 
 ## Run it
 
@@ -15,8 +17,11 @@ npm install
 npm run dev          # electron-vite dev with HMR
 ```
 
-Prereqs: Node 20+, the Databricks CLI on PATH and logged in
-(`databricks auth login --host <workspace>`), network access to the console.
+Prereqs: Node 20+ and network access to the console. First launch: click
+**Sign in to Databricks** — your browser opens the workspace sign-in, the app
+catches the redirect, and you stay signed in across restarts. (No Databricks
+CLI needed; if one is installed and logged in it is used silently as a
+fallback.)
 
 Config lives at `%APPDATA%/delivery-console-desktop/config.json` (written on
 first run) and can be overridden per-run with env vars: `APP_URL`,

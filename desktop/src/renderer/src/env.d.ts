@@ -8,6 +8,8 @@ interface EngagementRow {
   health: string;
 }
 
+type AuthMode = 'dev-token' | 'oauth' | 'cli' | 'signed-out';
+
 interface DesktopBridge {
   getConfig: () => Promise<{
     consoleUrl: string;
@@ -18,8 +20,11 @@ interface DesktopBridge {
     devMode: boolean;
   }>;
   listEngagements: () => Promise<
-    { ok: true; engagements: EngagementRow[] } | { ok: false; error: string }
+    { ok: true; engagements: EngagementRow[] } | { ok: false; error: string; signInRequired?: boolean }
   >;
+  authStatus: () => Promise<{ mode: AuthMode; host: string }>;
+  authLogin: () => Promise<{ ok: true; mode: AuthMode } | { ok: false; error: string }>;
+  authSignOut: () => Promise<{ mode: AuthMode }>;
   windowControl: (action: 'minimize' | 'maximize' | 'close') => void;
 }
 
