@@ -96,8 +96,9 @@ const AUTH_LABEL: Record<AuthMode, { text: string; color: string }> = {
   'signed-out': { text: 'not signed in', color: 'var(--tx3)' },
 };
 
-function TicketsView() {
+function TicketsView({ goRuns }: { goRuns: () => void }) {
   const [cfg, setCfg] = useState<Awaited<ReturnType<DesktopBridge['getConfig']>> | null>(null);
+  const [runError, setRunError] = useState('');
   const [auth, setAuth] = useState<AuthMode>('signed-out');
   const [state, setState] = useState<'idle' | 'signing-in' | 'testing' | 'ok' | 'error'>('idle');
   const [engagements, setEngagements] = useState<EngagementRow[]>([]);
@@ -123,6 +124,31 @@ function TicketsView() {
       setNeedSignIn(Boolean(res.signInRequired));
       setState('error');
     }
+  };
+
+  // Live queue: poll like the board does (8s). Server-side scoping (DAT-227)
+  // means `queued` is already just the shared pool plus tasks routed to us.
+  const [work, setWork] = useState<{ queued: AgentTaskRow[]; active: AgentTaskRow[] } | null>(null);
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      const res = await window.desktopBridge.listWork();
+      if (!stop && res.ok) setWork(res.work);
+    };
+    void tick();
+    const t = setInterval(() => void tick(), 8000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [auth]);
+
+  // Claim one specific ticket on this machine and jump to the live run.
+  const runTicket = async (key: string) => {
+    setRunError('');
+    const res = await window.desktopBridge.runnerRunTicket(key);
+    if (res.ok) goRuns();
+    else setRunError(res.error ?? 'Run failed to start.');
   };
 
   // Browser round trip: the workspace sign-in page opens in the default
@@ -262,6 +288,105 @@ function TicketsView() {
           ))}
         </div>
       )}
+
+      {work && (
+        <div style={{ maxWidth: 560, display: 'grid', gap: 18 }}>
+          {runError && <div style={{ fontSize: 12, color: 'var(--bad)' }}>{runError}</div>}
+          <TaskSection
+            title="ROUTED TO YOU"
+            empty="Nothing routed to you right now — assignments land here from the board."
+            tasks={work.queued.filter((t) => t.assignee)}
+            accent="var(--agent)"
+            onRun={runTicket}
+          />
+          <TaskSection
+            title="SHARED POOL"
+            empty="The shared pool is empty."
+            tasks={work.queued.filter((t) => !t.assignee)}
+            accent="var(--tx3)"
+            onRun={runTicket}
+          />
+          {work.active.length > 0 && (
+            <TaskSection title="ACTIVE ON THIS MACHINE" empty="" tasks={work.active} accent="var(--ok)" />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskSection({
+  title,
+  empty,
+  tasks,
+  accent,
+  onRun,
+}: {
+  title: string;
+  empty: string;
+  tasks: AgentTaskRow[];
+  accent: string;
+  onRun?: (ticketKey: string) => void;
+}) {
+  return (
+    <div>
+      <div style={{ ...mono(500, 10), color: accent, letterSpacing: '.08em', marginBottom: 8 }}>
+        ◆ {title} · {tasks.length}
+      </div>
+      {tasks.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--tx3)' }}>{empty}</div>
+      ) : (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {tasks.map((t) => (
+            <div
+              key={t.id}
+              style={{
+                background: 'var(--bg2)',
+                border: '1px solid var(--line)',
+                borderLeft: `3px solid ${accent}`,
+                borderRadius: 6,
+                padding: 'var(--rowpad)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ ...mono(500, 11), color: 'var(--tx2)' }}>{t.ticket_key}</span>
+                <span style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>{t.engagement_id}</span>
+                <span style={{ marginLeft: 'auto', ...mono(500, 9), color: accent, letterSpacing: '.06em' }}>
+                  {t.state.toUpperCase()}
+                </span>
+                {onRun && t.state === 'queued' && (
+                  <button
+                    className="no-drag hv-lift"
+                    title="Claim and run this ticket on this machine"
+                    onClick={() => onRun(t.ticket_key)}
+                    style={{
+                      border: '1px solid var(--ok)',
+                      background: 'transparent',
+                      color: 'var(--ok)',
+                      borderRadius: 4,
+                      padding: '2px 9px',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    ▶ Run
+                  </button>
+                )}
+              </div>
+              {t.instructions && (
+                <div style={{ marginTop: 4, fontSize: 11.5, color: 'var(--tx3)', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                  {t.instructions}
+                </div>
+              )}
+              {t.last_note && t.state !== 'queued' && (
+                <div style={{ marginTop: 4, fontSize: 11.5, color: 'var(--tx2)' }}>{t.last_note}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -275,14 +400,123 @@ function Row({ k, v, warn }: { k: string; v: string; warn?: boolean }) {
   );
 }
 
-const VIEWS: Record<NavId, ReactNode> = {
-  tickets: <TicketsView />,
-  runs: (
-    <Placeholder
-      title="Runs"
-      note="Live harness runs — the tool-call stream, heartbeats, and an embedded terminal pane. Harnesses run headless (no console windows); this is where you watch them."
-    />
-  ),
+function RunsView({ onRunnerChange }: { onRunnerChange: (state: RunnerState) => void }) {
+  const [snap, setSnap] = useState<RunnerSnapshot | null>(null);
+  const [feed, setFeed] = useState<RunnerEvent[]>([]);
+
+  useEffect(() => {
+    void window.desktopBridge.runnerState().then((s) => {
+      setSnap(s);
+      setFeed(s.feed);
+      onRunnerChange(s.state);
+    });
+    const off = window.desktopBridge.onRunnerEvent((ev) => {
+      setFeed((f) => [...f.slice(-799), ev]);
+      if (ev.kind === 'status') {
+        setSnap((s) => (s ? { ...s, state: ev.state } : s));
+        onRunnerChange(ev.state);
+      }
+    });
+    return off;
+  }, [onRunnerChange]);
+
+  const running = snap?.state === 'running' || snap?.state === 'completing';
+  const on = snap != null && snap.state !== 'stopped';
+  const act = (fn: () => Promise<RunnerSnapshot>) => () =>
+    void fn().then((s) => {
+      setSnap(s);
+      onRunnerChange(s.state);
+    });
+
+  const lineColor: Record<RunnerEvent['kind'], string> = {
+    status: 'var(--agent)',
+    print: 'var(--tx2)',
+    tool: 'var(--tx)',
+    note: 'var(--tx3)',
+    error: 'var(--bad)',
+  };
+
+  return (
+    <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 14, height: '100%', boxSizing: 'border-box' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Runs</h2>
+        <span
+          style={{
+            ...mono(500, 9.5),
+            letterSpacing: '.08em',
+            color: running ? 'var(--ok)' : on ? 'var(--agent)' : 'var(--tx3)',
+            border: `1px solid ${running ? 'var(--ok)' : on ? 'var(--agent)' : 'var(--line2)'}`,
+            borderRadius: 3,
+            padding: '2px 8px',
+          }}
+        >
+          {snap ? snap.state.toUpperCase() : '…'}
+          {snap?.current ? ` · ${snap.current.ticketKey}` : ''}
+        </span>
+        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>harness: {snap?.harness ?? '…'}</span>
+        <div style={{ flex: 1 }} />
+        {!on && (
+          <button className="no-drag hv-lift" onClick={act(() => window.desktopBridge.runnerStart())} style={btnStyle('var(--ok)')}>
+            ▶ Start runner
+          </button>
+        )}
+        {on && !running && (
+          <button className="no-drag" onClick={act(() => window.desktopBridge.runnerStop())} style={btnStyle('var(--warn)')}>
+            ■ Stop runner
+          </button>
+        )}
+        {running && (
+          <button className="no-drag" onClick={act(() => window.desktopBridge.runnerKill())} style={btnStyle('var(--bad)')}>
+            ✕ Kill run
+          </button>
+        )}
+      </div>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          background: 'var(--bg2)',
+          border: '1px solid var(--line)',
+          borderRadius: 8,
+          padding: '12px 14px',
+          ...mono(400, 11.5),
+          lineHeight: 1.55,
+          userSelect: 'text',
+        }}
+      >
+        {feed.length === 0 && (
+          <div style={{ color: 'var(--tx3)' }}>
+            No runner activity yet. Start the runner to long-poll the queue, or hit ▶ on a queued ticket in My Tickets.
+          </div>
+        )}
+        {feed.map((ev, i) => (
+          <div key={i} style={{ color: lineColor[ev.kind], whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+            {ev.kind === 'status'
+              ? `── ${ev.state.toUpperCase()}${ev.detail ? ` · ${ev.detail}` : ''} ──`
+              : ev.kind === 'tool'
+                ? `  > ${ev.name} ${ev.label}`
+                : ev.text}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const btnStyle = (color: string): CSSProperties => ({
+  background: 'transparent',
+  color,
+  border: `1px solid ${color}`,
+  borderRadius: 6,
+  padding: '7px 14px',
+  fontSize: 12.5,
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+});
+
+const VIEWS_STATIC: Partial<Record<NavId, ReactNode>> = {
   harnesses: (
     <Placeholder
       title="Harnesses"
@@ -311,6 +545,15 @@ const VIEWS: Record<NavId, ReactNode> = {
 
 export function App() {
   const [nav, setNav] = useState<NavId>('tickets');
+  const [runnerState, setRunnerState] = useState<RunnerState>('stopped');
+  const view =
+    nav === 'tickets' ? (
+      <TicketsView goRuns={() => setNav('runs')} />
+    ) : nav === 'runs' ? (
+      <RunsView onRunnerChange={setRunnerState} />
+    ) : (
+      VIEWS_STATIC[nav]
+    );
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <TitleBar />
@@ -352,6 +595,19 @@ export function App() {
                 {n.icon}
               </span>
               {n.label}
+              {n.id === 'runs' && runnerState !== 'stopped' && (
+                <span
+                  title={`runner ${runnerState}`}
+                  style={{
+                    marginLeft: 'auto',
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: runnerState === 'waiting' ? 'var(--agent)' : 'var(--ok)',
+                    animation: 'eec-pulse 2.4s infinite',
+                  }}
+                />
+              )}
             </button>
           ))}
           <div style={{ flex: 1 }} />
@@ -359,7 +615,7 @@ export function App() {
             phase 1 scaffold
           </div>
         </nav>
-        <main style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>{VIEWS[nav]}</main>
+        <main style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>{view}</main>
       </div>
     </div>
   );

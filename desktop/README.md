@@ -36,6 +36,19 @@ npm run build        # electron-vite production build
 npm run dist:win     # NSIS installer + portable exe into release/
 ```
 
+## The embedded runner
+
+**My Tickets** polls the queue as you (server-scoped: shared pool + tasks
+routed to you). **▶ Run** on a queued ticket claims it on this machine;
+**Runs** shows the live feed (harness output, tool calls, lifecycle) with
+Start/Stop runner (long-poll loop, like a devbox) and Kill run. Harness
+processes are spawned hidden (`windowsHide`, piped stdio) — no console
+windows. The lifecycle is the devbox runner's: claim → workdir under
+`~/agent-work` → vended git credential → harness (`claude` or `codex`, set
+`harness` in config.json or `HARNESS` env) → heartbeats → `RESULT.md` →
+complete. Not ported yet, deliberately: project provisioning (base
+image/library installs) and service-mode harnesses.
+
 ## Layout
 
 ```
