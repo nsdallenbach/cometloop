@@ -6,6 +6,9 @@ import { contextBridge, ipcRenderer } from 'electron';
 const bridge = {
   getConfig: () => ipcRenderer.invoke('config:get'),
   listEngagements: () => ipcRenderer.invoke('console:list-engagements'),
+  authStatus: () => ipcRenderer.invoke('auth:status'),
+  authLogin: () => ipcRenderer.invoke('auth:login'),
+  authSignOut: () => ipcRenderer.invoke('auth:sign-out'),
   windowControl: (action: 'minimize' | 'maximize' | 'close') =>
     ipcRenderer.send('window:control', action),
 };

@@ -93,15 +93,20 @@ password callback" for "API bearer token":
    needs at startup (console URL, Databricks host, profile name, sync
    remote). Values come from env / a config file the app writes; no
    scattered reads.
-2. **Credential manager** — one module owns Databricks auth: U2M OAuth as
-   the dev (browser flow on first run via the Databricks CLI/SDK, refresh
-   tokens in the keychain). It hands out workspace access tokens with
+2. **Credential manager** — one module owns Databricks auth, and the app
+   runs OAuth itself (DAT-228): first sign-in opens the system browser on
+   the workspace's `/oidc/v1/authorize` (authorization code + PKCE against
+   the registered `databricks-cli` public client, loopback redirect), the
+   refresh token lands encrypted via `safeStorage` (DPAPI/Keychain/
+   libsecret), and renewal is silent from then on — no Databricks CLI
+   required. The manager hands out workspace access tokens with
    auto-refresh *before* expiry, and every API client gets its token via
    callback — the same pattern the template uses for pool passwords. The
    devbox runner's "≤10 min cache, 401 → refresh-and-retry-once" behavior
    is subsumed by this.
-3. **Dual modes** — dev mode accepts a plain PAT/profile for hacking;
-   production mode is OAuth-only. Mirrors the template's split.
+3. **Fallback modes** — `DATABRICKS_TOKEN` env for dev hacking (never
+   persisted), and a silent Databricks CLI fallback for machines that
+   already have a live CLI session. Mirrors the template's dev/prod split.
 4. **Other identities** — gh/az/ADO device-code flows launched from the
    Identity screen; state readable, tokens in the keychain. Git pushes to
    *work repos* keep using console-vended GitHub App installation tokens;
