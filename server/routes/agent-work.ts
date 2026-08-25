@@ -60,6 +60,10 @@ export const AGENT_SCHEMA_SQL = [
   // How many times the fleet watch has released this task from a dead runner
   // (DAT-224) — past MAX_RECLAIMS it fails for a human instead of cycling.
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS reclaims INT NOT NULL DEFAULT 0`,
+  // Optional owner (DAT-227): a task queued for a specific person is only
+  // visible/claimable by callers whose workspace identity matches; NULL keeps
+  // the shared fleet pool. Stored lowercased.
+  `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS assignee TEXT`,
 ];
 
 /**
@@ -104,7 +108,20 @@ export function blockedByRun(active: Record<string, unknown>, now: number = Date
 const QueueBody = z.object({
   instructions: z.string().max(8000).optional(),
   priority: z.number().int().min(0).max(9).optional(),
+  /** Workspace identity email to route this task to (DAT-227); omit for the shared pool. */
+  assignee: z.string().trim().min(3).max(200).optional(),
 });
+
+/**
+ * SQL predicate for queue visibility (DAT-227): unassigned tasks are the
+ * shared fleet pool; assigned tasks exist only for the matching workspace
+ * identity. Pushes the identity param (lowercased) and returns the clause.
+ */
+export function assigneeScope(params: unknown[], email: string | null | undefined): string {
+  if (!email) return `assignee IS NULL`;
+  params.push(email.toLowerCase());
+  return `(assignee IS NULL OR LOWER(assignee) = $${params.length})`;
+}
 
 const OrderBody = z.object({
   order: z.array(z.number().int().positive()).min(1).max(200),
@@ -367,13 +384,14 @@ export function setupAgentRoutes(
         res.status(409).json({ error: blockedByRun(active) });
         return;
       }
+      const assignee = parsed.data.assignee?.toLowerCase() ?? null;
       const inserted = await q(
-        `INSERT INTO app.agent_tasks (ticket_key, engagement_id, priority, instructions, queued_by)
-         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-        [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', user.email],
+        `INSERT INTO app.agent_tasks (ticket_key, engagement_id, priority, instructions, queued_by, assignee)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', user.email, assignee],
       );
-      console.log(`[agent] queued ${key} as task ${String(inserted.rows[0].id)} (engagement ${engagementId}, priority ${parsed.data.priority ?? 0})`);
-      await feed(engagementId, 'YOU', `Queued ${key} — ${String(ticket.title)} for agent work.`);
+      console.log(`[agent] queued ${key} as task ${String(inserted.rows[0].id)} (engagement ${engagementId}, priority ${parsed.data.priority ?? 0}${assignee ? `, assigned to ${assignee}` : ''})`);
+      await feed(engagementId, 'YOU', `Queued ${key} — ${String(ticket.title)} for agent work${assignee ? ` (assigned to ${assignee})` : ''}.`);
       res.status(201).json(inserted.rows[0]);
     } catch (err) {
       console.error('queue ticket failed:', err);
@@ -494,6 +512,7 @@ export function setupAgentRoutes(
       const agent = typeof req.query.agent === 'string' ? req.query.agent : null;
       if (agent) await recordRunnerPoll(q, agent, engagement, 'poll');
       else warnAnonymousPoll();
+      const identity = await resolveIdentity(req);
       const deadline = Date.now() + 55_000;
       for (;;) {
         const params: unknown[] = [];
@@ -502,6 +521,7 @@ export function setupAgentRoutes(
           params.push(engagement);
           where += ` AND engagement_id = $${params.length}`;
         }
+        where += ` AND ${assigneeScope(params, identity.email)}`;
         const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
         if (queued.length > 0) {
           console.log(`[agent] wait poll answered with ${queued.length} queued task(s)${engagement ? ` (engagement ${engagement})` : ''}`);
@@ -525,12 +545,14 @@ export function setupAgentRoutes(
       const engagement = typeof req.query.engagement === 'string' ? req.query.engagement : null;
       const agent = typeof req.query.agent === 'string' ? req.query.agent : null;
       if (agent) await recordRunnerPoll(q, agent, engagement, 'poll');
+      const identity = await resolveIdentity(req);
       const params: unknown[] = [];
       let where = `state = 'queued'`;
       if (engagement) {
         params.push(engagement);
         where += ` AND engagement_id = $${params.length}`;
       }
+      where += ` AND ${assigneeScope(params, identity.email)}`;
       const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
       const active = agent ? (await q(`SELECT * FROM app.agent_tasks WHERE agent = $1 AND state IN ('claimed','working') ORDER BY id`, [agent])).rows : [];
       res.json({ queued, active });
@@ -560,6 +582,7 @@ export function setupAgentRoutes(
         params.push(ticket);
         filters.push(`ticket_key = $${params.length}`);
       }
+      filters.push(assigneeScope(params, identity.email));
       const candidates = (await q(`SELECT id, engagement_id FROM app.agent_tasks WHERE ${filters.join(' AND ')} ORDER BY priority DESC, id`, params)).rows;
       let claimed: Record<string, unknown> | undefined;
       const eligibility = new Map<string, boolean>();
