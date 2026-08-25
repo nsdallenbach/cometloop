@@ -215,6 +215,8 @@ export interface AgentTask {
   state: AgentTaskState;
   priority: number;
   instructions: string;
+  /** Workspace email this task is routed to (DAT-227); '' = shared fleet pool. */
+  assignee: string;
   queuedBy: string;
   agent: string | null;
   claimedAt: string | null;

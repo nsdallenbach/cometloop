@@ -267,11 +267,11 @@ export default function App() {
   const detailAgentTask = detailTicket ? (curDetail?.agentTasks.find((a) => a.ticketKey === detailTicket.key) ?? null) : null;
 
   const queueForAgent = useCallback(
-    (key: string, instructions: string) => {
+    (key: string, instructions: string, assignee?: string) => {
       api
-        .queueTicket(key, instructions || undefined)
+        .queueTicket(key, instructions || undefined, assignee)
         .then(() => {
-          showToast(`${key} queued for agent work`);
+          showToast(assignee ? `${key} queued — routed to ${assignee}` : `${key} queued for agent work`);
           refreshDetail();
         })
         .catch((e: Error) => showToast(`Queue failed — ${e.message}`));
@@ -709,12 +709,13 @@ export default function App() {
           theme={theme}
           ticket={detailTicket}
           team={curDetail?.team.map((t) => t.name) ?? []}
+          routableTeam={curDetail?.team.flatMap((t) => (t.email ? [{ name: t.name, email: t.email }] : [])) ?? []}
           lead={eng ? canLead(eng.id) : false}
           runnerAccess={eng ? canUseRunners(eng.id) : false}
           agentTask={detailAgentTask}
           allTickets={detail?.tickets ?? []}
           onOpenTicket={openTicket}
-          onQueueAgent={(instructions) => queueForAgent(detailTicket.key, instructions)}
+          onQueueAgent={(instructions, assignee) => queueForAgent(detailTicket.key, instructions, assignee)}
           onCancelAgent={() => cancelAgent(detailTicket.key)}
           onAssign={(assignee) => setTicket(detailTicket.key, { assignee })}
           onTags={(tags) => setTicket(detailTicket.key, { tags })}

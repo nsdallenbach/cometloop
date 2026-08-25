@@ -180,6 +180,7 @@ function mapAgentTask(r: Row): AgentTask {
     state: (s(r.state) as AgentTaskState) || 'queued',
     priority: n(r.priority),
     instructions: s(r.instructions),
+    assignee: s(r.assignee),
     queuedBy: s(r.queued_by),
     agent: r.agent == null ? null : s(r.agent),
     claimedAt: r.claimed_at == null ? null : s(r.claimed_at),
@@ -623,8 +624,8 @@ export const api = {
 
   // ---- agent work queue ----
 
-  async queueTicket(key: string, instructions?: string): Promise<AgentTask> {
-    return mapAgentTask(await http<Row>(`/api/tickets/${key}/queue`, { method: 'POST', ...json({ instructions }) }));
+  async queueTicket(key: string, instructions?: string, assignee?: string): Promise<AgentTask> {
+    return mapAgentTask(await http<Row>(`/api/tickets/${key}/queue`, { method: 'POST', ...json({ instructions, assignee }) }));
   },
 
   cancelAgentTask(ticketKey: string) {
