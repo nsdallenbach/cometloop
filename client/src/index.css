@@ -167,6 +167,16 @@ a:hover {
   background: transparent;
 }
 
+/* Scroll without a visible bar (DAT-249): the kanban board's outer container
+   and its lanes stay wheel/trackpad-scrollable, chrome-free. */
+.scroll-hidden {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scroll-hidden::-webkit-scrollbar {
+  display: none;
+}
+
 @keyframes eec-spin {
   to {
     transform: rotate(360deg);

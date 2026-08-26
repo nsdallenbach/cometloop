@@ -1013,7 +1013,7 @@ export function Workspace({
           </span>
         )}
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
+      <div className="scroll-hidden" style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
         {laneTasks.running.map((a) => agentCard(a, null))}
         {laneTasks.queued.map((a, i) => agentCard(a, i + 1))}
         {!hasActiveAgentWork && (
@@ -1266,7 +1266,7 @@ export function Workspace({
           )}
 
           {boardMode === 'kanban' && (
-            <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 22px 20px' }}>
+            <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 22px 20px' }}>
               {/* Board filters (DAT-233): assignee + tag, combinable. */}
               {(filterAssignees.length > 0 || filterTags.length > 0) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -1363,7 +1363,7 @@ export function Workspace({
                         <span style={{ ...mono(500, 10), letterSpacing: '.1em', color: 'var(--tx2)' }}>{label}</span>
                         <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>{colTickets.length}</span>
                       </div>
-                      <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
+                      <div className="scroll-hidden" style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
                         {cards}
                       </div>
                     </div>
