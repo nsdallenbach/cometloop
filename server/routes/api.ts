@@ -20,6 +20,7 @@ import { setupContextFileRoutes } from './context-files';
 import { ATTACHMENT_SCHEMA_SQL, deleteAttachmentFiles, setupTicketAttachmentRoutes } from './ticket-attachments';
 import { STANDARDS_SCHEMA_SQL, setupStandardsRoutes } from './standards';
 import { PROJECT_CONFIG_SCHEMA_SQL, setupProjectConfigRoutes } from './project-config';
+import { STALE_NUDGE_SCHEMA_SQL, setupStaleNudgeRoutes, startStaleNudgePolling } from './stale-nudges';
 import { ESTIMATE_SCHEMA_SQL, estimateTicket, recordActualHours, setupEstimateRoutes } from './estimates';
 import {
   NEEDS_ESTIMATE_TAG,
@@ -229,6 +230,7 @@ async function initSchema(appkit: AppKitServices) {
     ...PLANNING_REVIEW_SCHEMA_SQL,
     ...TICKET_REVIEW_SCHEMA_SQL,
     ...PROJECT_CONFIG_SCHEMA_SQL,
+    ...STALE_NUDGE_SCHEMA_SQL,
   ]) {
     try {
       await appkit.lakebase.query(sql);
@@ -2184,6 +2186,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupFileLibraryRoutes(app, q, appkit.files('files'), requireLead, refineFromFile);
     setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
     setupProjectConfigRoutes(app, q, requireLead);
+    setupStaleNudgeRoutes(app, q, requireLead);
     setupLlmHealthRoutes(app, appkit.serving.bind(appkit));
 
     app.post('/api/tickets/:key/comments', async (req, res) => {
@@ -2252,6 +2255,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   // Review-SLA watch (DAT-201): the thresholds are 24h and 48h, so a 5-minute
   // sweep is ample — and PRs inside the first 24h cost no provider calls.
   startEscalationPolling(q, 5 * 60_000);
+  // Stale-ticket nudges (DAT-107): quietness moves at the speed of days, so a
+  // 30-minute sweep is generous — and every pass is idempotent per quiet
+  // period, so cadence can never cause duplicate nudges.
+  startStaleNudgePolling(q, 30 * 60_000);
   // Fleet watch (DAT-224): release work orphaned by a dead runner and record a
   // stranded queue on the feed. A minute is fine — the windows are 15 minutes
   // (orphan) and 10 (stranded queue), and a quiet fleet costs three cheap

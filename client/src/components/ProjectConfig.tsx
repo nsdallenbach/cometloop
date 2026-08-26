@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ApiError, api } from '../api';
-import type { ProjectRunnerConfig, RepoDetail, RunnerConfigIssue } from '../types';
+import type { NudgeSettings, ProjectRunnerConfig, RepoDetail, RunnerConfigIssue } from '../types';
 import { mono } from '../util';
 
 /**
@@ -74,6 +74,118 @@ export function ProjectConfig({
     <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
       <RepoCard engId={engId} lead={lead} toast={toast} refreshDetail={refreshDetail} />
       <RunnerConfigCard engId={engId} lead={lead} toast={toast} />
+      <NudgeSettingsCard engId={engId} lead={lead} toast={toast} />
+    </div>
+  );
+}
+
+// ---------- stale-ticket nudges ----------
+
+/**
+ * DAT-107: how many business days a ticket may sit in In Progress or Review
+ * with no status change or comment before the console nudges the assignee
+ * (or the engagement leads, when nobody human is assigned).
+ */
+function NudgeSettingsCard({ engId, lead, toast }: { engId: string; lead: boolean; toast: (msg: string) => void }) {
+  const [cfg, setCfg] = useState<NudgeSettings | null>(null);
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [value, setValue] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const adopt = (c: NudgeSettings) => {
+    setCfg(c);
+    setValue(String(c.quietDays));
+    setLoadState('ready');
+  };
+
+  useEffect(() => {
+    api
+      .nudgeSettings(engId)
+      .then(adopt)
+      .catch(() => setLoadState('error'));
+  }, [engId]);
+
+  const parsed = Number(value);
+  const valid =
+    cfg !== null && Number.isInteger(parsed) && parsed >= cfg.minQuietDays && parsed <= cfg.maxQuietDays;
+  const dirty = cfg !== null && value.trim() !== String(cfg.quietDays);
+
+  const save = () => {
+    if (saving || !cfg || !valid) return;
+    setSaving(true);
+    api
+      .saveNudgeSettings(engId, parsed)
+      .then((c) => {
+        adopt(c);
+        toast(`Stale-ticket nudges now fire after ${String(c.quietDays)} quiet business days`);
+      })
+      .catch((e: Error) => toast(e.message))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div style={cardStyle}>
+      <div style={cardHeadStyle}>
+        <span style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>STALE-TICKET NUDGES</span>
+        {cfg && !cfg.configured && (
+          <span
+            style={{ ...mono(500, 9), border: '1px solid var(--line2)', color: 'var(--tx2)', borderRadius: 2, padding: '1px 6px', letterSpacing: '.06em' }}
+          >
+            DEFAULT
+          </span>
+        )}
+        <div style={{ flex: 1 }} />
+        {cfg?.updatedAt && (
+          <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>
+            SAVED{' '}
+            {new Date(cfg.updatedAt)
+              .toLocaleString('en', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+              .toUpperCase()}
+            {cfg.updatedBy ? ` · ${cfg.updatedBy}` : ''}
+          </span>
+        )}
+      </div>
+
+      {loadState === 'loading' && <Empty label="Loading nudge settings…" />}
+      {loadState === 'error' && <Empty label="Couldn’t load the nudge settings." />}
+
+      {loadState === 'ready' && cfg && (
+        <div style={{ padding: '14px 16px' }}>
+          <div style={{ fontSize: 12.5, color: 'var(--tx2)', marginBottom: 12, lineHeight: 1.5 }}>
+            A ticket sitting in In Progress or Review with no status change or comment gets one nudge per quiet period —
+            to its assignee, or to the engagement leads when nobody is assigned. Weekends don’t count.
+          </div>
+          <div style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
+            QUIET BUSINESS DAYS BEFORE A NUDGE ({cfg.minQuietDays}–{cfg.maxQuietDays}, DEFAULT {cfg.defaultQuietDays})
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              type="number"
+              min={cfg.minQuietDays}
+              max={cfg.maxQuietDays}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              readOnly={!lead}
+              style={{ ...inputStyle, width: 90, borderColor: value !== '' && !valid ? 'var(--bad)' : 'var(--line2)' }}
+            />
+            {lead && (
+              <button onClick={save} disabled={!dirty || !valid || saving} style={primaryBtn(dirty && valid && !saving)}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            )}
+          </div>
+          {value !== '' && !valid && (
+            <div style={{ fontSize: 11.5, color: 'var(--bad)', marginTop: 6 }}>
+              Whole number between {cfg.minQuietDays} and {cfg.maxQuietDays}.
+            </div>
+          )}
+          {!lead && (
+            <div style={{ fontSize: 11.5, color: 'var(--tx3)', marginTop: 12 }}>
+              An engagement lead can change the nudge threshold for this project.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
