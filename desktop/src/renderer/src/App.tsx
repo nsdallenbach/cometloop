@@ -371,7 +371,20 @@ function RunsView({ onRunnerChange }: { onRunnerChange: (state: RunnerState) => 
             onRun={runTicket}
             hideWhenEmpty
           />
-          <TaskSection title="ACTIVE ON THIS MACHINE" empty="" tasks={work.active} accent="var(--ok)" hideWhenEmpty />
+          <TaskSection
+            title="ACTIVE ON THIS MACHINE"
+            empty=""
+            tasks={work.active}
+            accent="var(--ok)"
+            hideWhenEmpty
+            liveTaskId={snap?.current?.taskId ?? null}
+            onRelease={async (taskId) => {
+              const res = await window.desktopBridge.runnerRelease(taskId);
+              if (!res.ok) setRunError(res.error ?? 'Release failed.');
+              const w = await window.desktopBridge.listWork();
+              if (w.ok) setWork(w.work);
+            }}
+          />
         </div>
       )}
 
@@ -428,6 +441,8 @@ function TaskSection({
   accent,
   onRun,
   hideWhenEmpty,
+  liveTaskId,
+  onRelease,
 }: {
   title: string;
   empty: string;
@@ -435,8 +450,13 @@ function TaskSection({
   accent: string;
   onRun?: (ticketKey: string) => void;
   hideWhenEmpty?: boolean;
+  /** The task the local runner is actually executing; anything else active is an orphan (DAT-234). */
+  liveTaskId?: number | null;
+  onRelease?: (taskId: number) => void;
 }) {
   if (tasks.length === 0 && hideWhenEmpty) return null;
+  const isOrphan = (t: AgentTaskRow): boolean =>
+    onRelease != null && ['claimed', 'working'].includes(t.state) && t.id !== liveTaskId;
   return (
     <div>
       <div style={{ ...mono(500, 10), color: accent, letterSpacing: '.08em', marginBottom: 8 }}>
@@ -491,6 +511,31 @@ function TaskSection({
               )}
               {t.last_note && t.state !== 'queued' && (
                 <div style={{ marginTop: 4, fontSize: 11.5, color: 'var(--tx2)' }}>{t.last_note}</div>
+              )}
+              {isOrphan(t) && (
+                <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11.5, color: 'var(--warn)', fontWeight: 600 }}>
+                    ⚠ No process on this machine — the app restarted while this run was in flight.
+                  </span>
+                  <button
+                    className="no-drag"
+                    title="Fail the task with an honest summary so the ticket returns to the backlog"
+                    onClick={() => onRelease?.(t.id)}
+                    style={{
+                      border: '1px solid var(--warn)',
+                      background: 'transparent',
+                      color: 'var(--warn)',
+                      borderRadius: 4,
+                      padding: '2px 9px',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    Release
+                  </button>
+                </div>
               )}
             </div>
           ))}

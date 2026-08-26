@@ -83,6 +83,33 @@ export class RunnerHost {
     this.killChild('killed from the desktop UI');
   }
 
+  /**
+   * Release an orphaned claim (DAT-234): a task this agent identity holds
+   * server-side with no process behind it — the app restarted (or crashed)
+   * mid-run. Completes 'failed' with an honest summary so the ticket returns
+   * to the backlog immediately instead of waiting out the stalled-heartbeat
+   * reclaim. Refuses to touch the live run.
+   */
+  async releaseTask(taskId: number): Promise<{ ok: boolean; error?: string }> {
+    if (this.current?.taskId === taskId) {
+      return { ok: false, error: 'That run is live on this machine — use Kill run instead.' };
+    }
+    try {
+      await this.client.request(`/api/agent/work/${taskId}/complete`, {
+        method: 'POST',
+        body: JSON.stringify({
+          agent: this.cfg.agentName,
+          outcome: 'failed',
+          summary: `Released from ${os.hostname()}: the desktop app restarted while this run was in flight, so no process was attached to the claim. Partial work may remain in the runner workdir; re-queue to try again.`,
+        }),
+      });
+      this.emit({ kind: 'note', text: `released orphaned task ${taskId}`, ts: now() });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: msg(e) };
+    }
+  }
+
   /** Claim one specific ticket (from the My Tickets row) and run it. */
   async runTicket(ticketKey: string): Promise<{ ok: boolean; error?: string }> {
     if (this.state === 'running' || this.state === 'completing') {
