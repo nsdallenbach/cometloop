@@ -16,6 +16,7 @@ import type {
   FileRule,
   ContextSource,
   DeployState,
+  DeploysMirrorData,
   Engagement,
   EngagementDetail,
   EscalationStage,
@@ -328,6 +329,42 @@ export const api = {
       suggestions: d.suggestions.map(mapSuggestion),
       agentTasks: (d.agentTasks ?? []).map(mapAgentTask),
       fleet: d.fleet ?? null,
+    };
+  },
+
+  /** Read-only local-deploy mirror (DAT-236), rendered from client-reported events. */
+  async deploys(engId: string): Promise<DeploysMirrorData> {
+    const d = await http<{ queue?: Row[]; events?: Row[] }>(`/api/engagements/${engId}/deploys`);
+    return {
+      queue: (d.queue ?? []).map((r) => ({
+        ticketKey: s(r.ticketKey),
+        title: s(r.title),
+        prNumber: r.prNumber == null ? null : n(r.prNumber),
+        agent: s(r.agent),
+        actor: s(r.actor),
+        state: (['queued', 'deploying', 'succeeded', 'failed'].includes(s(r.state)) ? s(r.state) : 'queued') as
+          | 'queued'
+          | 'deploying'
+          | 'succeeded'
+          | 'failed',
+        detail: s(r.detail),
+        queuedAt: s(r.queuedAt),
+        updatedAt: s(r.updatedAt),
+      })),
+      events: (d.events ?? []).map((r) => ({
+        id: n(r.id),
+        ticketKey: s(r.ticketKey),
+        agent: s(r.agent),
+        actor: s(r.actor),
+        event: (['queued', 'started', 'succeeded', 'failed', 'removed'].includes(s(r.event)) ? s(r.event) : 'queued') as
+          | 'queued'
+          | 'started'
+          | 'succeeded'
+          | 'failed'
+          | 'removed',
+        detail: s(r.detail),
+        createdAt: s(r.createdAt),
+      })),
     };
   },
 

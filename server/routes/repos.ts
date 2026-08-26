@@ -4,6 +4,7 @@ import type { Identity } from './roles';
 import { githubAppConfigured, installationToken, verifyWebhookSignature, WEBHOOK_SECRET } from './github-app';
 import { setTicketStatus } from './ticket-events';
 import { createNotification } from './notifications';
+import { localDeployPending } from './deploys';
 
 /**
  * Git repository integration: one repo per engagement, GitHub or Azure DevOps.
@@ -729,7 +730,11 @@ export async function checkDeployments(q: Query, rawConn: Connection): Promise<v
         // Feed the failure once, not on every re-check of a still-failed run.
         if (p.state !== prevDeploy) await settleDeploy(q, conn, number, ticketKey, p.state);
       } else {
-        if (graceOver) {
+        // No CI run for the merge commit. When a local deploy (DAT-236) is in
+        // flight for the ticket, that absence is expected — the deploy runs on
+        // the dev's machine and its client-reported events settle the ticket,
+        // so the grace path must not declare "no pipeline" and jump to Done.
+        if (graceOver && !(await localDeployPending(q, ticketKey))) {
           await q(`UPDATE app.repo_prs SET deploy_state = 'none' WHERE connection_id = $1 AND number = $2`, [
             conn.id,
             number,
@@ -744,7 +749,7 @@ export async function checkDeployments(q: Query, rawConn: Connection): Promise<v
       // Build: Read). Left alone the watch would spin forever with the board
       // stuck on DEPLOYING — settle the ticket instead and say why in the feed.
       const status = err instanceof ProviderHttpError ? err.status : null;
-      if ((status === 401 || status === 403) && graceOver) {
+      if ((status === 401 || status === 403) && graceOver && !(await localDeployPending(q, ticketKey))) {
         await q(`UPDATE app.repo_prs SET deploy_state = 'none' WHERE connection_id = $1 AND number = $2`, [
           conn.id,
           number,

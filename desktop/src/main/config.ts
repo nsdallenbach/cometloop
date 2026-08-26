@@ -29,6 +29,12 @@ const ConfigSchema = z.object({
   /** Path to the delivery-console MCP server to wire into workdirs (optional). */
   mcpServer: z.string().optional(),
   /**
+   * Local deploy command override (DAT-236). Unset, the deploy executor
+   * auto-detects: Databricks bundle repos run `databricks bundle deploy` +
+   * `databricks bundle run app` (what CI does), else `npm run deploy`.
+   */
+  deployCommand: z.string().optional(),
+  /**
    * Agent fleet (DAT-245): how many concurrent instances of each coding agent
    * this machine runs, and whether they launch with the app. The default —
    * one auto-starting Claude Code instance — keeps the work queue from
@@ -77,6 +83,7 @@ export function loadConfig(): DesktopConfig {
   if (process.env.WORK_ROOT) envValues.workRoot = process.env.WORK_ROOT;
   if (process.env.MAX_RUN_MINUTES) envValues.maxRunMinutes = Number(process.env.MAX_RUN_MINUTES);
   if (process.env.MCP_SERVER) envValues.mcpServer = process.env.MCP_SERVER;
+  if (process.env.DEPLOY_COMMAND) envValues.deployCommand = process.env.DEPLOY_COMMAND;
 
   const parsed = ConfigSchema.parse({ ...fileValues, ...envValues });
 

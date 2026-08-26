@@ -705,6 +705,222 @@ function TaskSection({
   );
 }
 
+/* ------------------------------------------------------------------ deploys */
+
+const DEPLOY_STATE_COLOR: Record<DeployState, string> = {
+  queued: 'var(--tx3)',
+  deploying: 'var(--agent)',
+  succeeded: 'var(--ok)',
+  failed: 'var(--bad)',
+};
+
+/**
+ * Deploys (DAT-236): the local deployment queue. Merged tickets assigned to
+ * you land here and deploy from THIS machine with YOUR identity — one click,
+ * live log. The console only receives events; the web app renders a read-only
+ * mirror from them and has no path back into this laptop.
+ */
+function DeploysView() {
+  const [snap, setSnap] = useState<DeploysSnapshot | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [actionError, setActionError] = useState('');
+
+  useEffect(() => {
+    const refresh = () => void window.desktopBridge.deploysState().then(setSnap);
+    refresh();
+    const off = window.desktopBridge.onDeploysEvent((ev) => {
+      if (ev.kind === 'items') {
+        refresh();
+      } else {
+        // Live log lines append in place — no full refetch per line.
+        setSnap((s) =>
+          s && {
+            ...s,
+            items: s.items.map((i) =>
+              i.ticketKey === ev.ticketKey ? { ...i, log: [...i.log.slice(-1999), ev.line] } : i,
+            ),
+          },
+        );
+      }
+    });
+    const t = setInterval(refresh, 15_000);
+    return () => {
+      off();
+      clearInterval(t);
+    };
+  }, []);
+
+  const items = snap?.items ?? [];
+  const current = items.find((i) => i.ticketKey === (snap?.deploying ?? selected)) ?? items[0] ?? null;
+
+  const run = async (key: string) => {
+    setActionError('');
+    setSelected(key);
+    const res = await window.desktopBridge.deploysRun(key);
+    if (!res.ok) setActionError(res.error ?? 'Deploy failed to start.');
+  };
+
+  const dismiss = async (key: string) => {
+    setActionError('');
+    const res = await window.desktopBridge.deploysDismiss(key);
+    if (!res.ok) setActionError(res.error ?? 'Could not remove the item.');
+  };
+
+  return (
+    <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 14, height: '100%', boxSizing: 'border-box' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Deploys</h2>
+        <span style={{ ...mono(400, 10.5), color: 'var(--tx3)' }}>
+          your merged tickets deploy from this machine, with your identity — the web app only sees a read-only mirror
+        </span>
+        <div style={{ flex: 1 }} />
+        <button
+          className="no-drag"
+          title="Check the console for newly merged tickets now"
+          onClick={() => void window.desktopBridge.deploysRefresh().then(setSnap)}
+          style={{ border: 'none', background: 'none', color: 'var(--tx2)', cursor: 'pointer', fontSize: 13 }}
+        >
+          ↻
+        </button>
+      </div>
+
+      {snap?.pollError && (
+        <div style={{ fontSize: 12, color: 'var(--warn)' }}>⚠ queue refresh failing: {snap.pollError}</div>
+      )}
+      {actionError && <div style={{ fontSize: 12, color: 'var(--bad)' }}>{actionError}</div>}
+
+      {items.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: 'var(--tx2)', maxWidth: 560, lineHeight: 1.5 }}>
+          Nothing waiting to deploy. When a PR for one of your tickets merges, the ticket queues here
+          automatically{snap?.polledAt ? '' : ' once you are signed in'}.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 6, maxWidth: 720 }}>
+          {items.map((i) => (
+            <div
+              key={i.ticketKey}
+              onClick={() => setSelected(i.ticketKey)}
+              style={{
+                background: 'var(--bg2)',
+                border: `1px solid ${current?.ticketKey === i.ticketKey ? 'var(--line2)' : 'var(--line)'}`,
+                borderLeft: `3px solid ${DEPLOY_STATE_COLOR[i.state]}`,
+                borderRadius: 6,
+                padding: 'var(--rowpad)',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ ...mono(500, 11), color: 'var(--tx2)' }}>{i.ticketKey}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 600, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+                  {i.title}
+                </span>
+                {i.prNumber !== null && <span style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>PR #{i.prNumber}</span>}
+                <span style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>{i.repoName}</span>
+                <span style={{ marginLeft: 'auto', ...mono(500, 9), color: DEPLOY_STATE_COLOR[i.state], letterSpacing: '.06em' }}>
+                  {i.state.toUpperCase()}
+                </span>
+                {(i.state === 'queued' || i.state === 'failed') && (
+                  <>
+                    <button
+                      className="no-drag hv-lift"
+                      title={i.state === 'failed' ? 'Retry the deploy on this machine' : 'Deploy on this machine, as you'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void run(i.ticketKey);
+                      }}
+                      style={{
+                        border: '1px solid var(--ok)',
+                        background: 'transparent',
+                        color: 'var(--ok)',
+                        borderRadius: 4,
+                        padding: '2px 9px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                      }}
+                    >
+                      ▶ {i.state === 'failed' ? 'Retry' : 'Deploy'}
+                    </button>
+                    <button
+                      className="no-drag"
+                      title="Drop this item from the local queue"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void dismiss(i.ticketKey);
+                      }}
+                      style={{
+                        border: '1px solid var(--line2)',
+                        background: 'transparent',
+                        color: 'var(--tx3)',
+                        borderRadius: 4,
+                        padding: '2px 7px',
+                        fontSize: 11,
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </>
+                )}
+              </div>
+              {i.state === 'failed' && i.error && (
+                <div style={{ marginTop: 4, fontSize: 11.5, color: 'var(--bad)' }}>{i.error}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {current && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span
+              style={{
+                ...mono(500, 9.5),
+                letterSpacing: '.08em',
+                color: DEPLOY_STATE_COLOR[current.state],
+                border: `1px solid ${DEPLOY_STATE_COLOR[current.state]}`,
+                borderRadius: 3,
+                padding: '2px 8px',
+              }}
+            >
+              {current.state.toUpperCase()} · {current.ticketKey}
+            </span>
+            <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>deploy log</span>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 120,
+              overflowY: 'auto',
+              background: 'var(--bg2)',
+              border: '1px solid var(--line)',
+              borderRadius: 8,
+              padding: '12px 14px',
+              ...mono(400, 11.5),
+              lineHeight: 1.55,
+              userSelect: 'text',
+            }}
+          >
+            {current.log.length === 0 && (
+              <div style={{ color: 'var(--tx3)' }}>
+                No output yet — ▶ Deploy runs the checkout and deploy here, streaming every line.
+              </div>
+            )}
+            {current.log.map((line, i) => (
+              <div key={i} style={{ color: line.startsWith('⚠') || line.startsWith('✕') ? 'var(--bad)' : line.startsWith('>') ? 'var(--tx)' : 'var(--tx2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {line}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ----------------------------------------------------------------- identity */
 
 const AUTH_LABEL: Record<AuthMode, { text: string; color: string }> = {
@@ -899,12 +1115,6 @@ const VIEWS_STATIC: Partial<Record<NavId, ReactNode>> = {
       note="The managed file store: context, prompts, skills and standards synced through a git-backed allowlist manifest — nothing unlisted ever leaves this machine."
     />
   ),
-  deploys: (
-    <Placeholder
-      title="Deploys"
-      note="Your local deployment queue: merged tickets that deploy with your identity. The web app gets a read-only mirror fed by deploy events — visibility without a path into anyone's laptop."
-    />
-  ),
 };
 
 export function App() {
@@ -917,6 +1127,8 @@ export function App() {
   const overlay =
     nav === 'agents' ? (
       <AgentsView onActivity={setAgentsActive} />
+    ) : nav === 'deploys' ? (
+      <DeploysView />
     ) : nav === 'identity' ? (
       <IdentityView />
     ) : nav === 'tickets' ? null : (

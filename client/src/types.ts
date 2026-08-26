@@ -644,3 +644,35 @@ export interface TicketLinks {
   links: TicketLink[];
   branches: LinkedBranch[];
 }
+
+/** One ticket's place in the local-deploy mirror (DAT-236) — computed
+ *  server-side purely from client-reported deploy events. */
+export interface DeployMirrorEntry {
+  ticketKey: string;
+  title: string;
+  prNumber: number | null;
+  /** Machine the deploy queue lives on (desktop agent name). */
+  agent: string;
+  /** Dev identity the deploy runs as. */
+  actor: string;
+  state: 'queued' | 'deploying' | 'succeeded' | 'failed';
+  /** Failure reason (log tail) when state is 'failed'. */
+  detail: string;
+  queuedAt: string;
+  updatedAt: string;
+}
+
+export interface DeployEventItem {
+  id: number;
+  ticketKey: string;
+  agent: string;
+  actor: string;
+  event: 'queued' | 'started' | 'succeeded' | 'failed' | 'removed';
+  detail: string;
+  createdAt: string;
+}
+
+export interface DeploysMirrorData {
+  queue: DeployMirrorEntry[];
+  events: DeployEventItem[];
+}
