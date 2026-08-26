@@ -10,11 +10,13 @@ import { AgentPool, type AgentKind, AGENT_KINDS } from './agents';
 import { loadConfig, type DesktopConfig } from './config';
 import { CredentialManager, SIGN_IN_REQUIRED } from './credentials';
 import type { RunnerEvent } from './runner';
+import { TerminalHost, taskWorkdir, type TerminalEvent } from './terminal';
 
 let cfg: DesktopConfig;
 let creds: CredentialManager;
 let client: ConsoleClient;
 let pool: AgentPool;
+let terminals: TerminalHost;
 
 /**
  * Single-instance-by-replacement (DAT-245): a NEW build/launch wins — it
@@ -198,6 +200,30 @@ function registerIpc(): void {
     typeof ticketKey === 'string' && ticketKey ? pool.runTicket(ticketKey) : { ok: false, error: 'ticket key required' },
   );
 
+  // Interactive terminal (DAT-240): the renderer names a task, never a path
+  // — cwd derivation and validation live in TerminalHost. Input/resize use
+  // fire-and-forget `on` (keystroke latency matters); the rest is invoke.
+  ipcMain.handle('terminal:create', (_e, opts: unknown) => {
+    const o = (opts ?? {}) as { taskId?: unknown; ticketKey?: unknown };
+    const hasTask = o.taskId !== undefined || o.ticketKey !== undefined;
+    return terminals.create(
+      hasTask ? { taskId: typeof o.taskId === 'number' ? o.taskId : undefined, ticketKey: typeof o.ticketKey === 'string' ? o.ticketKey : undefined } : undefined,
+    );
+  });
+  ipcMain.handle('terminal:list', () => terminals.list());
+  ipcMain.handle('terminal:attach', (_e, id: unknown) =>
+    typeof id === 'number' ? terminals.attach(id) : { ok: false as const, error: 'terminal id required' },
+  );
+  ipcMain.handle('terminal:dispose', (_e, id: unknown) =>
+    typeof id === 'number' ? terminals.dispose(id) : { ok: false },
+  );
+  ipcMain.on('terminal:input', (_e, id: unknown, data: unknown) => {
+    if (typeof id === 'number' && typeof data === 'string') terminals.write(id, data);
+  });
+  ipcMain.on('terminal:resize', (_e, id: unknown, cols: unknown, rows: unknown) => {
+    if (typeof id === 'number' && typeof cols === 'number' && typeof rows === 'number') terminals.resize(id, cols, rows);
+  });
+
   ipcMain.on('window:control', (event, action: string) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return;
@@ -218,6 +244,18 @@ void app.whenReady().then(async () => {
   pool = new AgentPool(cfg, client, (instanceId: string, ev: RunnerEvent) => {
     for (const w of BrowserWindow.getAllWindows()) w.webContents.send('agents:event', { instanceId, ev });
   });
+  terminals = new TerminalHost(
+    cfg,
+    // Default cwd for a bare "+ terminal": whichever agent instance has a
+    // run in flight (first one wins), else the work root.
+    () => {
+      const inst = pool.state().instances.find((i) => i.current != null);
+      return inst?.current ? taskWorkdir(cfg.workRoot, inst.current.ticketKey, inst.current.taskId) : null;
+    },
+    (ev: TerminalEvent) => {
+      for (const w of BrowserWindow.getAllWindows()) w.webContents.send('terminal:event', ev);
+    },
+  );
   // Auto-start (DAT-245): configured instances launch with the app so the
   // work queue never waits on a Start click.
   await pool.init();
@@ -253,6 +291,10 @@ app.on('web-contents-created', (_e, contents) => {
     return { action: 'deny' };
   });
 });
+
+// Shells die with the app — a closed console must never leave hidden
+// PowerShells running.
+app.on('before-quit', () => terminals?.disposeAll());
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
