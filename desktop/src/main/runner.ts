@@ -226,6 +226,7 @@ export class RunnerHost {
 
     const harness = getHarness(this.harnessName);
     if (this.cfg.mcpServer && existsSync(this.cfg.mcpServer)) harness.writeConfig(dir, this.cfg.mcpServer);
+    this.writeDeliveryPermissions(harness.name, dir);
 
     // Liveness contract (see devbox runner): 404/409 from heartbeat = the
     // console no longer wants this run — kill and abandon.
@@ -300,6 +301,48 @@ export class RunnerHost {
       this.current = null;
       this.child = null;
       this.setState(this.loopRunning && !this.stopRequested ? 'waiting' : 'stopped');
+    }
+  }
+
+  /**
+   * Delivery-scoped sandbox allowlist (DAT-248). The claude harness runs with
+   * --permission-mode acceptEdits, which permits file edits but denies the
+   * git/npm/network commands the work package REQUIRES (push the branch, open
+   * the PR, post progress) — DAT-107 task 164 and DAT-240 task 166 both
+   * finished implementation and stranded the delivery on exactly this.
+   * Writing a per-workdir .claude/settings.json allows the delivery loop and
+   * nothing else — no blanket permission bypass, and the file lives only in
+   * the disposable task workdir.
+   */
+  private writeDeliveryPermissions(harnessName: string, dir: string): void {
+    if (harnessName !== 'claude') return; // codex sandboxing reviewed separately (DAT-248)
+    try {
+      const settingsDir = path.join(dir, '.claude');
+      mkdirSync(settingsDir, { recursive: true });
+      writeFileSync(
+        path.join(settingsDir, 'settings.json'),
+        JSON.stringify(
+          {
+            permissions: {
+              allow: [
+                'Bash(git:*)',
+                'Bash(gh:*)',
+                'Bash(npm:*)',
+                'Bash(npx:*)',
+                'Bash(node:*)',
+                'Bash(databricks:*)',
+                'Bash(curl:*)',
+              ],
+            },
+          },
+          null,
+          2,
+        ),
+      );
+    } catch (e) {
+      // A run without the allowlist still implements — it just can't deliver;
+      // say so loudly instead of failing the claim.
+      this.emit({ kind: 'note', text: `could not write delivery allowlist: ${msg(e)} — the run may be unable to push/PR`, ts: now() });
     }
   }
 
