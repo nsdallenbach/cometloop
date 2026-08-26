@@ -36,6 +36,18 @@ npm run build        # electron-vite production build
 npm run dist:win     # NSIS installer + portable exe into release/
 ```
 
+## Agents (DAT-245)
+
+The **Agents** page manages the coding agents on this machine: per agent
+type (Claude Code, Codex) it shows install status/version, an instance
+count (0–4) and an auto-start toggle — all persisted in config.json.
+Instances run concurrently, each with its own fleet identity
+(`<agentName>-<kind>-<n>`), claim loop, live feed and Start/Stop/Kill,
+tabbed in the UI. Default config auto-starts 1× Claude Code with the app
+so the queue never stalls. Launching a new build kills the previous app
+instance (PID-file replace; DAT-234 orphan recovery covers a run caught
+in the crossfire).
+
 ## The embedded runner
 
 **My Tickets** polls the queue as you (server-scoped: shared pool + tasks

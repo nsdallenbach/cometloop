@@ -28,6 +28,25 @@ const ConfigSchema = z.object({
   maxRunMinutes: z.number().int().min(0).default(180),
   /** Path to the delivery-console MCP server to wire into workdirs (optional). */
   mcpServer: z.string().optional(),
+  /**
+   * Agent fleet (DAT-245): how many concurrent instances of each coding agent
+   * this machine runs, and whether they launch with the app. The default —
+   * one auto-starting Claude Code instance — keeps the work queue from
+   * stalling on a freshly opened app.
+   */
+  agents: z
+    .object({
+      claude: z
+        .object({ instances: z.number().int().min(0).max(4).default(1), autoStart: z.boolean().default(true) })
+        .default({ instances: 1, autoStart: true }),
+      codex: z
+        .object({ instances: z.number().int().min(0).max(4).default(0), autoStart: z.boolean().default(false) })
+        .default({ instances: 0, autoStart: false }),
+    })
+    .default({
+      claude: { instances: 1, autoStart: true },
+      codex: { instances: 0, autoStart: false },
+    }),
 });
 
 export type DesktopConfig = z.infer<typeof ConfigSchema> & {
@@ -69,4 +88,18 @@ export function loadConfig(): DesktopConfig {
   }
 
   return { ...parsed, devToken: process.env.DATABRICKS_TOKEN || undefined };
+}
+
+/** Persist the agent-fleet block (the only config the UI edits today). */
+export function saveAgentsConfig(cfg: DesktopConfig): void {
+  const p = configPath();
+  let fileValues: Record<string, unknown> = {};
+  try {
+    fileValues = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>;
+  } catch {
+    // fresh or corrupt file — rewrite from the live config
+  }
+  const { devToken: _devToken, ...persistable } = cfg;
+  mkdirSync(path.dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify({ ...fileValues, ...persistable }, null, 2));
 }

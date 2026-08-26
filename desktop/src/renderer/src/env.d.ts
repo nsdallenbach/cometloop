@@ -59,16 +59,19 @@ interface DesktopBridge {
     | { ok: false; error: string; signInRequired?: boolean }
   >;
   boardPickup: (ticketKey: string) => Promise<{ ok: boolean; error?: string }>;
-  runnerState: () => Promise<RunnerSnapshot>;
-  runnerStart: () => Promise<RunnerSnapshot>;
-  runnerStop: () => Promise<RunnerSnapshot>;
-  runnerKill: () => Promise<RunnerSnapshot>;
-  runnerRunTicket: (ticketKey: string) => Promise<{ ok: boolean; error?: string }>;
-  runnerRelease: (taskId: number) => Promise<{ ok: boolean; error?: string }>;
-  onRunnerEvent: (cb: (ev: RunnerEvent) => void) => () => void;
+  agentsState: () => Promise<AgentsState>;
+  agentsConfigure: (kind: AgentKind, opts: { instances?: number; autoStart?: boolean }) => Promise<AgentsState>;
+  agentsStart: (id: string) => Promise<AgentsState>;
+  agentsStop: (id: string) => Promise<AgentsState>;
+  agentsKill: (id: string) => Promise<AgentsState>;
+  agentsRunTicket: (ticketKey: string) => Promise<{ ok: boolean; error?: string }>;
+  agentsRelease: (taskId: number) => Promise<{ ok: boolean; error?: string }>;
+  onAgentsEvent: (cb: (payload: { instanceId: string; ev: RunnerEvent }) => void) => () => void;
 }
 
 type RunnerState = 'stopped' | 'waiting' | 'running' | 'completing';
+
+type AgentKind = 'claude' | 'codex';
 
 type RunnerEvent =
   | { kind: 'status'; state: RunnerState; detail?: string; ts: string }
@@ -77,11 +80,20 @@ type RunnerEvent =
   | { kind: 'note'; text: string; ts: string }
   | { kind: 'error'; text: string; ts: string };
 
-interface RunnerSnapshot {
+interface InstanceSnapshot {
+  id: string;
+  kind: AgentKind;
+  label: string;
+  agentName: string;
   state: RunnerState;
   harness: string;
   current: { taskId: number; ticketKey: string; startedAt: string } | null;
   feed: RunnerEvent[];
+}
+
+interface AgentsState {
+  kinds: Record<AgentKind, { installed: boolean; version: string | null; instances: number; autoStart: boolean }>;
+  instances: InstanceSnapshot[];
 }
 
 interface Window {

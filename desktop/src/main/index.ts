@@ -2,16 +2,57 @@
 // touches the network or credentials — every capability crosses this typed
 // IPC boundary (contextIsolation on, nodeIntegration off).
 import { app, BrowserWindow, ipcMain, session, shell } from 'electron';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ConsoleClient } from '../../../shared/api-client';
+import { AgentPool, type AgentKind, AGENT_KINDS } from './agents';
 import { loadConfig, type DesktopConfig } from './config';
 import { CredentialManager, SIGN_IN_REQUIRED } from './credentials';
-import { RunnerHost, type RunnerEvent } from './runner';
+import type { RunnerEvent } from './runner';
 
 let cfg: DesktopConfig;
 let creds: CredentialManager;
 let client: ConsoleClient;
-let runner: RunnerHost;
+let pool: AgentPool;
+
+/**
+ * Single-instance-by-replacement (DAT-245): a NEW build/launch wins — it
+ * kills the previous app instance instead of deferring to it (the opposite
+ * of Electron's requestSingleInstanceLock default). Best-effort and guarded:
+ * the stored pid is only killed if it still looks like an Electron process.
+ * A run in flight in the old instance dies with it — orphan recovery
+ * (DAT-234) flags the claim for one-click release.
+ */
+function replacePreviousInstance(): void {
+  const pidFile = path.join(app.getPath('userData'), 'app.pid');
+  try {
+    if (existsSync(pidFile)) {
+      const old = Number(readFileSync(pidFile, 'utf8').trim());
+      if (Number.isInteger(old) && old > 0 && old !== process.pid) {
+        if (process.platform === 'win32') {
+          const info = execFileSync('tasklist', ['/FI', `PID eq ${old}`, '/FO', 'CSV', '/NH'], {
+            encoding: 'utf8',
+            windowsHide: true,
+          });
+          if (/electron|delivery.?console/i.test(info)) {
+            execFileSync('taskkill', ['/pid', String(old), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+          }
+        } else {
+          process.kill(old, 'SIGTERM');
+        }
+      }
+    }
+  } catch {
+    // stale pid, already-gone process, or permission hiccup — never block launch
+  }
+  try {
+    mkdirSync(path.dirname(pidFile), { recursive: true });
+    writeFileSync(pidFile, String(process.pid));
+  } catch {
+    // pid file is best-effort
+  }
+}
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -126,24 +167,35 @@ function registerIpc(): void {
     }
   });
 
-  ipcMain.handle('runner:state', () => runner.snapshot());
-  ipcMain.handle('runner:start', () => {
-    runner.start();
-    return runner.snapshot();
+  // ---- agent pool (DAT-245) ----
+  ipcMain.handle('agents:state', () => pool.state());
+  ipcMain.handle('agents:configure', (_e, kind: unknown, opts: unknown) => {
+    if (typeof kind !== 'string' || !AGENT_KINDS.includes(kind as AgentKind)) {
+      return { error: 'unknown agent kind' };
+    }
+    const o = (opts ?? {}) as { instances?: unknown; autoStart?: unknown };
+    return pool.configure(kind as AgentKind, {
+      instances: typeof o.instances === 'number' ? o.instances : undefined,
+      autoStart: typeof o.autoStart === 'boolean' ? o.autoStart : undefined,
+    });
   });
-  ipcMain.handle('runner:stop', () => {
-    runner.stop();
-    return runner.snapshot();
+  ipcMain.handle('agents:start', (_e, id: unknown) => {
+    if (typeof id === 'string') pool.instance(id)?.host.start();
+    return pool.state();
   });
-  ipcMain.handle('runner:kill', () => {
-    runner.killRun();
-    return runner.snapshot();
+  ipcMain.handle('agents:stop', (_e, id: unknown) => {
+    if (typeof id === 'string') pool.instance(id)?.host.stop();
+    return pool.state();
   });
-  ipcMain.handle('runner:release', (_e, taskId: unknown) =>
-    typeof taskId === 'number' ? runner.releaseTask(taskId) : { ok: false, error: 'task id required' },
+  ipcMain.handle('agents:kill', (_e, id: unknown) => {
+    if (typeof id === 'string') pool.instance(id)?.host.killRun();
+    return pool.state();
+  });
+  ipcMain.handle('agents:release', (_e, taskId: unknown) =>
+    typeof taskId === 'number' ? pool.releaseTask(taskId) : { ok: false, error: 'task id required' },
   );
-  ipcMain.handle('runner:run-ticket', (_e, ticketKey: unknown) =>
-    typeof ticketKey === 'string' && ticketKey ? runner.runTicket(ticketKey) : { ok: false, error: 'ticket key required' },
+  ipcMain.handle('agents:run-ticket', (_e, ticketKey: unknown) =>
+    typeof ticketKey === 'string' && ticketKey ? pool.runTicket(ticketKey) : { ok: false, error: 'ticket key required' },
   );
 
   ipcMain.on('window:control', (event, action: string) => {
@@ -155,16 +207,20 @@ function registerIpc(): void {
   });
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
+  replacePreviousInstance();
   cfg = loadConfig();
   creds = new CredentialManager(cfg);
   client = new ConsoleClient({
     baseUrl: cfg.consoleUrl,
     getToken: (o) => creds.getToken(o),
   });
-  runner = new RunnerHost(cfg, client, (ev: RunnerEvent) => {
-    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('runner:event', ev);
+  pool = new AgentPool(cfg, client, (instanceId: string, ev: RunnerEvent) => {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('agents:event', { instanceId, ev });
   });
+  // Auto-start (DAT-245): configured instances launch with the app so the
+  // work queue never waits on a Start click.
+  await pool.init();
 
   // Embedded console auth: every request the Tickets webview makes to the
   // console gets the dev's workspace bearer token injected here, so the
