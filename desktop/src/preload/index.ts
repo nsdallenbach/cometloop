@@ -12,6 +12,8 @@ const bridge = {
   authSignOut: () => ipcRenderer.invoke('auth:sign-out'),
   windowControl: (action: 'minimize' | 'maximize' | 'close') =>
     ipcRenderer.send('window:control', action),
+  boardOverview: () => ipcRenderer.invoke('board:overview'),
+  boardPickup: (ticketKey: string) => ipcRenderer.invoke('board:pickup', ticketKey),
   runnerState: () => ipcRenderer.invoke('runner:state'),
   runnerStart: () => ipcRenderer.invoke('runner:start'),
   runnerStop: () => ipcRenderer.invoke('runner:stop'),
