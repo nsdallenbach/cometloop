@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getHarness, normalizeState, toolLabel } from '../devbox-runner/harnesses.mjs';
+import { getHarness, isBlockedState, normalizeState, toolLabel } from '../devbox-runner/harnesses.mjs';
 import { HARNESS_PROVIDER, inferHarness } from '../server/routes/agents';
 import { inferHarness as inferRunnerHarness } from '../client/src/components/RunnerLogo';
 import {
@@ -192,25 +192,35 @@ describe('runner harness adapters', () => {
     }
   });
 
-  it('exposes Omnigent as a service adapter with env-driven vendor config', () => {
-    // Every vendor-specific value is configuration, so confirming the real API
-    // (DAT-221 is blocked on vendor docs) stays a config change, not a rewrite.
+  it('exposes Omnigent as a service adapter with env-driven server config', () => {
+    // Omnigent is self-hosted, so the default base URL is a LOCAL server, not a
+    // vendor SaaS — there is no api.omnigent.ai and no vendor API key.
     const h = getHarness('omnigent', {});
     expect(h.mode).toBe('service');
-    expect(h.config.baseUrl).toBe('https://api.omnigent.ai');
-    expect(h.config.pollMs).toBe(5000);
-    expect(h.config.apiKey).toBeNull();
+    expect(h.config.baseUrl).toBe('http://localhost:6767');
+    expect(h.config.pollMs).toBe(15000);
+    expect(h.config.harness).toBe('claude-sdk');
+
+    // Guards the corrected credential model: an API-key field would reintroduce
+    // the per-task vendor-key vending endpoint this design explicitly dropped.
+    expect(h.config).not.toHaveProperty('apiKey');
+
+    // The paths are the real ones from the published OpenAPI, not placeholders.
+    expect(h.config.sessionsPath).toBe('/v1/sessions');
+    expect(h.config.launchRunnerPath).toBe('/v1/hosts/{hostId}/runners');
 
     const custom = getHarness('omnigent', {
       OMNIGENT_BASE_URL: 'https://omnigent.internal/api/',
-      OMNIGENT_SUBMIT_PATH: '/v2/tasks',
+      OMNIGENT_SESSIONS_PATH: '/v2/sessions',
       OMNIGENT_POLL_MS: '2500',
-      OMNIGENT_API_KEY: 'sk-local-dev',
+      OMNIGENT_HARNESS: 'codex',
+      OMNIGENT_MAX_COST_USD: '5',
     });
     expect(custom.config.baseUrl).toBe('https://omnigent.internal/api'); // trailing slash trimmed
-    expect(custom.config.submitPath).toBe('/v2/tasks');
+    expect(custom.config.sessionsPath).toBe('/v2/sessions');
     expect(custom.config.pollMs).toBe(2500);
-    expect(custom.config.apiKey).toBe('sk-local-dev');
+    expect(custom.config.harness).toBe('codex');
+    expect(custom.config.maxCostUsd).toBe(5);
   });
 
   it('makes the Omnigent stub fail loudly, pointing at the design doc', () => {
@@ -223,7 +233,7 @@ describe('runner harness adapters', () => {
     }
   });
 
-  it('normalizes vendor run states and refuses to guess at unknown ones', () => {
+  it('normalizes run states and refuses to guess at unknown ones', () => {
     expect(normalizeState('QUEUED')).toBe('running');
     expect(normalizeState('in_progress')).toBe('running');
     expect(normalizeState('completed')).toBe('succeeded');
@@ -238,6 +248,29 @@ describe('runner harness adapters', () => {
     for (const unknown of ['paused', 'needs_input', '', null, undefined]) {
       expect(normalizeState(unknown), String(unknown)).toBeNull();
     }
+  });
+
+  it("maps Omnigent's real status enum, and never reads bare 'idle' as success", () => {
+    // The session status enum is idle|running|waiting|failed. `idle` means BOTH
+    // "not started" and "finished the turn", so resolving it to 'succeeded'
+    // would complete real tickets as empty successes — it must stay unresolved
+    // and be decided by the response lifecycle plus a retrievable RESULT.md.
+    expect(normalizeState('idle')).toBeNull();
+    expect(normalizeState('running')).toBe('running');
+    expect(normalizeState('failed')).toBe('failed');
+
+    // `waiting` is alive but blocked on human input; the run continues (and the
+    // poll loop flags it) rather than being binned as a failure.
+    expect(normalizeState('waiting')).toBe('running');
+    expect(isBlockedState('waiting')).toBe(true);
+    expect(isBlockedState('running')).toBe(false);
+
+    // Response-lifecycle events are what actually decide a terminal state.
+    expect(normalizeState('response_completed')).toBe('succeeded');
+    expect(normalizeState('response_failed')).toBe('failed');
+    expect(normalizeState('response_cancelled')).toBe('cancelled');
+    // Stopped early (truncation / limit hit) is not a delivery.
+    expect(normalizeState('response_incomplete')).toBe('failed');
   });
 
   it('labels tool calls by path, command, then a JSON prefix', () => {

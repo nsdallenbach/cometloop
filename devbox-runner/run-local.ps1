@@ -14,9 +14,13 @@ if (-not (Get-Command databricks -ErrorAction SilentlyContinue)) {
   if (Test-Path $winget) { $env:DATABRICKS_CLI = $winget }
 }
 
-# Validated permission set: file edits, git/gh/build commands, and the
-# delivery-console MCP tools so Claude posts progress and can raise flags.
-$env:CLAUDE_ARGS = '--permission-mode acceptEdits --allowedTools Write,Edit,Bash(git:*),Bash(gh:*),Bash(curl:*),Bash(node:*),Bash(npm:*),mcp__delivery-console__*'
+# Validated permission set: file edits, web research, git/gh/build commands, and
+# the delivery-console MCP tools so Claude posts progress and can raise flags.
+# WebSearch/WebFetch are here because omitting them auto-denies research with no
+# prompt to approve it (nobody is at the keyboard), which reads to the agent as
+# "this box has no web access" — see README "Permissions note". Bash(curl:*)
+# already grants outbound HTTP, so they widen nothing.
+$env:CLAUDE_ARGS = '--permission-mode acceptEdits --allowedTools Write,Edit,WebSearch,WebFetch,Bash(git:*),Bash(gh:*),Bash(curl:*),Bash(node:*),Bash(npm:*),mcp__delivery-console__*'
 
 Write-Host ''
 Write-Host '  DELIVERY RUNNER — local devbox emulation' -ForegroundColor Cyan
