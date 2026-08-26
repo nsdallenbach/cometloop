@@ -9,6 +9,7 @@ import { dropBoardTicket, laneOf, type BoardLane } from '../lib/board-order';
 import { needsEstimate } from '../lib/ticket-hours';
 import { PLANNING_REVIEW_LABEL, planningReviewTitle } from '../lib/planning-review';
 import { Analytics } from './Analytics';
+import { DeploysMirror } from './Deploys';
 import { ProjectConfig, RepoCard } from './ProjectConfig';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
@@ -238,6 +239,7 @@ export function Workspace({
     { key: 'roadmap', label: 'Roadmap' },
     { key: 'analytics', label: 'Analytics' },
     { key: 'sources', label: 'Sources' },
+    { key: 'deploys', label: 'Deploys' },
     { key: 'config', label: 'Config' },
     { key: 'standards', label: 'Standards' },
     { key: 'team', label: 'Team' },
@@ -1573,6 +1575,13 @@ export function Workspace({
               </table>
             </>
           )}
+        </div>
+      )}
+
+      {/* ===== DEPLOYS (read-only mirror, DAT-236) ===== */}
+      {detail && tab === 'deploys' && (
+        <div className="tab-pane" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
+          <DeploysMirror engId={eng.id} openTicket={openTicket} />
         </div>
       )}
 

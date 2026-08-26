@@ -9,6 +9,7 @@ import { ConsoleClient } from '../../../shared/api-client';
 import { AgentPool, type AgentKind, AGENT_KINDS } from './agents';
 import { loadConfig, type DesktopConfig } from './config';
 import { CredentialManager, SIGN_IN_REQUIRED } from './credentials';
+import { DeployManager, type DeploysEvent } from './deploys';
 import type { RunnerEvent } from './runner';
 import { TerminalHost, taskWorkdir, type TerminalEvent } from './terminal';
 
@@ -17,6 +18,7 @@ let creds: CredentialManager;
 let client: ConsoleClient;
 let pool: AgentPool;
 let terminals: TerminalHost;
+let deploys: DeployManager;
 
 /**
  * Single-instance-by-replacement (DAT-245): a NEW build/launch wins — it
@@ -224,6 +226,19 @@ function registerIpc(): void {
     if (typeof id === 'number' && typeof cols === 'number' && typeof rows === 'number') terminals.resize(id, cols, rows);
   });
 
+  // ---- local deploy queue (DAT-236) ----
+  ipcMain.handle('deploys:state', () => deploys.snapshot());
+  ipcMain.handle('deploys:refresh', async () => {
+    await deploys.poll();
+    return deploys.snapshot();
+  });
+  ipcMain.handle('deploys:run', (_e, ticketKey: unknown) =>
+    typeof ticketKey === 'string' && ticketKey ? deploys.deploy(ticketKey) : { ok: false, error: 'ticket key required' },
+  );
+  ipcMain.handle('deploys:dismiss', (_e, ticketKey: unknown) =>
+    typeof ticketKey === 'string' && ticketKey ? deploys.dismiss(ticketKey) : { ok: false, error: 'ticket key required' },
+  );
+
   ipcMain.on('window:control', (event, action: string) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return;
@@ -259,6 +274,13 @@ void app.whenReady().then(async () => {
   // Auto-start (DAT-245): configured instances launch with the app so the
   // work queue never waits on a Start click.
   await pool.init();
+
+  // Local deploy queue (DAT-236): poll the dev's merged-but-undeployed tickets
+  // and report deploy events home; the web app only ever sees the mirror.
+  deploys = new DeployManager(cfg, client, () => creds.getToken(), (ev: DeploysEvent) => {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('deploys:event', ev);
+  });
+  deploys.start();
 
   // Embedded console auth: every request the Tickets webview makes to the
   // console gets the dev's workspace bearer token injected here, so the

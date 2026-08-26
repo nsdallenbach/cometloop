@@ -81,6 +81,11 @@ interface DesktopBridge {
   terminalInput: (id: number, data: string) => void;
   terminalResize: (id: number, cols: number, rows: number) => void;
   onTerminalEvent: (cb: (ev: TerminalEvent) => void) => () => void;
+  deploysState: () => Promise<DeploysSnapshot>;
+  deploysRefresh: () => Promise<DeploysSnapshot>;
+  deploysRun: (ticketKey: string) => Promise<{ ok: boolean; error?: string }>;
+  deploysDismiss: (ticketKey: string) => Promise<{ ok: boolean; error?: string }>;
+  onDeploysEvent: (cb: (ev: DeploysEvent) => void) => () => void;
 }
 
 interface TerminalInfo {
@@ -89,6 +94,33 @@ interface TerminalInfo {
   cwd: string;
   live: boolean;
   exitCode: number | null;
+}
+
+type DeployState = 'queued' | 'deploying' | 'succeeded' | 'failed';
+
+interface DeployItem {
+  ticketKey: string;
+  title: string;
+  engagementId: string;
+  prNumber: number | null;
+  branch: string;
+  repoName: string;
+  repoUrl: string;
+  defaultBranch: string;
+  state: DeployState;
+  log: string[];
+  error: string;
+  queuedAt: string;
+  finishedAt: string | null;
+}
+
+type DeploysEvent = { kind: 'items' } | { kind: 'log'; ticketKey: string; line: string; ts: string };
+
+interface DeploysSnapshot {
+  items: DeployItem[];
+  deploying: string | null;
+  polledAt: string | null;
+  pollError: string;
 }
 
 type TerminalEvent =

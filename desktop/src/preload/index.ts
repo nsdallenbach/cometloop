@@ -42,6 +42,16 @@ const bridge = {
     ipcRenderer.on('terminal:event', listener);
     return () => ipcRenderer.removeListener('terminal:event', listener);
   },
+  // Local deployment queue (DAT-236).
+  deploysState: () => ipcRenderer.invoke('deploys:state'),
+  deploysRefresh: () => ipcRenderer.invoke('deploys:refresh'),
+  deploysRun: (ticketKey: string) => ipcRenderer.invoke('deploys:run', ticketKey),
+  deploysDismiss: (ticketKey: string) => ipcRenderer.invoke('deploys:dismiss', ticketKey),
+  onDeploysEvent: (cb: (payload: unknown) => void) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on('deploys:event', listener);
+    return () => ipcRenderer.removeListener('deploys:event', listener);
+  },
 };
 
 export type DesktopBridge = typeof bridge;

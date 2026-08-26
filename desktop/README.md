@@ -48,6 +48,19 @@ so the queue never stalls. Launching a new build kills the previous app
 instance (PID-file replace; DAT-234 orphan recovery covers a run caught
 in the crossfire).
 
+## Deploys (DAT-236)
+
+The **Deploys** page is the local deployment queue: merged tickets assigned
+to you (linked PR merged, deploy not settled) queue here automatically.
+**▶ Deploy** checks out `origin/<default branch>` and runs the deploy on
+this machine as *you* — `databricks bundle deploy` + `databricks bundle run
+app` for bundle repos (override with `deployCommand` in config.json /
+`DEPLOY_COMMAND`), with every line streamed live in-app. The client posts
+ticket-keyed deploy events (queued/started/succeeded/failed/removed) home:
+a green deploy moves the ticket to Done, a red one posts the ⚠ feed
+warning — and the web app's Deploys tab renders a READ-ONLY mirror from
+those events only. No path from the web app into anyone's laptop.
+
 ## The embedded runner
 
 **My Tickets** polls the queue as you (server-scoped: shared pool + tasks
