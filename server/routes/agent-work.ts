@@ -113,6 +113,19 @@ const QueueBody = z.object({
 });
 
 /**
+ * Board-facing owner of a routed task (DAT-231): tickets are assigned to
+ * PEOPLE, not runners. A task with an assignee email resolves to the team
+ * member's display name (falling back to the email); pool tasks have no
+ * person, so the runner name remains the visible assignee as before.
+ */
+async function taskOwnerName(q: Query, task: { assignee?: unknown }): Promise<string | null> {
+  const email = typeof task.assignee === 'string' && task.assignee ? task.assignee : null;
+  if (!email) return null;
+  const row = (await q(`SELECT name FROM app.team_members WHERE LOWER(email) = LOWER($1)`, [email])).rows[0];
+  return typeof row?.name === 'string' && row.name ? row.name : email;
+}
+
+/**
  * SQL predicate for queue visibility (DAT-227): unassigned tasks are the
  * shared fleet pool; assigned tasks exist only for the matching workspace
  * identity. Pushes the identity param (lowercased) and returns the clause.
@@ -390,8 +403,12 @@ export function setupAgentRoutes(
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
         [key, engagementId, parsed.data.priority ?? 0, parsed.data.instructions?.trim() ?? '', user.email, assignee],
       );
+      // Routing is assignment (DAT-231): the ticket belongs to the person the
+      // moment it is queued for them, not only once their runner claims it.
+      const ownerName = assignee ? await taskOwnerName(q, { assignee }) : null;
+      if (ownerName) await q('UPDATE app.tickets SET assignee = $2 WHERE key = $1', [key, ownerName]);
       console.log(`[agent] queued ${key} as task ${String(inserted.rows[0].id)} (engagement ${engagementId}, priority ${parsed.data.priority ?? 0}${assignee ? `, assigned to ${assignee}` : ''})`);
-      await feed(engagementId, 'YOU', `Queued ${key} — ${String(ticket.title)} for agent work${assignee ? ` (assigned to ${assignee})` : ''}.`);
+      await feed(engagementId, 'YOU', `Queued ${key} — ${String(ticket.title)} for agent work${ownerName ? ` (assigned to ${ownerName})` : ''}.`);
       res.status(201).json(inserted.rows[0]);
     } catch (err) {
       console.error('queue ticket failed:', err);
@@ -448,12 +465,17 @@ export function setupAgentRoutes(
       const engagementId = String(task.engagement_id);
       if (!(await requireProjectAccess(req, res, engagementId))) return;
       await q(`UPDATE app.agent_tasks SET state = 'cancelled', updated_at = NOW() WHERE id = $1`, [task.id]);
-      // A claimed ticket goes back to the backlog; drop the agent as assignee.
+      // A claimed ticket goes back to the backlog. Pool runs drop the runner
+      // as assignee; a routed run keeps its person — cancelling the agent
+      // work does not un-assign the human (DAT-231).
       if (task.state !== 'queued') {
-        await setTicketStatus(q, key, 'backlog', {
-          assignee: '—',
-          onlyIfAssignee: typeof task.agent === 'string' ? task.agent : '',
-        });
+        const owner = await taskOwnerName(q, task);
+        if (!owner) {
+          await setTicketStatus(q, key, 'backlog', {
+            assignee: '—',
+            onlyIfAssignee: typeof task.agent === 'string' ? task.agent : '',
+          });
+        }
         await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       console.log(`[agent] task ${String(task.id)} (${key}) cancelled from state '${String(task.state)}'`);
@@ -624,8 +646,10 @@ export function setupAgentRoutes(
         return;
       }
       console.log(`[agent] ${agent} claimed task ${String(claimed.id)} (${key}) — ticket moved to progress`);
-      await setTicketStatus(q, key, 'progress', { assignee: agent });
-      await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work.`);
+      // Routed task: the ticket belongs to the person; the runner is machinery.
+      const owner = await taskOwnerName(q, claimed);
+      await setTicketStatus(q, key, 'progress', { assignee: owner ?? agent });
+      await feed(String(claimed.engagement_id), 'AGENT', `${agent} claimed ${key} and started work${owner ? ` for ${owner}` : ''}.`);
       res.json(await workPackage(claimed));
     } catch (err) {
       console.error('claim failed:', err);
@@ -897,7 +921,11 @@ export function setupAgentRoutes(
         // Ready for review: log the actual LLM working time against the estimate.
         void recordActualHours(q, key, 'agent-complete');
       } else {
-        await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: agent });
+        // Failed pool run: clear the runner from the ticket. Failed routed
+        // run: the person keeps the ticket (DAT-231) — it just leaves progress.
+        if (!(await taskOwnerName(q, task))) {
+          await setTicketStatus(q, key, 'backlog', { assignee: '—', onlyIfAssignee: agent });
+        }
         await setTicketStatus(q, key, 'backlog', { onlyIfStatus: 'progress' });
       }
       await q('INSERT INTO app.ticket_comments (ticket_key, author, body) VALUES ($1,$2,$3)', [

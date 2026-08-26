@@ -93,7 +93,11 @@ requiring their identity). Deploys execute locally as the dev.
 Recommendation: keep the server informed with **deploy events** (started /
 succeeded / failed, ticket-keyed) posted by the client — the same pattern
 as today's deploy watch, with the client as the source instead of GitHub
-Actions polling. The PM keeps the visibility the Deploy column used to
+Actions polling. The web app shows the deployment queue **read-only**,
+rendered purely from these client-reported events: full PM visibility with
+no path from the web app into anyone's laptop (runners are outbound-only
+long-pollers, so no such path exists to begin with — the read-only rule
+keeps it that way by design). The PM keeps the visibility the Deploy column used to
 give (ticket auto-advances to Done on green, feed warning on red) without
 the column existing. For this repo's own CI-driven deploys, the existing
 Actions deploy watch stays as-is.

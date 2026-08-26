@@ -75,6 +75,35 @@ export class ConsoleClient {
     return this.request<Engagement[]>('/api/engagements');
   }
 
+  me(): Promise<Me> {
+    return this.request<Me>('/api/me');
+  }
+
+  /** Board slice of an engagement: tickets, roster, and active agent runs. */
+  async engagementBoard(id: string): Promise<EngagementBoard> {
+    const d = await this.request<{
+      tickets?: Record<string, unknown>[];
+      team?: Record<string, unknown>[];
+      agentTasks?: Record<string, unknown>[];
+    }>(`/api/engagements/${encodeURIComponent(id)}/detail`);
+    const s = (v: unknown): string => (typeof v === 'string' ? v : '');
+    return {
+      tickets: (d.tickets ?? []).map((t) => ({ key: s(t.key), title: s(t.title), status: s(t.status), assignee: s(t.assignee) })),
+      team: (d.team ?? []).map((m) => ({ name: s(m.name), email: m.email == null ? null : s(m.email) })),
+      activeTaskKeys: (d.agentTasks ?? [])
+        .filter((a) => ['queued', 'claimed', 'working'].includes(s(a.state)))
+        .map((a) => s(a.ticket_key) || s(a.ticketKey)),
+    };
+  }
+
+  /** Queue a ticket for agent work, optionally routed to a person (DAT-227). */
+  queueTicket(key: string, opts?: { assignee?: string; instructions?: string }): Promise<unknown> {
+    return this.request(`/api/tickets/${encodeURIComponent(key)}/queue`, {
+      method: 'POST',
+      body: JSON.stringify({ assignee: opts?.assignee, instructions: opts?.instructions }),
+    });
+  }
+
   /** Fetch a binary body (context-file downloads) with the same auth/401 handling. */
   async requestRaw(path: string): Promise<Uint8Array> {
     const attempt = async (forceRefresh: boolean): Promise<Response> => {
@@ -100,6 +129,26 @@ export class ConsoleClient {
     if (engagement) params.set('engagement', engagement);
     return this.request<AgentWork>(`/api/agent/work?${params.toString()}`);
   }
+}
+
+export interface Me {
+  email: string;
+  role: string;
+  leadOf: string[];
+  memberOf: string[];
+}
+
+export interface BoardTicket {
+  key: string;
+  title: string;
+  status: string;
+  assignee: string;
+}
+
+export interface EngagementBoard {
+  tickets: BoardTicket[];
+  team: { name: string; email: string | null }[];
+  activeTaskKeys: string[];
 }
 
 export interface AgentTaskRow {

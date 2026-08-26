@@ -26,6 +26,14 @@ interface AgentTaskRow {
   created_at: string;
 }
 
+interface BoardTicketRow {
+  key: string;
+  title: string;
+  status: string;
+  assignee: string;
+  engagementId: string;
+}
+
 interface DesktopBridge {
   getConfig: () => Promise<{
     consoleUrl: string;
@@ -46,6 +54,11 @@ interface DesktopBridge {
   authLogin: () => Promise<{ ok: true; mode: AuthMode } | { ok: false; error: string }>;
   authSignOut: () => Promise<{ mode: AuthMode }>;
   windowControl: (action: 'minimize' | 'maximize' | 'close') => void;
+  boardOverview: () => Promise<
+    | { ok: true; myName: string; email: string; mine: BoardTicketRow[]; available: BoardTicketRow[] }
+    | { ok: false; error: string; signInRequired?: boolean }
+  >;
+  boardPickup: (ticketKey: string) => Promise<{ ok: boolean; error?: string }>;
   runnerState: () => Promise<RunnerSnapshot>;
   runnerStart: () => Promise<RunnerSnapshot>;
   runnerStop: () => Promise<RunnerSnapshot>;
