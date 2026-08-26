@@ -139,6 +139,9 @@ function registerIpc(): void {
     runner.killRun();
     return runner.snapshot();
   });
+  ipcMain.handle('runner:release', (_e, taskId: unknown) =>
+    typeof taskId === 'number' ? runner.releaseTask(taskId) : { ok: false, error: 'task id required' },
+  );
   ipcMain.handle('runner:run-ticket', (_e, ticketKey: unknown) =>
     typeof ticketKey === 'string' && ticketKey ? runner.runTicket(ticketKey) : { ok: false, error: 'ticket key required' },
   );

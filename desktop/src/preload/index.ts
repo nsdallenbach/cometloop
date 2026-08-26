@@ -19,6 +19,7 @@ const bridge = {
   runnerStop: () => ipcRenderer.invoke('runner:stop'),
   runnerKill: () => ipcRenderer.invoke('runner:kill'),
   runnerRunTicket: (ticketKey: string) => ipcRenderer.invoke('runner:run-ticket', ticketKey),
+  runnerRelease: (taskId: number) => ipcRenderer.invoke('runner:release', taskId),
   onRunnerEvent: (cb: (ev: unknown) => void) => {
     const listener = (_e: unknown, ev: unknown) => cb(ev);
     ipcRenderer.on('runner:event', listener);

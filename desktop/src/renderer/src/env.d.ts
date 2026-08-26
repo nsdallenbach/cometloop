@@ -64,6 +64,7 @@ interface DesktopBridge {
   runnerStop: () => Promise<RunnerSnapshot>;
   runnerKill: () => Promise<RunnerSnapshot>;
   runnerRunTicket: (ticketKey: string) => Promise<{ ok: boolean; error?: string }>;
+  runnerRelease: (taskId: number) => Promise<{ ok: boolean; error?: string }>;
   onRunnerEvent: (cb: (ev: RunnerEvent) => void) => () => void;
 }
 
