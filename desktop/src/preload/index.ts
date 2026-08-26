@@ -10,6 +10,17 @@ const bridge = {
   authStatus: () => ipcRenderer.invoke('auth:status'),
   authLogin: () => ipcRenderer.invoke('auth:login'),
   authSignOut: () => ipcRenderer.invoke('auth:sign-out'),
+  identityStatus: () => ipcRenderer.invoke('identity:status'),
+  identityLogin: (provider: string) => ipcRenderer.invoke('identity:login', provider),
+  identitySignOut: (provider: string) => ipcRenderer.invoke('identity:sign-out', provider),
+  identityMcpList: () => ipcRenderer.invoke('identity:mcp-list'),
+  identityMcpSet: (name: string, secret: string) => ipcRenderer.invoke('identity:mcp-set', name, secret),
+  identityMcpClear: (name: string) => ipcRenderer.invoke('identity:mcp-clear', name),
+  onIdentityEvent: (cb: (status: unknown) => void) => {
+    const listener = (_e: unknown, status: unknown) => cb(status);
+    ipcRenderer.on('identity:event', listener);
+    return () => ipcRenderer.removeListener('identity:event', listener);
+  },
   windowControl: (action: 'minimize' | 'maximize' | 'close') =>
     ipcRenderer.send('window:control', action),
   boardOverview: () => ipcRenderer.invoke('board:overview'),

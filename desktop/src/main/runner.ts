@@ -12,6 +12,7 @@ import path from 'node:path';
 import { ConsoleApiError, type ConsoleClient } from '../../../shared/api-client';
 import { getHarness, toolLabel, type Harness } from '../../../shared/harnesses';
 import type { DesktopConfig } from './config';
+import type { IdentityBroker } from './identity';
 
 export type RunnerEvent =
   | { kind: 'status'; state: RunnerState; detail?: string; ts: string }
@@ -57,6 +58,8 @@ export class RunnerHost {
     private readonly harnessName: string,
     private readonly client: ConsoleClient,
     private readonly broadcast: (ev: RunnerEvent) => void,
+    /** Dev identities (DAT-235): client-owned repos clone/push as the dev. */
+    private readonly identity: IdentityBroker | null = null,
   ) {}
 
   /** True while this instance can take new work immediately. */
@@ -204,22 +207,47 @@ export class RunnerHost {
       }
     }
 
-    // Repo clone: vended short-lived credential first, local git auth second.
+    // Repo credentials (DAT-235): work repos keep using the console-vended
+    // GitHub App token; client-owned repos (ADO, or GitHub the App can't vend
+    // for) run as the dev via the identity broker; local git auth is the last
+    // resort either way. `gitEnv` carries the dev credential to every git
+    // invocation of the run through env-only git config — never a file.
     let gitToken: string | null = null;
-    if (pkg.repo && !existsSync(path.join(dir, 'repo'))) {
-      try {
-        const cred = await this.client.request<{ token: string; cloneUrl: string }>(
-          `/api/agent/work/${id}/git-credential`,
-          { method: 'POST', body: JSON.stringify({ agent: this.agentName }) },
-        );
-        gitToken = cred.token;
-        execFileSync('git', ['clone', cred.cloneUrl, 'repo'], { cwd: dir, stdio: 'pipe', windowsHide: true });
-      } catch (e) {
-        this.emit({ kind: 'note', text: `vended clone unavailable (${msg(e)}) — trying local git credentials`, ts: now() });
+    let gitEnv: Record<string, string> = {};
+    if (pkg.repo) {
+      const repoUrl = String(pkg.repo.repo_url ?? '');
+      const adoHost = adoHostOf(repoUrl);
+      const needsClone = !existsSync(path.join(dir, 'repo'));
+      if (adoHost) {
+        // Client-owned ADO repo — the console never vends for these, the
+        // whole point (DAT-235) is that this work happens as the dev.
+        const token = await this.devToken('ado');
+        if (token) {
+          gitEnv = bearerGitEnv(adoHost, token);
+          this.emit({ kind: 'note', text: `client-owned repo on ${adoHost} — git runs as you (Azure DevOps identity)`, ts: now() });
+        } else {
+          this.emit({ kind: 'note', text: 'not signed in to Azure DevOps (Identity tab) — trying local git credentials', ts: now() });
+        }
+        if (needsClone) this.clone(repoUrl, dir, gitEnv);
+      } else if (needsClone) {
         try {
-          execFileSync('git', ['clone', String(pkg.repo.repo_url), 'repo'], { cwd: dir, stdio: 'pipe', windowsHide: true });
-        } catch (e2) {
-          this.emit({ kind: 'note', text: `clone failed: ${msg(e2)} — continuing without repo`, ts: now() });
+          const cred = await this.client.request<{ token: string; cloneUrl: string }>(
+            `/api/agent/work/${id}/git-credential`,
+            { method: 'POST', body: JSON.stringify({ agent: this.agentName }) },
+          );
+          gitToken = cred.token;
+          execFileSync('git', ['clone', cred.cloneUrl, 'repo'], { cwd: dir, stdio: 'pipe', windowsHide: true });
+        } catch (e) {
+          const token = await this.devToken('github');
+          if (token) {
+            // Client-owned GitHub repo (vending refused/failed): as the dev.
+            gitToken = token;
+            gitEnv = basicGitEnv('github.com', 'x-access-token', token);
+            this.emit({ kind: 'note', text: `vended credential unavailable (${msg(e)}) — git runs as you (GitHub identity)`, ts: now() });
+          } else {
+            this.emit({ kind: 'note', text: `vended clone unavailable (${msg(e)}) — trying local git credentials`, ts: now() });
+          }
+          this.clone(repoUrl, dir, gitEnv);
         }
       }
     }
@@ -256,7 +284,13 @@ export class RunnerHost {
     this.toolStream = new ToolCallStream(this.agentName, id, this.client, (t) => this.emit(t));
     // NOTE: project provisioning (runnerConfig installs) is not ported yet —
     // desktop runs use the machine as-is. Deliberate phase-A gap.
-    const code = await this.runHarness(harness, prompt, dir, gitToken ? { GIT_TOKEN: gitToken } : {});
+    // Env carries: the vended token (work repos), the dev's git credential via
+    // env-only git config (client repos), and per-MCP-server secrets — DAT-235.
+    const code = await this.runHarness(harness, prompt, dir, {
+      ...(gitToken ? { GIT_TOKEN: gitToken } : {}),
+      ...gitEnv,
+      ...(this.identity?.mcpEnv() ?? {}),
+    });
     await this.toolStream.flush();
     this.toolStream = null;
     clearInterval(heartbeat);
@@ -399,6 +433,31 @@ export class RunnerHost {
     };
   }
 
+  /** Dev token from the identity broker; failures degrade to null (fallbacks run). */
+  private async devToken(provider: 'github' | 'ado'): Promise<string | null> {
+    if (!this.identity) return null;
+    try {
+      return await this.identity.getAccessToken(provider);
+    } catch (e) {
+      this.emit({ kind: 'note', text: `${provider} identity unavailable: ${msg(e)}`, ts: now() });
+      return null;
+    }
+  }
+
+  /** Clone with the given git env (dev credential or none); never throws. */
+  private clone(repoUrl: string, dir: string, gitEnv: Record<string, string>): void {
+    try {
+      execFileSync('git', ['clone', repoUrl, 'repo'], {
+        cwd: dir,
+        env: { ...process.env, ...gitEnv },
+        stdio: 'pipe',
+        windowsHide: true,
+      });
+    } catch (e) {
+      this.emit({ kind: 'note', text: `clone failed: ${msg(e)} — continuing without repo`, ts: now() });
+    }
+  }
+
   private killChild(why: string): void {
     const child = this.child;
     if (!child || child.exitCode !== null || child.killed) return;
@@ -496,6 +555,44 @@ function fallbackPrompt(pkg: WorkPackage): string {
     'If GIT_TOKEN is set, push and open the PR with it; otherwise use local credentials.',
     'Before finishing, write RESULT.md here (not in the repo): 2–4 sentences on what you did plus the PR URL.',
   ].join('\n');
+}
+
+/** ADO host of a client-owned repo URL, or null for anything else. */
+function adoHostOf(repoUrl: string): string | null {
+  try {
+    const host = new URL(repoUrl).host;
+    return host === 'dev.azure.com' || host.endsWith('.visualstudio.com') ? host : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Git config via env only (git ≥2.31): the credential reaches every git
+ * invocation of the run — clone and whatever the agent does after — without
+ * ever landing in a file. ADO accepts AAD access tokens as a bearer header.
+ */
+function bearerGitEnv(host: string, token: string): Record<string, string> {
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: `http.https://${host}/.extraheader`,
+    GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token}`,
+  };
+}
+
+/**
+ * Same env-only pattern for basic-auth hosts (GitHub): an inline credential
+ * helper answers `get`, after an empty entry resets any system helper (GCM)
+ * so ours is authoritative. Tokens are URL-safe — no quoting hazards.
+ */
+function basicGitEnv(host: string, username: string, token: string): Record<string, string> {
+  return {
+    GIT_CONFIG_COUNT: '2',
+    GIT_CONFIG_KEY_0: `credential.https://${host}.helper`,
+    GIT_CONFIG_VALUE_0: '',
+    GIT_CONFIG_KEY_1: `credential.https://${host}.helper`,
+    GIT_CONFIG_VALUE_1: `!f() { test "$1" = get && printf 'username=%s\\npassword=%s\\n' '${username}' '${token}'; }; f`,
+  };
 }
 
 const now = (): string => new Date().toISOString();

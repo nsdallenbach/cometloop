@@ -930,17 +930,45 @@ const AUTH_LABEL: Record<AuthMode, { text: string; color: string }> = {
   'signed-out': { text: 'not signed in', color: 'var(--tx3)' },
 };
 
+const PROVIDER_LABEL: Record<IdentityProvider, { name: string; note: string }> = {
+  github: { name: 'GitHub', note: 'client-owned GitHub repos — pushes and PRs as you' },
+  azure: { name: 'Azure', note: 'az — ARM APIs with your subscription access' },
+  ado: { name: 'Azure DevOps', note: 'client-owned ADO repos — git runs as you' },
+};
+
 function IdentityView() {
   const [cfg, setCfg] = useState<Awaited<ReturnType<DesktopBridge['getConfig']>> | null>(null);
   const [auth, setAuth] = useState<AuthMode>('signed-out');
   const [state, setState] = useState<'idle' | 'signing-in' | 'testing' | 'ok' | 'error'>('idle');
   const [engagements, setEngagements] = useState<EngagementRow[]>([]);
   const [error, setError] = useState('');
+  const [ids, setIds] = useState<IdentityStatusRow[]>([]);
+  const [idErr, setIdErr] = useState<Partial<Record<IdentityProvider, string>>>({});
 
   useEffect(() => {
     void window.desktopBridge.getConfig().then(setCfg);
     void window.desktopBridge.authStatus().then((s) => setAuth(s.mode));
+    void window.desktopBridge.identityStatus().then(setIds);
+    // Device flows resolve out-of-band (browser side) — events keep the rows live.
+    return window.desktopBridge.onIdentityEvent((row) => {
+      setIds((rows) => rows.map((r) => (r.provider === row.provider ? row : r)));
+    });
   }, []);
+
+  const providerLogin = async (p: IdentityProvider) => {
+    setIdErr((e) => ({ ...e, [p]: undefined }));
+    const res = await window.desktopBridge.identityLogin(p);
+    if (res.ok) {
+      setIds((rows) => rows.map((r) => (r.provider === p ? res.status : r)));
+    } else {
+      setIdErr((e) => ({ ...e, [p]: res.error }));
+      void window.desktopBridge.identityStatus().then(setIds);
+    }
+  };
+
+  const providerSignOut = async (p: IdentityProvider) => {
+    setIds(await window.desktopBridge.identitySignOut(p));
+  };
 
   const test = async () => {
     setState('testing');
@@ -981,9 +1009,9 @@ function IdentityView() {
       <div>
         <h2 style={{ margin: '0 0 6px', fontSize: 18, fontWeight: 700 }}>Identity</h2>
         <p style={{ margin: 0, fontSize: 13, color: 'var(--tx2)', maxWidth: 520, lineHeight: 1.5 }}>
-          Databricks is the console&rsquo;s identity; GitHub, Azure and ADO logins land here in a
-          later phase. Tokens are minted short-lived; the refresh token lives encrypted in the OS
-          keychain.
+          Databricks is the console&rsquo;s identity; GitHub, Azure and Azure DevOps sign in below
+          so work on client-owned repos runs as you (work repos keep console-vended tokens).
+          Everything at rest is encrypted via the OS keychain — never plaintext files.
         </p>
       </div>
 
@@ -1092,6 +1120,216 @@ function IdentityView() {
             ))}
           </div>
         )}
+      </div>
+
+      {/* DAT-235: dev identities — device-code flows, login state per provider. */}
+      <div
+        style={{
+          background: 'var(--bg2)',
+          border: '1px solid var(--line)',
+          borderRadius: 10,
+          padding: 18,
+          maxWidth: 560,
+        }}
+      >
+        <div style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 4 }}>
+          DEVELOPER IDENTITIES
+        </div>
+        <p style={{ margin: '0 0 12px', fontSize: 12, color: 'var(--tx3)', lineHeight: 1.5 }}>
+          Sign-ins happen in your browser (device code); tokens stay in the OS keychain and renew
+          silently. Runs on this machine pick them up automatically.
+        </p>
+        <div style={{ display: 'grid', gap: 8 }}>
+          {ids.map((row) => (
+            <ProviderRow
+              key={row.provider}
+              row={row}
+              error={idErr[row.provider]}
+              onLogin={() => void providerLogin(row.provider)}
+              onSignOut={() => void providerSignOut(row.provider)}
+            />
+          ))}
+        </div>
+      </div>
+
+      <McpAuthCard />
+    </div>
+  );
+}
+
+function ProviderRow({
+  row,
+  error,
+  onLogin,
+  onSignOut,
+}: {
+  row: IdentityStatusRow;
+  error?: string;
+  onLogin: () => void;
+  onSignOut: () => void;
+}) {
+  const label = PROVIDER_LABEL[row.provider];
+  const color =
+    row.state === 'signed-in' ? 'var(--ok)' : row.state === 'pending' ? 'var(--agent)' : 'var(--tx3)';
+  return (
+    <div
+      style={{
+        background: 'var(--bg)',
+        border: '1px solid var(--line)',
+        borderRadius: 8,
+        padding: 'var(--rowpad)',
+        display: 'grid',
+        gap: 6,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, flex: 'none' }} />
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{label.name}</span>
+        <span style={{ ...mono(400, 10), color: 'var(--tx3)', minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+          {row.state === 'signed-in' ? (row.account ?? 'signed in') : label.note}
+        </span>
+        <div style={{ flex: 1 }} />
+        {row.state === 'signed-out' && (
+          <button className="no-drag hv-lift" onClick={onLogin} style={{ ...btnStyle('var(--acc)'), padding: '4px 12px', fontSize: 11.5 }}>
+            Sign in
+          </button>
+        )}
+        {row.state === 'pending' && (
+          <span style={{ ...mono(500, 9.5), color: 'var(--agent)', letterSpacing: '.06em' }}>WAITING FOR BROWSER…</span>
+        )}
+        {row.state === 'signed-in' && (
+          <button className="no-drag" onClick={onSignOut} style={{ ...btnStyle('var(--tx3)'), padding: '4px 12px', fontSize: 11.5 }}>
+            Sign out
+          </button>
+        )}
+      </div>
+      {row.state === 'pending' && row.prompt && (
+        <div style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.5 }}>
+          Enter code{' '}
+          <span style={{ ...mono(600, 13), color: 'var(--tx)', letterSpacing: '.12em', userSelect: 'text' }}>
+            {row.prompt.userCode}
+          </span>{' '}
+          at{' '}
+          <a href={row.prompt.verificationUri} target="_blank" rel="noreferrer" style={{ color: 'var(--link)' }}>
+            {row.prompt.verificationUri}
+          </a>{' '}
+          — the browser is already open on it.
+        </div>
+      )}
+      {error && <div style={{ fontSize: 11.5, color: 'var(--bad)' }}>{error}</div>}
+    </div>
+  );
+}
+
+/**
+ * Per-MCP-server auth (DAT-235): named secrets stored in the keychain and
+ * handed to harness runs as `MCP_AUTH_<NAME>` env — never written to a file.
+ * The bundled delivery-console server authenticates via Databricks and needs
+ * no secret; rows here cover third-party MCP servers wired into workdirs.
+ */
+function McpAuthCard() {
+  const [rows, setRows] = useState<McpAuthRow[]>([]);
+  const [name, setName] = useState('');
+  const [secret, setSecret] = useState('');
+
+  useEffect(() => {
+    void window.desktopBridge.identityMcpList().then(setRows);
+  }, []);
+
+  const add = async () => {
+    if (!name.trim() || !secret) return;
+    setRows(await window.desktopBridge.identityMcpSet(name.trim(), secret));
+    setName('');
+    setSecret('');
+  };
+
+  const inputStyle: CSSProperties = {
+    background: 'var(--bg)',
+    border: '1px solid var(--line2)',
+    borderRadius: 5,
+    color: 'var(--tx)',
+    padding: '5px 8px',
+    fontSize: 12,
+    fontFamily: 'inherit',
+    minWidth: 0,
+  };
+
+  return (
+    <div
+      style={{
+        background: 'var(--bg2)',
+        border: '1px solid var(--line)',
+        borderRadius: 10,
+        padding: 18,
+        maxWidth: 560,
+      }}
+    >
+      <div style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 4 }}>
+        MCP SERVER AUTH
+      </div>
+      <p style={{ margin: '0 0 12px', fontSize: 12, color: 'var(--tx3)', lineHeight: 1.5 }}>
+        Secrets for MCP servers your runs use, one per server — kept in the keychain, passed to
+        harness runs as <span style={mono(500, 11)}>MCP_AUTH_&lt;NAME&gt;</span> env. The bundled
+        delivery-console server signs in via Databricks and needs nothing here.
+      </p>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {rows.length === 0 && (
+          <div style={{ fontSize: 12, color: 'var(--tx3)' }}>No MCP server secrets stored.</div>
+        )}
+        {rows.map((r) => (
+          <div
+            key={r.name}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              background: 'var(--bg)',
+              border: '1px solid var(--line)',
+              borderRadius: 8,
+              padding: 'var(--rowpad)',
+            }}
+          >
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ok)', flex: 'none' }} />
+            <span style={{ ...mono(500, 11.5) }}>{r.name}</span>
+            <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>secret stored</span>
+            <div style={{ flex: 1 }} />
+            <button
+              className="no-drag"
+              onClick={() => void window.desktopBridge.identityMcpClear(r.name).then(setRows)}
+              style={{ ...btnStyle('var(--tx3)'), padding: '3px 10px', fontSize: 11 }}
+            >
+              Clear
+            </button>
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+          <input
+            className="no-drag"
+            placeholder="server name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            style={{ ...inputStyle, width: 150 }}
+          />
+          <input
+            className="no-drag"
+            type="password"
+            placeholder="secret / token"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void add();
+            }}
+            style={{ ...inputStyle, flex: 1 }}
+          />
+          <button
+            className="no-drag hv-lift"
+            onClick={() => void add()}
+            disabled={!name.trim() || !secret}
+            style={{ ...btnStyle('var(--acc)'), padding: '5px 14px', fontSize: 11.5, opacity: !name.trim() || !secret ? 0.5 : 1 }}
+          >
+            Save
+          </button>
+        </div>
       </div>
     </div>
   );
