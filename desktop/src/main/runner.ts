@@ -51,12 +51,21 @@ export class RunnerHost {
 
   constructor(
     private readonly cfg: DesktopConfig,
+    /** Fleet-visible identity of THIS instance, e.g. desktop-HOST-claude-1 (DAT-245). */
+    private readonly agentName: string,
+    /** Adapter this instance drives ('claude' | 'codex'). */
+    private readonly harnessName: string,
     private readonly client: ConsoleClient,
     private readonly broadcast: (ev: RunnerEvent) => void,
   ) {}
 
+  /** True while this instance can take new work immediately. */
+  idle(): boolean {
+    return this.state === 'waiting' || this.state === 'stopped';
+  }
+
   snapshot(): RunnerSnapshot {
-    return { state: this.state, harness: this.cfg.harness, current: this.current, feed: this.feed };
+    return { state: this.state, harness: this.harnessName, current: this.current, feed: this.feed };
   }
 
   /** Start the wait → claim loop (idempotent). */
@@ -98,7 +107,7 @@ export class RunnerHost {
       await this.client.request(`/api/agent/work/${taskId}/complete`, {
         method: 'POST',
         body: JSON.stringify({
-          agent: this.cfg.agentName,
+          agent: this.agentName,
           outcome: 'failed',
           summary: `Released from ${os.hostname()}: the desktop app restarted while this run was in flight, so no process was attached to the claim. Partial work may remain in the runner workdir; re-queue to try again.`,
         }),
@@ -113,12 +122,12 @@ export class RunnerHost {
   /** Claim one specific ticket (from the My Tickets row) and run it. */
   async runTicket(ticketKey: string): Promise<{ ok: boolean; error?: string }> {
     if (this.state === 'running' || this.state === 'completing') {
-      return { ok: false, error: 'A run is already in progress on this machine.' };
+      return { ok: false, error: 'This agent instance is busy.' };
     }
     try {
       const pkg = await this.client.request<WorkPackage>('/api/agent/work/claim', {
         method: 'POST',
-        body: JSON.stringify({ agent: this.cfg.agentName, ticket: ticketKey }),
+        body: JSON.stringify({ agent: this.agentName, ticket: ticketKey }),
       });
       void this.runTask(pkg).catch((e) => this.emit({ kind: 'error', text: `run crashed: ${msg(e)}`, ts: now() }));
       return { ok: true };
@@ -130,12 +139,12 @@ export class RunnerHost {
   // ---- loop ----
 
   private async loop(): Promise<void> {
-    this.emit({ kind: 'note', text: `runner ${this.cfg.agentName} started (harness: ${this.cfg.harness})`, ts: now() });
+    this.emit({ kind: 'note', text: `runner ${this.agentName} started (harness: ${this.harnessName})`, ts: now() });
     while (!this.stopRequested) {
       this.setState('waiting');
       try {
         const hit = await this.client.request<{ queued: unknown[] } | null>(
-          `/api/agent/work/wait?agent=${encodeURIComponent(this.cfg.agentName)}`,
+          `/api/agent/work/wait?agent=${encodeURIComponent(this.agentName)}`,
           { signal: AbortSignal.timeout(70_000) },
         );
         if (this.stopRequested) break;
@@ -150,7 +159,7 @@ export class RunnerHost {
       try {
         pkg = await this.client.request<WorkPackage>('/api/agent/work/claim', {
           method: 'POST',
-          body: JSON.stringify({ agent: this.cfg.agentName }),
+          body: JSON.stringify({ agent: this.agentName }),
         });
       } catch (e) {
         if (e instanceof ConsoleApiError && e.status === 403) {
@@ -164,7 +173,7 @@ export class RunnerHost {
       } catch (e) {
         this.emit({ kind: 'error', text: `task crashed: ${msg(e)}`, ts: now() });
         await this.post(`/api/agent/work/${pkg.task.id}/complete`, {
-          agent: this.cfg.agentName,
+          agent: this.agentName,
           outcome: 'failed',
           summary: `Desktop runner error: ${msg(e)}`,
         });
@@ -201,7 +210,7 @@ export class RunnerHost {
       try {
         const cred = await this.client.request<{ token: string; cloneUrl: string }>(
           `/api/agent/work/${id}/git-credential`,
-          { method: 'POST', body: JSON.stringify({ agent: this.cfg.agentName }) },
+          { method: 'POST', body: JSON.stringify({ agent: this.agentName }) },
         );
         gitToken = cred.token;
         execFileSync('git', ['clone', cred.cloneUrl, 'repo'], { cwd: dir, stdio: 'pipe', windowsHide: true });
@@ -215,13 +224,13 @@ export class RunnerHost {
       }
     }
 
-    const harness = getHarness(this.cfg.harness);
+    const harness = getHarness(this.harnessName);
     if (this.cfg.mcpServer && existsSync(this.cfg.mcpServer)) harness.writeConfig(dir, this.cfg.mcpServer);
 
     // Liveness contract (see devbox runner): 404/409 from heartbeat = the
     // console no longer wants this run — kill and abandon.
     const heartbeat = setInterval(() => {
-      this.post(`/api/agent/work/${id}/heartbeat`, { agent: this.cfg.agentName }, (e) => {
+      this.post(`/api/agent/work/${id}/heartbeat`, { agent: this.agentName }, (e) => {
         if (e.status === 404 || e.status === 409) {
           this.abandoned ??= 'cancelled';
           this.killChild(`console reports task ${id} is no longer ours (${e.status})`);
@@ -238,12 +247,12 @@ export class RunnerHost {
         : null;
 
     await this.post(`/api/agent/work/${id}/progress`, {
-      agent: this.cfg.agentName,
+      agent: this.agentName,
       note: `Claimed on ${os.hostname()} (desktop); starting ${harness.name} run.`,
     });
 
     const prompt = pkg.prompt ?? fallbackPrompt(pkg);
-    this.toolStream = new ToolCallStream(this.cfg.agentName, id, this.client, (t) => this.emit(t));
+    this.toolStream = new ToolCallStream(this.agentName, id, this.client, (t) => this.emit(t));
     // NOTE: project provisioning (runnerConfig installs) is not ported yet —
     // desktop runs use the machine as-is. Deliberate phase-A gap.
     const code = await this.runHarness(harness, prompt, dir, gitToken ? { GIT_TOKEN: gitToken } : {});
@@ -277,7 +286,7 @@ export class RunnerHost {
       try {
         await this.client.request(`/api/agent/work/${id}/complete`, {
           method: 'POST',
-          body: JSON.stringify({ agent: this.cfg.agentName, outcome, summary, ...(prUrl ? { url: prUrl } : {}) }),
+          body: JSON.stringify({ agent: this.agentName, outcome, summary, ...(prUrl ? { url: prUrl } : {}) }),
         });
         this.emit({ kind: 'note', text: `task ${id} (${key}) completed ${outcome}`, ts: now() });
       } catch (e) {

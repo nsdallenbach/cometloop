@@ -14,16 +14,18 @@ const bridge = {
     ipcRenderer.send('window:control', action),
   boardOverview: () => ipcRenderer.invoke('board:overview'),
   boardPickup: (ticketKey: string) => ipcRenderer.invoke('board:pickup', ticketKey),
-  runnerState: () => ipcRenderer.invoke('runner:state'),
-  runnerStart: () => ipcRenderer.invoke('runner:start'),
-  runnerStop: () => ipcRenderer.invoke('runner:stop'),
-  runnerKill: () => ipcRenderer.invoke('runner:kill'),
-  runnerRunTicket: (ticketKey: string) => ipcRenderer.invoke('runner:run-ticket', ticketKey),
-  runnerRelease: (taskId: number) => ipcRenderer.invoke('runner:release', taskId),
-  onRunnerEvent: (cb: (ev: unknown) => void) => {
-    const listener = (_e: unknown, ev: unknown) => cb(ev);
-    ipcRenderer.on('runner:event', listener);
-    return () => ipcRenderer.removeListener('runner:event', listener);
+  agentsState: () => ipcRenderer.invoke('agents:state'),
+  agentsConfigure: (kind: string, opts: { instances?: number; autoStart?: boolean }) =>
+    ipcRenderer.invoke('agents:configure', kind, opts),
+  agentsStart: (id: string) => ipcRenderer.invoke('agents:start', id),
+  agentsStop: (id: string) => ipcRenderer.invoke('agents:stop', id),
+  agentsKill: (id: string) => ipcRenderer.invoke('agents:kill', id),
+  agentsRunTicket: (ticketKey: string) => ipcRenderer.invoke('agents:run-ticket', ticketKey),
+  agentsRelease: (taskId: number) => ipcRenderer.invoke('agents:release', taskId),
+  onAgentsEvent: (cb: (payload: unknown) => void) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on('agents:event', listener);
+    return () => ipcRenderer.removeListener('agents:event', listener);
   },
 };
 
