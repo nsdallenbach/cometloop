@@ -10,6 +10,7 @@ import { AgentPool, type AgentKind, AGENT_KINDS } from './agents';
 import { loadConfig, type DesktopConfig } from './config';
 import { CredentialManager, SIGN_IN_REQUIRED } from './credentials';
 import { DeployManager, type DeploysEvent } from './deploys';
+import { IdentityBroker, IDENTITY_PROVIDERS, type IdentityProvider, type ProviderStatus } from './identity';
 import type { RunnerEvent } from './runner';
 import { TerminalHost, taskWorkdir, type TerminalEvent } from './terminal';
 
@@ -19,6 +20,7 @@ let client: ConsoleClient;
 let pool: AgentPool;
 let terminals: TerminalHost;
 let deploys: DeployManager;
+let identity: IdentityBroker;
 
 /**
  * Single-instance-by-replacement (DAT-245): a NEW build/launch wins — it
@@ -130,6 +132,33 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('auth:sign-out', () => creds.signOut());
+
+  // ---- identity broker (DAT-235): gh/az/ADO device flows + MCP secrets ----
+  const isProvider = (v: unknown): v is IdentityProvider =>
+    typeof v === 'string' && (IDENTITY_PROVIDERS as string[]).includes(v);
+
+  ipcMain.handle('identity:status', () => identity.status());
+  ipcMain.handle('identity:login', async (_e, provider: unknown) => {
+    if (!isProvider(provider)) return { ok: false as const, error: 'unknown identity provider' };
+    try {
+      return { ok: true as const, status: await identity.login(provider) };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle('identity:sign-out', (_e, provider: unknown) =>
+    isProvider(provider) ? identity.signOut(provider) : identity.status(),
+  );
+  ipcMain.handle('identity:mcp-list', () => identity.mcpList());
+  ipcMain.handle('identity:mcp-set', (_e, name: unknown, secret: unknown) => {
+    if (typeof name !== 'string' || !name.trim() || typeof secret !== 'string' || !secret) {
+      return identity.mcpList();
+    }
+    return identity.setMcpSecret(name.trim(), secret);
+  });
+  ipcMain.handle('identity:mcp-clear', (_e, name: unknown) =>
+    typeof name === 'string' && name ? identity.clearMcpSecret(name) : identity.mcpList(),
+  );
 
   // Board overview (DAT-231): the dev's tickets and what's free to pick up,
   // across every engagement they can see, matched by roster email → name.
@@ -256,9 +285,17 @@ void app.whenReady().then(async () => {
     baseUrl: cfg.consoleUrl,
     getToken: (o) => creds.getToken(o),
   });
-  pool = new AgentPool(cfg, client, (instanceId: string, ev: RunnerEvent) => {
-    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('agents:event', { instanceId, ev });
+  identity = new IdentityBroker((status: ProviderStatus) => {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('identity:event', status);
   });
+  pool = new AgentPool(
+    cfg,
+    client,
+    (instanceId: string, ev: RunnerEvent) => {
+      for (const w of BrowserWindow.getAllWindows()) w.webContents.send('agents:event', { instanceId, ev });
+    },
+    identity,
+  );
   terminals = new TerminalHost(
     cfg,
     // Default cwd for a bare "+ terminal": whichever agent instance has a

@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import type { ConsoleClient } from '../../../shared/api-client';
 import { getHarness } from '../../../shared/harnesses';
 import { saveAgentsConfig, type DesktopConfig } from './config';
+import type { IdentityBroker } from './identity';
 import { RunnerHost, type RunnerEvent, type RunnerSnapshot } from './runner';
 
 const execFileP = promisify(execFile);
@@ -49,6 +50,8 @@ export class AgentPool {
     private readonly cfg: DesktopConfig,
     private readonly client: ConsoleClient,
     private readonly broadcast: (instanceId: string, ev: RunnerEvent) => void,
+    /** Dev identities (DAT-235), shared across all runner instances. */
+    private readonly identity: IdentityBroker | null = null,
   ) {}
 
   /** Detect binaries, build instances to match config, start auto-start kinds. */
@@ -103,8 +106,13 @@ export class AgentPool {
       kind,
       label: `${kind} ${n}`,
       agentName: `${this.cfg.agentName}-${id}`,
-      host: new RunnerHost(this.cfg, `${this.cfg.agentName}-${id}`, kind, this.client, (ev) =>
-        this.broadcast(id, ev),
+      host: new RunnerHost(
+        this.cfg,
+        `${this.cfg.agentName}-${id}`,
+        kind,
+        this.client,
+        (ev) => this.broadcast(id, ev),
+        this.identity,
       ),
     };
     return inst;

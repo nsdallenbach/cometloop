@@ -10,6 +10,20 @@ interface EngagementRow {
 
 type AuthMode = 'dev-token' | 'oauth' | 'cli' | 'signed-out';
 
+type IdentityProvider = 'github' | 'azure' | 'ado';
+
+interface IdentityStatusRow {
+  provider: IdentityProvider;
+  state: 'signed-in' | 'signed-out' | 'pending';
+  account: string | null;
+  prompt?: { userCode: string; verificationUri: string };
+}
+
+interface McpAuthRow {
+  name: string;
+  hasSecret: boolean;
+}
+
 interface AgentTaskRow {
   id: number;
   ticket_key: string;
@@ -53,6 +67,15 @@ interface DesktopBridge {
   authStatus: () => Promise<{ mode: AuthMode; host: string }>;
   authLogin: () => Promise<{ ok: true; mode: AuthMode } | { ok: false; error: string }>;
   authSignOut: () => Promise<{ mode: AuthMode }>;
+  identityStatus: () => Promise<IdentityStatusRow[]>;
+  identityLogin: (
+    provider: IdentityProvider,
+  ) => Promise<{ ok: true; status: IdentityStatusRow } | { ok: false; error: string }>;
+  identitySignOut: (provider: IdentityProvider) => Promise<IdentityStatusRow[]>;
+  identityMcpList: () => Promise<McpAuthRow[]>;
+  identityMcpSet: (name: string, secret: string) => Promise<McpAuthRow[]>;
+  identityMcpClear: (name: string) => Promise<McpAuthRow[]>;
+  onIdentityEvent: (cb: (status: IdentityStatusRow) => void) => () => void;
   windowControl: (action: 'minimize' | 'maximize' | 'close') => void;
   boardOverview: () => Promise<
     | { ok: true; myName: string; email: string; mine: BoardTicketRow[]; available: BoardTicketRow[] }

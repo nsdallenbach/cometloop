@@ -61,6 +61,29 @@ a green deploy moves the ticket to Done, a red one posts the ⚠ feed
 warning — and the web app's Deploys tab renders a READ-ONLY mirror from
 those events only. No path from the web app into anyone's laptop.
 
+## Identity broker (DAT-235)
+
+The **Identity** page holds every identity the machine works with, phase B:
+
+- **Databricks** — native browser OAuth (DAT-228), unchanged.
+- **GitHub / Azure / Azure DevOps** — device-code sign-ins with login state
+  per provider. Each flow reuses a registered public client (gh's and az's,
+  the same precedent as `databricks-cli` for Databricks), opens the browser
+  on the verification page and shows the user code in-app. Tokens land
+  encrypted via `safeStorage` (DPAPI/Keychain/libsecret) — never plaintext
+  files; Microsoft tokens renew silently off the stored refresh token.
+- **MCP server auth** — named secrets for MCP servers, stored the same way
+  and handed to harness runs as `MCP_AUTH_<NAME>` env, never written into
+  the workdir.
+
+Runner credential selection: work repos keep cloning/pushing with the
+console-vended GitHub App token (`GIT_TOKEN`); client-owned repos run as
+the dev — ADO via an `Authorization: Bearer` header, GitHub (when the App
+can't vend) via an inline credential helper — both injected through
+env-only git config (`GIT_CONFIG_*`), so the dev credential reaches every
+git invocation of the run without ever touching disk. Local git
+credentials stay the last-resort fallback.
+
 ## The embedded runner
 
 **My Tickets** polls the queue as you (server-scoped: shared pool + tasks
@@ -77,7 +100,7 @@ image/library installs) and service-mode harnesses.
 ## Layout
 
 ```
-src/main/       config.ts (zod schema) · credentials.ts (token manager) · index.ts (window + IPC)
+src/main/       config.ts (zod schema) · credentials.ts (Databricks tokens) · identity.ts (gh/az/ADO + MCP secrets) · index.ts (window + IPC)
 src/preload/    contextBridge surface (typed in renderer env.d.ts)
 src/renderer/   React shell: title bar, nav, views (inline styles + shared/design tokens)
 ```
