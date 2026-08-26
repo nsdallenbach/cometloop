@@ -27,6 +27,21 @@ const bridge = {
     ipcRenderer.on('agents:event', listener);
     return () => ipcRenderer.removeListener('agents:event', listener);
   },
+  // Interactive terminal pane (DAT-240). The renderer references tasks by
+  // id + key — path resolution stays in the main process.
+  terminalCreate: (opts?: { taskId?: number; ticketKey?: string }) =>
+    ipcRenderer.invoke('terminal:create', opts),
+  terminalList: () => ipcRenderer.invoke('terminal:list'),
+  terminalAttach: (id: number) => ipcRenderer.invoke('terminal:attach', id),
+  terminalDispose: (id: number) => ipcRenderer.invoke('terminal:dispose', id),
+  terminalInput: (id: number, data: string) => ipcRenderer.send('terminal:input', id, data),
+  terminalResize: (id: number, cols: number, rows: number) =>
+    ipcRenderer.send('terminal:resize', id, cols, rows),
+  onTerminalEvent: (cb: (ev: unknown) => void) => {
+    const listener = (_e: unknown, ev: unknown) => cb(ev);
+    ipcRenderer.on('terminal:event', listener);
+    return () => ipcRenderer.removeListener('terminal:event', listener);
+  },
 };
 
 export type DesktopBridge = typeof bridge;

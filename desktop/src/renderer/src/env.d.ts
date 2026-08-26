@@ -67,7 +67,35 @@ interface DesktopBridge {
   agentsRunTicket: (ticketKey: string) => Promise<{ ok: boolean; error?: string }>;
   agentsRelease: (taskId: number) => Promise<{ ok: boolean; error?: string }>;
   onAgentsEvent: (cb: (payload: { instanceId: string; ev: RunnerEvent }) => void) => () => void;
+  terminalCreate: (opts?: {
+    taskId?: number;
+    ticketKey?: string;
+  }) => Promise<{ ok: true; info: TerminalInfo } | { ok: false; error: string }>;
+  terminalList: () => Promise<TerminalInfo[]>;
+  terminalAttach: (
+    id: number,
+  ) => Promise<
+    { ok: true; info: TerminalInfo; buffer: string; lastSeq: number } | { ok: false; error: string }
+  >;
+  terminalDispose: (id: number) => Promise<{ ok: boolean }>;
+  terminalInput: (id: number, data: string) => void;
+  terminalResize: (id: number, cols: number, rows: number) => void;
+  onTerminalEvent: (cb: (ev: TerminalEvent) => void) => () => void;
 }
+
+interface TerminalInfo {
+  id: number;
+  title: string;
+  cwd: string;
+  live: boolean;
+  exitCode: number | null;
+}
+
+type TerminalEvent =
+  | { kind: 'data'; id: number; seq: number; data: string }
+  | { kind: 'exit'; id: number; exitCode: number }
+  | { kind: 'opened'; id: number }
+  | { kind: 'closed'; id: number };
 
 type RunnerState = 'stopped' | 'waiting' | 'running' | 'completing';
 

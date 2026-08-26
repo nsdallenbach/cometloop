@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { TerminalPane, type TerminalOpenRequest } from './TerminalPane';
 
 // Console client conventions: inline styles + theme tokens + mono() — see
 // docs/development-standards.md "Client code". mono() mirrors client/src/util.ts.
@@ -262,6 +263,14 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
   const [tab, setTab] = useState<string | null>(null);
   const [work, setWork] = useState<{ queued: AgentTaskRow[]; active: AgentTaskRow[] } | null>(null);
   const [runError, setRunError] = useState('');
+  // Interactive terminal (DAT-240): pane docked at the bottom of the page;
+  // sessions live in the main process, so hiding the pane kills nothing.
+  const [termOpen, setTermOpen] = useState(false);
+  const [termReq, setTermReq] = useState<TerminalOpenRequest | null>(null);
+  const openShell = (taskId: number, ticketKey: string) => {
+    setTermReq({ taskId, ticketKey, nonce: Date.now() });
+    setTermOpen(true);
+  };
 
   const apply = (s: AgentsState) => {
     setAgents(s);
@@ -401,6 +410,7 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
             accent="var(--ok)"
             hideWhenEmpty
             liveTaskIds={liveIds}
+            onShell={openShell}
             onRelease={async (taskId) => {
               const res = await window.desktopBridge.agentsRelease(taskId);
               if (!res.ok) setRunError(res.error ?? 'Release failed.');
@@ -480,9 +490,16 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
                     ✕ Kill run
                   </button>
                 )}
+                <button
+                  className="no-drag"
+                  onClick={() => setTermOpen((o) => !o)}
+                  title="Toggle the terminal pane (sessions keep running when hidden)"
+                  style={btnStyle(termOpen ? 'var(--tx)' : 'var(--tx2)')}
+                >
+                  ⌨ Terminal
+                </button>
               </div>
 
-              {/* DAT-240: terminal pane mounts here (per-instance, below the feed toggle). */}
               <div
                 style={{
                   flex: 1,
@@ -517,6 +534,15 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
           )}
         </>
       )}
+
+      {/* DAT-240: interactive terminal, docked at the bottom of the Agents
+          page. Sessions live in the main process — hiding kills nothing. */}
+      <TerminalPane
+        current={selected?.current ?? null}
+        openRequest={termReq}
+        open={termOpen}
+        onToggle={setTermOpen}
+      />
     </div>
   );
 }
@@ -555,6 +581,7 @@ function TaskSection({
   hideWhenEmpty,
   liveTaskIds,
   onRelease,
+  onShell,
 }: {
   title: string;
   empty: string;
@@ -565,6 +592,8 @@ function TaskSection({
   /** Tasks executing in live processes; any other active row is an orphan (DAT-234). */
   liveTaskIds?: Set<number | null | undefined>;
   onRelease?: (taskId: number) => void;
+  /** Open a shell in this task's workdir (DAT-240). */
+  onShell?: (taskId: number, ticketKey: string) => void;
 }) {
   if (tasks.length === 0 && hideWhenEmpty) return null;
   const isOrphan = (t: AgentTaskRow): boolean =>
@@ -595,6 +624,25 @@ function TaskSection({
                 <span style={{ marginLeft: 'auto', ...mono(500, 9), color: accent, letterSpacing: '.06em' }}>
                   {t.state.toUpperCase()}
                 </span>
+                {onShell && ['claimed', 'working'].includes(t.state) && (
+                  <button
+                    className="no-drag"
+                    title="Open a shell in this task's working directory"
+                    onClick={() => onShell(t.id, t.ticket_key)}
+                    style={{
+                      border: '1px solid var(--line2)',
+                      background: 'transparent',
+                      color: 'var(--tx2)',
+                      borderRadius: 4,
+                      padding: '2px 8px',
+                      fontSize: 11,
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    ⌨
+                  </button>
+                )}
                 {onRun && t.state === 'queued' && (
                   <button
                     className="no-drag hv-lift"
