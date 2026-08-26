@@ -44,6 +44,55 @@ export function mentionedEmails(body: string): string[] {
   return [...new Set([...body.matchAll(/@([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/gi)].map((m) => normalize(m[1])))];
 }
 
+// ---------- email digest ----------
+
+const txt = (v: unknown): string => (typeof v === 'string' ? v : '');
+
+/** Human labels for the digest's sections; unknown types fall into 'Updates'. */
+const DIGEST_SECTIONS: [type: string, label: string][] = [
+  ['stale_nudge', 'Stale tickets — needs a move'],
+  ['assignment', 'Assigned to you'],
+  ['agent_review', 'Ready for sign-off'],
+  ['mention', 'Mentions'],
+  ['comment', 'Comments'],
+];
+
+export interface EmailDigest {
+  subject: string;
+  /** Plain-text body — exactly what the mailer sends. */
+  text: string;
+  count: number;
+}
+
+/**
+ * Render one recipient's notification rows (newest first) into the email
+ * digest. Every notification type is included — a stale-ticket nudge lands in
+ * the digest the same way it lands in the bell — grouped into sections with
+ * nudges on top. Returns null when the window holds nothing: no email beats
+ * an empty one.
+ */
+export function renderEmailDigest(rows: Record<string, unknown>[], windowLabel: string): EmailDigest | null {
+  if (rows.length === 0) return null;
+  const line = (row: Record<string, unknown>): string => {
+    const ticket = txt(row.ticket_key);
+    return `- ${ticket ? `[${ticket}] ` : ''}${txt(row.title)}\n  ${txt(row.message).replace(/\s+/g, ' ').slice(0, 200)}`;
+  };
+  const known = new Set(DIGEST_SECTIONS.map(([type]) => type));
+  const sections: string[] = [];
+  for (const [type, label] of DIGEST_SECTIONS) {
+    const items = rows.filter((r) => txt(r.type) === type);
+    if (items.length > 0) sections.push(`## ${label} (${items.length})\n\n${items.map(line).join('\n')}`);
+  }
+  const rest = rows.filter((r) => !known.has(txt(r.type)));
+  if (rest.length > 0) sections.push(`## Updates (${rest.length})\n\n${rest.map(line).join('\n')}`);
+  const nudges = rows.filter((r) => txt(r.type) === 'stale_nudge').length;
+  return {
+    subject: `Delivery Console digest — ${rows.length} update${rows.length === 1 ? '' : 's'}${nudges > 0 ? `, ${nudges} stale ticket${nudges === 1 ? '' : 's'}` : ''}`,
+    text: `Your Delivery Console updates from the ${windowLabel}.\n\n${sections.join('\n\n')}\n`,
+    count: rows.length,
+  };
+}
+
 export function setupNotificationRoutes(app: express.Application, q: Query): void {
   app.get('/api/notifications', async (req, res) => {
     try {
@@ -92,6 +141,32 @@ export function setupNotificationRoutes(app: express.Application, q: Query): voi
     } catch (err) {
       console.error('mark all notifications read failed:', err);
       res.status(500).json({ error: 'Failed to mark notifications read' });
+    }
+  });
+
+  /**
+   * The recipient's rendered email digest for the trailing window (default
+   * 24h, capped at a week). This JSON — subject + plain-text body — is the
+   * digest a mailer sends; serving it here keeps the rendering versioned with
+   * the app and lets the UI preview exactly what would go out.
+   */
+  app.get('/api/notifications/digest', async (req, res) => {
+    try {
+      const identity = await resolveIdentity(req);
+      const hoursRaw = Number(req.query.hours ?? 24);
+      const hours = Number.isFinite(hoursRaw) ? Math.min(168, Math.max(1, Math.round(hoursRaw))) : 24;
+      const since = new Date(Date.now() - hours * 3_600_000).toISOString();
+      const { rows } = await q(
+        `SELECT * FROM app.notifications
+         WHERE LOWER(recipient_email) = LOWER($1) AND created_at >= $2
+         ORDER BY created_at DESC, id DESC LIMIT 500`,
+        [identity.email, since]
+      );
+      const digest = renderEmailDigest(rows, hours === 24 ? 'last 24 hours' : `last ${hours} hours`);
+      res.json({ hours, digest });
+    } catch (err) {
+      console.error('notification digest failed:', err);
+      res.status(500).json({ error: 'Failed to build the notification digest' });
     }
   });
 

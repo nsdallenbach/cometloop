@@ -603,6 +603,18 @@ export interface ProjectRunnerConfig {
   maxLibraries: number;
 }
 
+/** Per-engagement stale-ticket nudge threshold (DAT-107), in business days. */
+export interface NudgeSettings {
+  quietDays: number;
+  /** False until a lead saves for the first time — the engagement is on the default. */
+  configured: boolean;
+  defaultQuietDays: number;
+  minQuietDays: number;
+  maxQuietDays: number;
+  updatedBy: string;
+  updatedAt: string | null;
+}
+
 export interface TicketDev {
   prs: RepoPr[];
   commits: RepoCommit[];

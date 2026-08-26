@@ -23,6 +23,7 @@ import type {
   FleetStatus,
   Me,
   Notification,
+  NudgeSettings,
   ParsedPlan,
   Phase,
   PlanningReviewFlow,
@@ -928,6 +929,16 @@ export const api = {
    */
   saveRunnerConfig(engId: string, baseImage: string, libraries: string[]): Promise<ProjectRunnerConfig> {
     return http(`/api/engagements/${engId}/runner-config`, { method: 'PUT', ...json({ baseImage, libraries }) });
+  },
+
+  // ---- stale-ticket nudges (DAT-107) ----
+
+  nudgeSettings(engId: string): Promise<NudgeSettings> {
+    return http(`/api/engagements/${engId}/nudge-settings`);
+  },
+
+  saveNudgeSettings(engId: string, quietDays: number): Promise<NudgeSettings> {
+    return http(`/api/engagements/${engId}/nudge-settings`, { method: 'PUT', ...json({ quietDays }) });
   },
 };
 
