@@ -163,14 +163,42 @@ export function Workspace({
     const at = agentTaskByTicket.get(t.key);
     return at?.agent != null && at.agent !== '' && at.agent === t.assignee ? at.agent : null;
   };
+  // Board filters (DAT-233): assignee + tag, combinable; '' = no filter.
+  // Applied inside laneTickets/laneTasks so the drag engine, lane counts and
+  // render all agree on what's visible.
+  const [filterAssignee, setFilterAssignee] = useState('');
+  const [filterTag, setFilterTag] = useState('');
+  const filterActive = filterAssignee !== '' || filterTag !== '';
+  const matchesFilter = (t: Ticket): boolean =>
+    (filterAssignee === '' ||
+      (filterAssignee === '—' ? t.assignee === '' || t.assignee === '—' : t.assignee === filterAssignee)) &&
+    (filterTag === '' || t.tags.includes(filterTag));
+  const filterAssignees = useMemo(
+    () => [...new Set((detail?.tickets ?? []).map((t) => t.assignee).filter((a) => a && a !== '—'))].sort(),
+    [detail?.tickets],
+  );
+  const filterTags = useMemo(
+    () => [...new Set((detail?.tickets ?? []).flatMap((t) => t.tags))].sort(),
+    [detail?.tickets],
+  );
   // Deploy-to-Agent lane: running work on top (claim order), then the queue
   // in claim priority. Tickets shown here are hidden from the status lanes.
   const laneTasks = useMemo(() => {
-    const active = (detail?.agentTasks ?? []).filter((a) => ['queued', 'claimed', 'working'].includes(a.state));
+    const ticketByKey = new Map((detail?.tickets ?? []).map((t) => [t.key, t]));
+    const passes = (a: AgentTask): boolean => {
+      if (filterAssignee === '' && filterTag === '') return true;
+      const t = ticketByKey.get(a.ticketKey);
+      return t
+        ? ((filterAssignee === '' ||
+            (filterAssignee === '—' ? t.assignee === '' || t.assignee === '—' : t.assignee === filterAssignee)) &&
+            (filterTag === '' || t.tags.includes(filterTag)))
+        : true; // a task whose ticket isn't loaded stays visible
+    };
+    const active = (detail?.agentTasks ?? []).filter((a) => ['queued', 'claimed', 'working'].includes(a.state) && passes(a));
     const running = active.filter((a) => a.state !== 'queued').sort((a, b) => a.id - b.id);
     const queued = active.filter((a) => a.state === 'queued').sort((a, b) => b.priority - a.priority || a.id - b.id);
     return { running, queued };
-  }, [detail?.agentTasks]);
+  }, [detail?.agentTasks, detail?.tickets, filterAssignee, filterTag]);
   const agentLaneKeys = useMemo(
     () => new Set([...laneTasks.running, ...laneTasks.queued].map((a) => a.ticketKey)),
     [laneTasks],
@@ -191,7 +219,7 @@ export function Workspace({
    */
   const laneTickets = (k: TicketStatus): Ticket[] => {
     let col = (detail?.tickets ?? []).filter(
-      (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key),
+      (t) => (t.status === k || (k === 'backlog' && t.status === 'progress')) && !agentLaneKeys.has(t.key) && matchesFilter(t),
     );
     if (k === 'done') {
       const cutoff = now - 24 * 60 * 60 * 1000;
@@ -1237,6 +1265,62 @@ export function Workspace({
 
           {boardMode === 'kanban' && (
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 22px 20px' }}>
+              {/* Board filters (DAT-233): assignee + tag, combinable. */}
+              {(filterAssignees.length > 0 || filterTags.length > 0) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                  <span style={{ ...mono(500, 9.5), color: 'var(--tx3)', letterSpacing: '.1em' }}>FILTER</span>
+                  <select
+                    value={filterAssignee}
+                    onChange={(e) => setFilterAssignee(e.target.value)}
+                    style={{
+                      background: 'var(--bg2)',
+                      border: `1px solid ${filterAssignee ? 'var(--agent)' : 'var(--line2)'}`,
+                      borderRadius: 3,
+                      color: filterAssignee ? 'var(--agent)' : 'var(--tx2)',
+                      padding: '4px 8px',
+                      fontSize: 11.5,
+                    }}
+                  >
+                    <option value="">Everyone</option>
+                    <option value="—">Unassigned</option>
+                    {filterAssignees.map((a) => (
+                      <option key={a} value={a}>
+                        {a}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={filterTag}
+                    onChange={(e) => setFilterTag(e.target.value)}
+                    style={{
+                      background: 'var(--bg2)',
+                      border: `1px solid ${filterTag ? 'var(--agent)' : 'var(--line2)'}`,
+                      borderRadius: 3,
+                      color: filterTag ? 'var(--agent)' : 'var(--tx2)',
+                      padding: '4px 8px',
+                      fontSize: 11.5,
+                    }}
+                  >
+                    <option value="">Any tag</option>
+                    {filterTags.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                  {filterActive && (
+                    <button
+                      onClick={() => {
+                        setFilterAssignee('');
+                        setFilterTag('');
+                      }}
+                      style={{ border: 'none', background: 'none', color: 'var(--acc)', ...mono(500, 10), cursor: 'pointer', letterSpacing: '.06em', padding: 0 }}
+                    >
+                      ✕ CLEAR
+                    </button>
+                  )}
+                </div>
+              )}
               {tickets.filter((t) => t.status !== 'proposed' && t.status !== 'dismissed').length === 0 && (
                 <div style={{ border: '1px dashed var(--line2)', borderRadius: 4, background: 'var(--bg2)', padding: '16px 18px', marginBottom: 12, fontSize: 12.5, color: 'var(--tx2)' }}>
                   No tickets on the board yet{proposedTickets.length > 0 ? ' — accept proposed tickets above to seed it.' : '.'}
