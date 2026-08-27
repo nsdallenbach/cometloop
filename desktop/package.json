@@ -4,6 +4,9 @@
   "private": true,
   "description": "Delivery Console desktop client — local runner host with the console's look and feel",
   "main": "out/main/index.js",
+  "overrides": {
+    "node-gyp": "^11.2.0"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
