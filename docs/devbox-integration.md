@@ -129,7 +129,7 @@ the `action` that was denied. Treat it as a configuration decision, not a
 transient error — back off rather than retrying, or the still-queued work will
 spin the loop (`runner.mjs` pauses `DENIED_COOLDOWN_MS`, default 2 minutes).
 `git-credential` and the coordination endpoints answer 403 the same way; a lead
-widens the scope from the agent's panel on `/agents`. Reporting progress and
+widens the scope from the agent's panel on the Agent Map (`/agent-map`). Reporting progress and
 completing a task the runner already holds are never blocked, so an agent
 disabled mid-run can always close out cleanly.
 

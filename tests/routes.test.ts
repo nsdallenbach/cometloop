@@ -10,6 +10,13 @@ describe('parsePath', () => {
     expect(parsePath('/tickets/DAT-122')).toEqual({ name: 'ticket', ticketKey: 'DAT-122' });
     expect(parsePath('/setup')).toEqual({ name: 'setup' });
     expect(parsePath('/admin')).toEqual({ name: 'admin' });
+    expect(parsePath('/agent-map')).toEqual({ name: 'agent-map' });
+  });
+
+  it('keeps the pre-tab /agents links pointing at the Agent Map (DAT-267)', () => {
+    expect(parsePath('/agents')).toEqual({ name: 'redirect', to: '/agent-map' });
+    expect(parsePath('/agents/')).toEqual({ name: 'redirect', to: '/agent-map' });
+    expect(parsePath('/agents/anything')).toEqual({ name: 'redirect', to: '/agent-map' });
   });
 
   it('redirects the root and unknown paths to the portfolio', () => {
@@ -36,5 +43,9 @@ describe('parsePath', () => {
     expect(parsePath(paths.project('exec-console', 'feed'))).toEqual({ name: 'workspace', engId: 'exec-console', tab: 'feed' });
     expect(parsePath(paths.project('exec-console'))).toEqual({ name: 'workspace', engId: 'exec-console', tab: 'board' });
     expect(parsePath(paths.ticket('DAT-122'))).toEqual({ name: 'ticket', ticketKey: 'DAT-122' });
+    expect(parsePath(paths.agentMap)).toEqual({ name: 'agent-map' });
+    expect(parsePath(paths.tickets)).toEqual({ name: 'tickets' });
+    expect(parsePath(paths.portfolio)).toEqual({ name: 'portfolio' });
+    expect(parsePath(paths.admin)).toEqual({ name: 'admin' });
   });
 });

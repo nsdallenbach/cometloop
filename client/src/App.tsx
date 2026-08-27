@@ -235,6 +235,50 @@ export default function App() {
     [isAdmin, me],
   );
 
+  /**
+   * Primary navigation (DAT-267). Each top-level screen is a tab with its own
+   * URL, so a tab is deep-linkable and the browser's back button behaves.
+   * Projects stays lit for everything that hangs off a project — the workspace,
+   * a ticket drawer, the setup flow — so the bar never reads as "nowhere".
+   */
+  const navTabs = useMemo(
+    () => [
+      {
+        key: 'projects',
+        label: 'Projects',
+        title: 'All engagements',
+        path: paths.portfolio,
+        active: ['portfolio', 'workspace', 'ticket', 'setup'].includes(screen.name),
+      },
+      {
+        key: 'tickets',
+        label: 'Tickets',
+        title: 'All tickets across projects',
+        path: paths.tickets,
+        active: screen.name === 'tickets',
+      },
+      {
+        key: 'agent-map',
+        label: 'Agent Map',
+        title: 'Agent architecture map — projects and the agents attached to them',
+        path: paths.agentMap,
+        active: screen.name === 'agent-map',
+      },
+      ...(isAdmin
+        ? [
+            {
+              key: 'admin',
+              label: 'Admin',
+              title: 'Staffing & project lifecycle',
+              path: paths.admin,
+              active: screen.name === 'admin',
+            },
+          ]
+        : []),
+    ],
+    [screen.name, isAdmin],
+  );
+
   // ---- ticket mutations shared by board + drawer ----
   // Optimistic with rollback: the previous field values are restored on failure.
   const setTicket = useCallback((key: string, patch: { status?: TicketStatus; assignee?: string; tags?: string[] }) => {
@@ -340,7 +384,7 @@ export default function App() {
         hint: '',
         description: 'Projects and their agents as an architecture diagram',
         keywords: ['agents', 'map', 'runners', 'architecture', 'diagram', 'deploy'],
-        run: () => void navigate(paths.agents),
+        run: () => void navigate(paths.agentMap),
       },
       ...engagements.slice(0, 4).map((e) => ({
         kind: 'NAV',
@@ -441,6 +485,37 @@ export default function App() {
           <span style={{ ...mono(500, 12), letterSpacing: '.12em' }}>DATAVAIL</span>
           <span style={{ ...mono(400, 11), color: 'var(--tx3)', letterSpacing: '.1em' }}>[ DELIVERY CONSOLE ]</span>
         </div>
+        <nav aria-label="Primary" style={{ display: 'flex', alignSelf: 'stretch', gap: 2, marginLeft: 2 }}>
+          {navTabs.map((t) => (
+            <button
+              key={t.key}
+              className="hv-tx"
+              onClick={() => void navigate(t.path)}
+              title={t.title}
+              aria-current={t.active ? 'page' : undefined}
+              style={{
+                position: 'relative',
+                background: 'none',
+                border: 'none',
+                color: t.active ? 'var(--tx)' : 'var(--tx3)',
+                padding: '0 11px',
+                ...mono(500, 10.5),
+                letterSpacing: '.09em',
+                textTransform: 'uppercase',
+                cursor: 'pointer',
+              }}
+            >
+              {t.label}
+              {t.active && (
+                <motion.span
+                  layoutId="eec-nav-underline"
+                  transition={{ type: 'spring', stiffness: 550, damping: 42 }}
+                  style={{ position: 'absolute', left: 7, right: 7, bottom: 0, height: 2, background: 'var(--acc)' }}
+                />
+              )}
+            </button>
+          ))}
+        </nav>
         <div style={{ flex: 1 }} />
         <div
           className="hv-border"
@@ -516,59 +591,6 @@ export default function App() {
         >
           <span>◆</span> LEARN MORE
         </button>
-        <button
-          className="hv-tx2"
-          onClick={() => void navigate(paths.agents)}
-          title="Agent architecture map — projects and the agents attached to them"
-          style={{
-            ...mono(400, 10),
-            background: 'none',
-            border: `1px solid ${screen.name === 'agents' ? 'var(--tx3)' : 'var(--line2)'}`,
-            color: screen.name === 'agents' ? 'var(--tx2)' : 'var(--tx3)',
-            borderRadius: 3,
-            padding: '3px 7px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-          }}
-        >
-          AGENTS
-        </button>
-        <button
-          className="hv-tx2"
-          onClick={() => void navigate(paths.tickets)}
-          title="All tickets across projects"
-          style={{
-            ...mono(400, 10),
-            background: 'none',
-            border: `1px solid ${screen.name === 'tickets' ? 'var(--tx3)' : 'var(--line2)'}`,
-            color: screen.name === 'tickets' ? 'var(--tx2)' : 'var(--tx3)',
-            borderRadius: 3,
-            padding: '3px 7px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-          }}
-        >
-          TICKETS
-        </button>
-        {isAdmin && (
-        <button
-          className="hv-tx2"
-          onClick={() => void navigate(paths.admin)}
-          title="Staffing & project lifecycle"
-          style={{
-            ...mono(400, 10),
-            background: 'none',
-            border: `1px solid ${screen.name === 'admin' ? 'var(--tx3)' : 'var(--line2)'}`,
-            color: screen.name === 'admin' ? 'var(--tx2)' : 'var(--tx3)',
-            borderRadius: 3,
-            padding: '3px 7px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-          }}
-        >
-          ADMIN
-        </button>
-        )}
         <NotificationCenter onOpenTicket={openTicket} />
         <button
           onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
@@ -643,7 +665,7 @@ export default function App() {
 
       {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
 
-      {screen.name === 'agents' && <AgentMap canLead={canLead} toast={showToast} />}
+      {screen.name === 'agent-map' && <AgentMap canLead={canLead} toast={showToast} />}
 
       {screen.name === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
       {screen.name === 'admin' && !isAdmin && (

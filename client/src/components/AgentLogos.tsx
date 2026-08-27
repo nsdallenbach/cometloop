@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 
 /**
- * Harness and model-provider logo marks for the /agents architecture map and
+ * Harness and model-provider logo marks for the /agent-map architecture map and
  * for runner avatars (RunnerLogo.tsx resolves a runner id against HARNESSES).
  * Resolution order per node: harness logo → model-provider logo → letter chip
  * (the chip is rendered by the caller when both lookups miss). All marks are

@@ -228,7 +228,7 @@ export interface AgentTask {
   createdAt: string;
 }
 
-/** Node kinds on the /agents map. 'foundry' is still a placeholder. */
+/** Node kinds on the /agent-map Agent Map. 'foundry' is still a placeholder. */
 export type ProjectAgentType = 'runner' | 'serving-endpoint' | 'agentbricks' | 'foundry';
 
 /** What an agent is for. 'pr-reviewer' is wired to the PR review gate. */
@@ -256,7 +256,7 @@ export interface AgentSecurityCatalog {
   presets: Record<Exclude<AgentAccessLevel, 'custom'>, AgentAction[]>;
 }
 
-/** One agent node on the /agents architecture map. */
+/** One agent node on the /agent-map architecture map. */
 export interface ProjectAgent {
   id: string;
   /** project_agents.id for stored records; null for observed runners (not editable). */
