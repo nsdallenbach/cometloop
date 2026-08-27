@@ -13,6 +13,7 @@ import { DeployManager, type DeploysEvent } from './deploys';
 import { IdentityBroker, IDENTITY_PROVIDERS, type IdentityProvider, type ProviderStatus } from './identity';
 import type { RunnerEvent } from './runner';
 import { TerminalHost, taskWorkdir, type TerminalEvent } from './terminal';
+import { initAutoUpdate } from './updater';
 
 let cfg: DesktopConfig;
 let creds: CredentialManager;
@@ -336,6 +337,8 @@ void app.whenReady().then(async () => {
 
   registerIpc();
   createWindow();
+  // Silent updates (DAT-237): staged in the background, applied on quit.
+  initAutoUpdate(cfg);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

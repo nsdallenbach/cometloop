@@ -12,13 +12,22 @@ nsis:
   oneClick: true
   perMachine: false
 mac:
-  target: dmg
+  target:
+    - dmg
+    # electron-updater's macOS feed requires a zip alongside the dmg; built
+    # now so the feed is complete the day signing lands.
+    - zip
 linux:
   target: AppImage
 # Code signing intentionally unconfigured in phase 1 — see
 # docs/local-client-architecture.md (procurement item; blocks silent
-# auto-update, not local installs).
+# auto-update on macOS and SmartScreen-clean installs on Windows, not local
+# installs). When certs land, wire CSC_LINK / CSC_KEY_PASSWORD into
+# .github/workflows/desktop-release.yml — no change needed here.
 publish:
   provider: github
   owner: datavail-solutions
   repo: engagement-console
+  # Publish as a real release, not a draft: electron-updater only sees
+  # published releases, and the workflow already gates on an explicit tag push.
+  releaseType: release
