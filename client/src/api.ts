@@ -174,6 +174,18 @@ function mapSource(r: Row): ContextSource {
   };
 }
 
+/** Trailing-24h runner token totals off the wire (DAT-266); null when absent. */
+function mapTokens24h(v: unknown): { input: number; output: number; cacheRead: number; costUsd: number | null } | null {
+  if (v == null || typeof v !== 'object') return null;
+  const r = v as Row;
+  return {
+    input: n(r.input),
+    output: n(r.output),
+    cacheRead: n(r.cacheRead),
+    costUsd: r.costUsd == null ? null : n(r.costUsd),
+  };
+}
+
 function mapAgentTask(r: Row): AgentTask {
   return {
     id: n(r.id),
@@ -708,6 +720,7 @@ export const api = {
         source: s(r.source) === 'observed' ? 'observed' : 'configured',
         tasks: n(r.tasks),
         activeTasks: n(r.activeTasks),
+        tokens24h: mapTokens24h(r.tokens24h),
         lastSeen: r.lastSeen == null ? null : s(r.lastSeen),
         createdAt: r.createdAt == null ? null : s(r.createdAt),
         security: mapAgentSecurity(r.security),

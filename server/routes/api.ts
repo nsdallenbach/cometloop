@@ -12,6 +12,7 @@ import { RUNNER_LOAD_BALANCING_SCHEMA_SQL, setupRunnerLoadBalancingRoutes } from
 import { projectAccessGuard } from './project-access';
 import { COORDINATION_SCHEMA_SQL, setupCoordinationRoutes } from './coordination';
 import { DEPLOY_EVENTS_SCHEMA_SQL, setupDeployRoutes } from './deploys';
+import { TOKEN_USAGE_SCHEMA_SQL, setupTokenUsageRoutes } from './token-usage';
 import { TOOL_CALL_SCHEMA_SQL, setupToolCallRoutes } from './tool-calls';
 import { setupPrConflictRoutes } from './pr-conflicts';
 import { PR_REVIEW_SCHEMA_SQL, setupPrReviewRoutes } from './pr-review';
@@ -219,6 +220,7 @@ async function initSchema(appkit: AppKitServices) {
     ...TOOL_CALL_SCHEMA_SQL,
     ...COORDINATION_SCHEMA_SQL,
     ...DEPLOY_EVENTS_SCHEMA_SQL,
+    ...TOKEN_USAGE_SCHEMA_SQL,
     ...STANDARDS_SCHEMA_SQL,
     ...TICKET_EVENTS_SCHEMA_SQL,
     ...TICKET_ACTIVITY_SCHEMA_SQL,
@@ -2176,6 +2178,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupToolCallRoutes(app, q);
     setupCoordinationRoutes(app, q);
     setupDeployRoutes(app, q);
+    setupTokenUsageRoutes(app, q);
     setupPrConflictRoutes(app, q);
     setupTicketReviewRoutes(app, q, requireLead);
     setupPrReviewRoutes(app, q, requireLead);

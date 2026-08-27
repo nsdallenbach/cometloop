@@ -281,6 +281,8 @@ export interface ProjectAgent {
   source: 'configured' | 'observed';
   tasks: number;
   activeTasks: number;
+  /** Trailing-24h token consumption for observed runners (DAT-266); null when unreported. */
+  tokens24h: { input: number; output: number; cacheRead: number; costUsd: number | null } | null;
   lastSeen: string | null;
   createdAt: string | null;
   /** Per-agent security controls, editable by leads from the agent's panel. */

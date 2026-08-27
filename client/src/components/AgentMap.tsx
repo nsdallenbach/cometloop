@@ -82,6 +82,13 @@ function spokeXY(i: number, count: number, g: ClusterGeom): { x: number; y: numb
   return { x: g.cx + g.rx * r * Math.cos(a), y: g.cy + g.ry * r * Math.sin(a) };
 }
 
+/** Compact token counts for node details: 1234 → 1.2k, 2500000 → 2.5M. */
+function fmtTokens(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+  return String(v);
+}
+
 function relTime(iso: string | null): string {
   if (!iso) return '';
   const mins = Math.max(0, Math.round((Date.now() - +new Date(iso)) / 60000));
@@ -936,6 +943,14 @@ function AgentDetailModal({
           : 'Stored record · live status synced',
     ],
     ['TASKS WORKED', agent.source === 'observed' ? `${agent.tasks} total · ${agent.activeTasks} active now` : '—'],
+    // Live token consumption (DAT-266): trailing-24h totals streamed from the
+    // harnesses through run_token_usage.
+    [
+      'TOKENS (24H)',
+      agent.tokens24h
+        ? `${fmtTokens(agent.tokens24h.input)} in · ${fmtTokens(agent.tokens24h.output)} out · ${fmtTokens(agent.tokens24h.cacheRead)} cached${agent.tokens24h.costUsd != null ? ` · $${agent.tokens24h.costUsd.toFixed(2)}` : ''}`
+        : '—',
+    ],
     ['LAST SEEN', agent.lastSeen ? relTime(agent.lastSeen) : '—'],
     ['FIRST SEEN', agent.createdAt ? relTime(agent.createdAt) : '—'],
   ];
