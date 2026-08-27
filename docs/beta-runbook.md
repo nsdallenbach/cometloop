@@ -173,6 +173,10 @@ scenario 8 needs a merged sample.
 
 ### Scenario 3 — routed isolation (with the other tester, pairs with DAT-252)
 
+The full multi-identity drill procedure lives in
+[docs/beta-provisioning.md](./beta-provisioning.md) (DAT-252) — the checks
+below are the pass/fail summary.
+
 - [ ] Tester A routes a seeded sample to **themselves** (assignee = A) and
       does NOT run it
 - [ ] Tester B's Agents tab shows it in neither **ROUTED TO YOU** nor
