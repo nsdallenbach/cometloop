@@ -67,7 +67,10 @@ release assets anonymously, so if this repo is private the update check 404s
 (installs from a downloaded installer still work). Options, in preference
 order: publish desktop releases to a small public releases repo, or front
 the feed with a generic HTTPS channel the console serves. Decide before the
-first broad rollout.
+first broad rollout. **Beta stance (DAT-251):** testers install each release
+manually from the releases page — the failed check is logged and ignored, so
+it costs nothing; see [docs/beta-runbook.md](../docs/beta-runbook.md). The
+public-repo-vs-console-feed choice stays a post-beta decision.
 
 ## Agents (DAT-245)
 

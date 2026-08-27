@@ -1,6 +1,6 @@
 {
   "name": "delivery-console-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Delivery Console desktop client — local runner host with the console's look and feel",
   "main": "out/main/index.js",
