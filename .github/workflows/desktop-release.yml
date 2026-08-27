@@ -1,0 +1,77 @@
+name: Desktop release
+
+# DAT-237: matrix-build the desktop client on tag push and publish the
+# installers plus the electron-updater metadata feed (latest.yml /
+# latest-linux.yml / latest-mac.yml) to the GitHub Release for that tag.
+# Windows NSIS installer + portable exe are the primary artifacts; macOS dmg
+# and Linux AppImage come from the same electron-builder config.
+#
+# Cut a release with:
+#   1. bump "version" in desktop/package.json (the guard below enforces this)
+#   2. git tag v<version> && git push origin v<version>
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      # One platform failing must not cancel the others — a broken mac build
+      # should never block the primary Windows artifacts.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows (NSIS installer + portable exe)
+          - os: macos-latest
+            name: macOS (dmg)
+          - os: ubuntu-latest
+            name: Linux (AppImage)
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # electron-updater serves whatever version the feed advertises; a tag
+      # that disagrees with package.json would publish a mislabeled build.
+      - name: Check tag matches desktop/package.json version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG does not match desktop/package.json version $PKG" >&2
+            exit 1
+          fi
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Package and publish to GitHub Releases
+        run: npx electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Unsigned phase-1 builds (code-signing cert is a procurement item,
+          # tracked on DAT-237). When the Windows cert lands, add:
+          #   CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          #   CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          # and for macOS signing + notarization:
+          #   CSC_LINK / CSC_KEY_PASSWORD (Developer ID cert)
+          #   APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID
+          # Until then, don't let electron-builder hunt the mac keychain for
+          # an identity that isn't there.
+          CSC_IDENTITY_AUTO_DISCOVERY: false

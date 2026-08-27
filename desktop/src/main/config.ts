@@ -28,6 +28,8 @@ const ConfigSchema = z.object({
   maxRunMinutes: z.number().int().min(0).default(180),
   /** Path to the delivery-console MCP server to wire into workdirs (optional). */
   mcpServer: z.string().optional(),
+  /** Silent auto-update from GitHub Releases (DAT-237); disable to pin a build. */
+  autoUpdate: z.boolean().default(true),
   /**
    * Local deploy command override (DAT-236). Unset, the deploy executor
    * auto-detects: Databricks bundle repos run `databricks bundle deploy` +
@@ -84,6 +86,7 @@ export function loadConfig(): DesktopConfig {
   if (process.env.MAX_RUN_MINUTES) envValues.maxRunMinutes = Number(process.env.MAX_RUN_MINUTES);
   if (process.env.MCP_SERVER) envValues.mcpServer = process.env.MCP_SERVER;
   if (process.env.DEPLOY_COMMAND) envValues.deployCommand = process.env.DEPLOY_COMMAND;
+  if (process.env.AUTO_UPDATE) envValues.autoUpdate = process.env.AUTO_UPDATE !== '0';
 
   const parsed = ConfigSchema.parse({ ...fileValues, ...envValues });
 

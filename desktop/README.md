@@ -36,6 +36,39 @@ npm run build        # electron-vite production build
 npm run dist:win     # NSIS installer + portable exe into release/
 ```
 
+## Releases & auto-update (DAT-237)
+
+`.github/workflows/desktop-release.yml` matrix-builds on tag push and
+publishes to GitHub Releases: Windows NSIS installer + portable exe
+(primary), macOS dmg (+ zip for the update feed), Linux AppImage. To cut a
+release:
+
+```bash
+# 1. bump "version" in desktop/package.json (CI fails the build if the tag disagrees)
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Installed builds update themselves silently via `electron-updater`
+(`src/main/updater.ts`): hourly check against the release feed, background
+download, install on the next app quit. No prompts. Opt out with
+`"autoUpdate": false` in config.json (or `AUTO_UPDATE=0`) to pin a build.
+Not self-updating by design: dev runs, the portable exe (nothing installed
+to replace), and macOS until builds are signed (Squirrel.Mac refuses
+unsigned updates).
+
+**Code signing** is the long-lead item (procurement, tracked on DAT-237):
+unsigned builds install fine but Windows shows the SmartScreen warning, and
+macOS auto-update stays off. When certs arrive, add the `CSC_*` secrets
+named in the workflow — no config changes needed. MSIX/winget can follow if
+IT wants managed rollout.
+
+**Private-repo caveat:** `electron-updater`'s GitHub provider downloads
+release assets anonymously, so if this repo is private the update check 404s
+(installs from a downloaded installer still work). Options, in preference
+order: publish desktop releases to a small public releases repo, or front
+the feed with a generic HTTPS channel the console serves. Decide before the
+first broad rollout.
+
 ## Agents (DAT-245)
 
 The **Agents** page manages the coding agents on this machine: per agent
