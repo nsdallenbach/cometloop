@@ -19,7 +19,19 @@ export type RunnerEvent =
   | { kind: 'print'; text: string; ts: string }
   | { kind: 'tool'; name: string; label: string; ts: string }
   | { kind: 'note'; text: string; ts: string }
-  | { kind: 'error'; text: string; ts: string };
+  | { kind: 'error'; text: string; ts: string }
+  | { kind: 'usage'; input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean; ticketKey: string; ts: string };
+
+/** Running token totals for an instance (DAT-266); reset per run start. */
+export interface UsageTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreate: number;
+  costUsd: number | null;
+}
+
+const emptyUsage = (): UsageTotals => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0, costUsd: null });
 
 export type RunnerState = 'stopped' | 'waiting' | 'running' | 'completing';
 
@@ -28,6 +40,10 @@ export interface RunnerSnapshot {
   harness: string;
   current: { taskId: number; ticketKey: string; startedAt: string } | null;
   feed: RunnerEvent[];
+  /** Tokens for the run in flight (zeroed at claim). */
+  runUsage: UsageTotals;
+  /** Tokens since this instance started (across runs). */
+  sessionUsage: UsageTotals;
 }
 
 const FEED_LIMIT = 800;
@@ -79,8 +95,41 @@ export class RunnerHost {
     return this.state === 'waiting' || this.state === 'stopped';
   }
 
+  private runUsage: UsageTotals = emptyUsage();
+  private sessionUsage: UsageTotals = emptyUsage();
+  private usageStream: UsageStream | null = null;
+
   snapshot(): RunnerSnapshot {
-    return { state: this.state, harness: this.harnessName, current: this.current, feed: this.feed };
+    return {
+      state: this.state,
+      harness: this.harnessName,
+      current: this.current,
+      feed: this.feed,
+      runUsage: { ...this.runUsage },
+      sessionUsage: { ...this.sessionUsage },
+    };
+  }
+
+  /** Fold one harness usage sample into run/session totals (DAT-266). A final
+   *  sample REPLACES the run totals — the harness counted the whole run — and
+   *  the session total absorbs only the difference. */
+  private recordUsage(s: { input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean }): void {
+    const prev = { ...this.runUsage };
+    if (s.final) {
+      this.runUsage = { input: s.input, output: s.output, cacheRead: s.cacheRead, cacheCreate: s.cacheCreate, costUsd: s.costUsd ?? this.runUsage.costUsd };
+    } else {
+      this.runUsage.input += s.input;
+      this.runUsage.output += s.output;
+      this.runUsage.cacheRead += s.cacheRead;
+      this.runUsage.cacheCreate += s.cacheCreate;
+    }
+    this.sessionUsage.input += this.runUsage.input - prev.input;
+    this.sessionUsage.output += this.runUsage.output - prev.output;
+    this.sessionUsage.cacheRead += this.runUsage.cacheRead - prev.cacheRead;
+    this.sessionUsage.cacheCreate += this.runUsage.cacheCreate - prev.cacheCreate;
+    if (this.runUsage.costUsd != null) {
+      this.sessionUsage.costUsd = (this.sessionUsage.costUsd ?? 0) + (this.runUsage.costUsd - (prev.costUsd ?? 0));
+    }
   }
 
   /** Start the wait → claim loop (idempotent). */
@@ -294,6 +343,8 @@ export class RunnerHost {
 
     const prompt = pkg.prompt ?? fallbackPrompt(pkg);
     this.toolStream = new ToolCallStream(this.agentName, id, this.client, (t) => this.emit(t));
+    this.runUsage = emptyUsage();
+    this.usageStream = new UsageStream(this.agentName, id, this.client, (t) => this.emit(t));
     // NOTE: project provisioning (runnerConfig installs) is not ported yet —
     // desktop runs use the machine as-is. Deliberate phase-A gap.
     // Env carries: the vended token (work repos), the dev's git credential via
@@ -305,6 +356,8 @@ export class RunnerHost {
     });
     await this.toolStream.flush();
     this.toolStream = null;
+    await this.usageStream?.flush();
+    this.usageStream = null;
     clearInterval(heartbeat);
     if (watchdog) clearTimeout(watchdog);
     this.setState('completing');
@@ -425,7 +478,7 @@ export class RunnerHost {
     });
   }
 
-  /** Wrap the UI emit so tool events also stream to the console's live feed. */
+  /** Wrap the UI emit so tool and usage events also stream to the console. */
   private toolStream: ToolCallStream | null = null;
   private tapTools(emit: { print(t: string): void; tool(n: string, i: unknown): void }) {
     return {
@@ -433,6 +486,13 @@ export class RunnerHost {
       tool: (name: string, input: unknown) => {
         emit.tool(name, input);
         this.toolStream?.push(name, input);
+      },
+      // Token usage (DAT-266): fold into totals, surface in the live feed,
+      // batch home. Adapters call this optionally (emit.usage?.).
+      usage: (sample: { input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean }) => {
+        this.recordUsage(sample);
+        this.emit({ kind: 'usage', ...sample, ticketKey: this.current?.ticketKey ?? '', ts: now() });
+        this.usageStream?.push(sample);
       },
     };
   }
@@ -544,6 +604,53 @@ class ToolCallStream {
         });
       } catch (e) {
         this.note({ kind: 'note', text: `tool-call stream dropped ${calls.length} event(s): ${msg(e)}`, ts: now() });
+      }
+    }
+  }
+}
+
+/** Batched usage samples → POST /api/agent/work/:id/usage (DAT-266). Same
+ *  discipline as ToolCallStream: telemetry, dropped batches logged never
+ *  retried; a final sample flushes immediately (it replaces server rollups). */
+class UsageStream {
+  private pending: { input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean }[] = [];
+  private timer: NodeJS.Timeout | null = null;
+  private inflight: Promise<void> | null = null;
+
+  constructor(
+    private readonly agent: string,
+    private readonly taskId: number,
+    private readonly client: ConsoleClient,
+    private readonly note: (ev: RunnerEvent) => void,
+  ) {}
+
+  push(sample: { input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean }): void {
+    this.pending.push(sample);
+    if (sample.final || this.pending.length >= 50) void this.flush();
+    else this.timer ??= setTimeout(() => void this.flush(), 4000);
+  }
+
+  flush(): Promise<void> {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.inflight ??= this.drain().finally(() => {
+      this.inflight = null;
+    });
+    return this.inflight;
+  }
+
+  private async drain(): Promise<void> {
+    while (this.pending.length > 0) {
+      const samples = this.pending.splice(0, 200);
+      try {
+        await this.client.request(`/api/agent/work/${this.taskId}/usage`, {
+          method: 'POST',
+          body: JSON.stringify({ agent: this.agent, samples }),
+        });
+      } catch (e) {
+        this.note({ kind: 'note', text: `usage stream dropped ${samples.length} sample(s): ${msg(e)}`, ts: now() });
       }
     }
   }

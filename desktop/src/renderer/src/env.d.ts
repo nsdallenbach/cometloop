@@ -161,7 +161,16 @@ type RunnerEvent =
   | { kind: 'print'; text: string; ts: string }
   | { kind: 'tool'; name: string; label: string; ts: string }
   | { kind: 'note'; text: string; ts: string }
-  | { kind: 'error'; text: string; ts: string };
+  | { kind: 'error'; text: string; ts: string }
+  | { kind: 'usage'; input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean; ticketKey: string; ts: string };
+
+interface UsageTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreate: number;
+  costUsd: number | null;
+}
 
 interface InstanceSnapshot {
   id: string;
@@ -172,6 +181,8 @@ interface InstanceSnapshot {
   harness: string;
   current: { taskId: number; ticketKey: string; startedAt: string } | null;
   feed: RunnerEvent[];
+  runUsage: UsageTotals;
+  sessionUsage: UsageTotals;
 }
 
 interface AgentsState {

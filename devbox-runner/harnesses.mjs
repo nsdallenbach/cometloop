@@ -60,11 +60,36 @@ function claudeHarness(env) {
         return;
       }
       if (evt.type === 'assistant') {
+        // Per-turn token usage (DAT-266) — each assistant event carries the
+        // API call's usage. emit.usage is optional: older runners without a
+        // usage sink keep working untouched.
+        const u = evt.message?.usage;
+        if (u) {
+          emit.usage?.({
+            input: Number(u.input_tokens ?? 0),
+            output: Number(u.output_tokens ?? 0),
+            cacheRead: Number(u.cache_read_input_tokens ?? 0),
+            cacheCreate: Number(u.cache_creation_input_tokens ?? 0),
+          });
+        }
         for (const block of evt.message?.content ?? []) {
           if (block.type === 'text' && block.text) emit.print(block.text);
           else if (block.type === 'tool_use') emit.tool(block.name, block.input);
         }
       } else if (evt.type === 'result') {
+        // Authoritative end-of-run totals + cost; final:true lets the sink
+        // replace its accumulated per-turn sums (covers dropped batches).
+        const u = evt.usage;
+        if (u) {
+          emit.usage?.({
+            input: Number(u.input_tokens ?? 0),
+            output: Number(u.output_tokens ?? 0),
+            cacheRead: Number(u.cache_read_input_tokens ?? 0),
+            cacheCreate: Number(u.cache_creation_input_tokens ?? 0),
+            costUsd: typeof evt.total_cost_usd === 'number' ? evt.total_cost_usd : undefined,
+            final: true,
+          });
+        }
         emit.print(JSON.stringify(evt, null, 2));
       } else if (evt.type !== 'system' && evt.type !== 'user') {
         emit.print(line);
@@ -111,6 +136,14 @@ function codexHarness(env) {
       if (etype === 'thread.started' || etype === 'turn.started') return; // no signal
       if (etype === 'turn.completed') {
         const u = evt.usage ?? {};
+        // Codex reports usage per turn only — no final cumulative event, so
+        // the sink's running sum is the total (DAT-266).
+        emit.usage?.({
+          input: Number(u.input_tokens ?? 0),
+          output: Number(u.output_tokens ?? 0),
+          cacheRead: Number(u.cached_input_tokens ?? 0),
+          cacheCreate: 0,
+        });
         emit.print(`— turn complete (${u.input_tokens ?? 0} in / ${u.output_tokens ?? 0} out tokens)`);
         return;
       }

@@ -4,6 +4,7 @@ import type { Identity } from './roles';
 import { loadRunnerPolls, runnerStatus } from './fleet';
 import { AGENT_SECURITY_SCHEMA_SQL, type AgentSecuritySettings, baselineSecurity, parseSecuritySettings } from './agent-security';
 import { accessibleProjectIds } from './project-access';
+import { usageByAgent, type UsageTotals } from './token-usage';
 
 /**
  * Project agents: the entities behind the /agents architecture map. Three
@@ -531,15 +532,24 @@ export function setupProjectAgentRoutes(
       // sync failure must not blank the map.
       await syncProjectAgents(q).catch((err) => console.warn('[agents] sync failed:', (err as Error).message));
       const overview = await loadAgentsOverview(q);
+      // Live token consumption per runner (DAT-266): trailing-24h totals from
+      // run_token_usage, keyed by the agent name claims record. Telemetry —
+      // a failed read never blanks the map.
+      const usage = await usageByAgent(q, 24).catch(() => new Map<string, UsageTotals>());
+      const withTokens = <T extends { name: string }>(agents: T[]): (T & { tokens24h?: UsageTotals })[] =>
+        agents.map((agent) => {
+          const totals = usage.get(agent.name);
+          return totals ? { ...agent, tokens24h: totals } : agent;
+        });
       const allowed = await accessibleProjectIds(q, await resolveIdentity(req));
       if (allowed === null) {
-        res.json(overview);
+        res.json({ ...overview, agents: withTokens(overview.agents) });
         return;
       }
       const ids = new Set(allowed);
       res.json({
         projects: overview.projects.filter((project) => ids.has(project.id)),
-        agents: overview.agents.filter((agent) => ids.has(agent.engagementId)),
+        agents: withTokens(overview.agents.filter((agent) => ids.has(agent.engagementId))),
       });
     } catch (err) {
       console.error('agents overview failed:', err);

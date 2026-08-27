@@ -12,6 +12,7 @@ const mono = (weight: number, size: number): CSSProperties => ({
 const NAV = [
   { id: 'tickets', label: 'Tickets', icon: '▤' },
   { id: 'agents', label: 'Agents', icon: '◆' },
+  { id: 'metrics', label: 'Metrics', icon: '≋' },
   { id: 'identity', label: 'Identity', icon: '⛉' },
   { id: 'sync', label: 'Sync', icon: '⇅' },
   { id: 'deploys', label: 'Deploys', icon: '▲' },
@@ -334,6 +335,7 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
     tool: 'var(--tx)',
     note: 'var(--tx3)',
     error: 'var(--bad)',
+    usage: 'var(--ok)',
   };
 
   const stateColor = (s: RunnerState): string =>
@@ -526,7 +528,9 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
                       ? `── ${ev.state.toUpperCase()}${ev.detail ? ` · ${ev.detail}` : ''} ──`
                       : ev.kind === 'tool'
                         ? `  > ${ev.name} ${ev.label}`
-                        : ev.text}
+                        : ev.kind === 'usage'
+                          ? `  ≋ ${ev.final ? 'total' : '+'}${ev.input} in / ${ev.final ? '' : '+'}${ev.output} out tokens${ev.costUsd != null ? ` · $${ev.costUsd.toFixed(2)}` : ''}`
+                          : ev.text}
                   </div>
                 ))}
               </div>
@@ -917,6 +921,186 @@ function DeploysView() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ metrics */
+
+const fmtTok = (v: number): string =>
+  v >= 1_000_000 ? `${(v / 1_000_000).toFixed(2)}M` : v >= 1_000 ? `${(v / 1_000).toFixed(1)}k` : String(v);
+
+const addUsage = (a: UsageTotals, s: { input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean }): UsageTotals =>
+  s.final
+    ? { input: s.input, output: s.output, cacheRead: s.cacheRead, cacheCreate: s.cacheCreate, costUsd: s.costUsd ?? a.costUsd }
+    : { ...a, input: a.input + s.input, output: a.output + s.output, cacheRead: a.cacheRead + s.cacheRead, cacheCreate: a.cacheCreate + s.cacheCreate };
+
+interface UsageTick {
+  instance: string;
+  ev: Extract<RunnerEvent, { kind: 'usage' }>;
+}
+
+/**
+ * Metrics (DAT-266): live token consumption streaming off the harnesses —
+ * per-instance running totals plus the raw sample stream, updating per model
+ * turn. The same samples land in Lakebase for the dashboard and agent map.
+ */
+function MetricsView() {
+  const [agents, setAgents] = useState<AgentsState | null>(null);
+  const [stream, setStream] = useState<UsageTick[]>([]);
+
+  useEffect(() => {
+    void window.desktopBridge.agentsState().then((s) => {
+      setAgents(s);
+      // Replay the recent usage stream from the instance feeds.
+      const replay: UsageTick[] = [];
+      for (const inst of s.instances) {
+        for (const ev of inst.feed) if (ev.kind === 'usage') replay.push({ instance: inst.label, ev });
+      }
+      replay.sort((a, b) => a.ev.ts.localeCompare(b.ev.ts));
+      setStream(replay.slice(-60));
+    });
+    const off = window.desktopBridge.onAgentsEvent(({ instanceId, ev }) => {
+      if (ev.kind !== 'usage') {
+        if (ev.kind === 'status') {
+          setAgents((s) => (s ? { ...s, instances: s.instances.map((i) => (i.id === instanceId ? { ...i, state: ev.state } : i)) } : s));
+        }
+        return;
+      }
+      setAgents((s) =>
+        s
+          ? {
+              ...s,
+              instances: s.instances.map((i) =>
+                i.id === instanceId
+                  ? { ...i, runUsage: addUsage(i.runUsage, ev), sessionUsage: addUsage({ ...i.sessionUsage }, { ...ev, final: false }) }
+                  : i,
+              ),
+            }
+          : s,
+      );
+      setStream((prev) => {
+        const label = agentsRef.current?.instances.find((i) => i.id === instanceId)?.label ?? instanceId;
+        return [...prev.slice(-59), { instance: label, ev }];
+      });
+    });
+    return off;
+  }, []);
+
+  // Latest agents state for the event handler without re-subscribing.
+  const agentsRef = useRef<AgentsState | null>(null);
+  useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
+
+  const totals = (agents?.instances ?? []).reduce(
+    (a, i) => ({
+      input: a.input + i.sessionUsage.input,
+      output: a.output + i.sessionUsage.output,
+      cacheRead: a.cacheRead + i.sessionUsage.cacheRead,
+      cacheCreate: a.cacheCreate + i.sessionUsage.cacheCreate,
+      costUsd: i.sessionUsage.costUsd != null ? (a.costUsd ?? 0) + i.sessionUsage.costUsd : a.costUsd,
+    }),
+    { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, costUsd: null as number | null },
+  );
+
+  const stat = (label: string, value: string) => (
+    <div>
+      <div style={{ ...mono(700, 26), letterSpacing: '-0.02em' }}>{value}</div>
+      <div style={{ ...mono(500, 9.5), color: 'var(--tx3)', letterSpacing: '.08em', marginTop: 2 }}>{label}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 16, height: '100%', boxSizing: 'border-box' }}>
+      <div>
+        <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700 }}>Metrics</h2>
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--tx2)' }}>
+          Live token consumption from the harness event streams — the same samples land in Lakebase
+          for the beta dashboard and the agent map.
+        </p>
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          gap: 34,
+          flexWrap: 'wrap',
+          background: 'var(--bg2)',
+          border: '1px solid var(--line)',
+          borderRadius: 10,
+          padding: '14px 18px',
+        }}
+      >
+        {stat('TOKENS IN (SESSION)', fmtTok(totals.input))}
+        {stat('TOKENS OUT', fmtTok(totals.output))}
+        {stat('CACHE READ', fmtTok(totals.cacheRead))}
+        {stat('CACHE WRITE', fmtTok(totals.cacheCreate))}
+        {stat('COST', totals.costUsd != null ? `$${totals.costUsd.toFixed(2)}` : '—')}
+      </div>
+
+      {agents && agents.instances.length > 0 && (
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {agents.instances.map((i) => (
+            <div
+              key={i.id}
+              style={{
+                background: 'var(--bg2)',
+                border: '1px solid var(--line)',
+                borderLeft: `3px solid ${i.state === 'running' ? 'var(--ok)' : i.state === 'waiting' ? 'var(--agent)' : 'var(--line2)'}`,
+                borderRadius: 8,
+                padding: '10px 14px',
+                minWidth: 240,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>{i.label}</span>
+                <span style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>
+                  {i.current ? i.current.ticketKey : i.state}
+                </span>
+              </div>
+              <div style={{ ...mono(400, 11), color: 'var(--tx2)', marginTop: 6 }}>
+                run&nbsp;&nbsp;&nbsp;&nbsp;{fmtTok(i.runUsage.input)} in · {fmtTok(i.runUsage.output)} out
+                {i.runUsage.costUsd != null ? ` · $${i.runUsage.costUsd.toFixed(2)}` : ''}
+              </div>
+              <div style={{ ...mono(400, 11), color: 'var(--tx3)', marginTop: 2 }}>
+                session {fmtTok(i.sessionUsage.input)} in · {fmtTok(i.sessionUsage.output)} out ·{' '}
+                {fmtTok(i.sessionUsage.cacheRead)} cached
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>≋ LIVE STREAM</div>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          background: 'var(--bg2)',
+          border: '1px solid var(--line)',
+          borderRadius: 8,
+          padding: '10px 14px',
+          ...mono(400, 11),
+          lineHeight: 1.6,
+          userSelect: 'text',
+        }}
+      >
+        {stream.length === 0 && (
+          <div style={{ color: 'var(--tx3)' }}>
+            No usage samples yet — they stream in per model turn while an agent works.
+          </div>
+        )}
+        {[...stream].reverse().map((t, idx) => (
+          <div key={idx} style={{ color: t.ev.final ? 'var(--ok)' : 'var(--tx2)' }}>
+            {t.ev.ts.slice(11, 19)} · {t.instance} · {t.ev.ticketKey || '—'} ·{' '}
+            {t.ev.final
+              ? `FINAL ${fmtTok(t.ev.input)} in / ${fmtTok(t.ev.output)} out${t.ev.costUsd != null ? ` / $${t.ev.costUsd.toFixed(2)}` : ''}`
+              : `+${t.ev.input} in / +${t.ev.output} out${t.ev.cacheRead ? ` / ${fmtTok(t.ev.cacheRead)} cached` : ''}`}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
