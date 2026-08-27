@@ -33,6 +33,18 @@ export interface RunnerSnapshot {
 const FEED_LIMIT = 800;
 const HEARTBEAT_MS = 120_000;
 
+/** What a delivery needs and nothing more — branch/push/PR, install, validate,
+ *  console API. One list feeds both the CLI grant and the workdir settings. */
+const DELIVERY_ALLOW_RULES = [
+  'Bash(git:*)',
+  'Bash(gh:*)',
+  'Bash(npm:*)',
+  'Bash(npx:*)',
+  'Bash(node:*)',
+  'Bash(databricks:*)',
+  'Bash(curl:*)',
+];
+
 interface WorkPackage {
   task: { id: number; ticket_key: string };
   ticket?: { key?: string; title?: string };
@@ -355,23 +367,7 @@ export class RunnerHost {
       mkdirSync(settingsDir, { recursive: true });
       writeFileSync(
         path.join(settingsDir, 'settings.json'),
-        JSON.stringify(
-          {
-            permissions: {
-              allow: [
-                'Bash(git:*)',
-                'Bash(gh:*)',
-                'Bash(npm:*)',
-                'Bash(npx:*)',
-                'Bash(node:*)',
-                'Bash(databricks:*)',
-                'Bash(curl:*)',
-              ],
-            },
-          },
-          null,
-          2,
-        ),
+        JSON.stringify({ permissions: { allow: DELIVERY_ALLOW_RULES } }, null, 2),
       );
     } catch (e) {
       // A run without the allowlist still implements — it just can't deliver;
@@ -383,7 +379,15 @@ export class RunnerHost {
   private runHarness(harness: Harness, prompt: string, cwd: string, extraEnv: Record<string, string>): Promise<number> {
     return new Promise((resolve) => {
       const viaArg = harness.promptVia === 'arg';
-      const args = viaArg ? [...harness.args, prompt] : harness.args;
+      // Delivery allowlist, caller-granted (DAT-264): headless Claude Code
+      // rightly ignores permission ALLOW rules from a project settings file in
+      // a fresh untrusted directory (any cloned repo could self-grant), which
+      // is why the DAT-248 workdir settings.json alone stranded deliveries.
+      // The grant must come from the CALLER — these flags. Same scope as the
+      // settings file, which stays as documentation/backstop.
+      const deliveryArgs =
+        harness.name === 'claude' ? ['--allowedTools', DELIVERY_ALLOW_RULES.join(',')] : [];
+      const args = viaArg ? [...harness.args, ...deliveryArgs, prompt] : [...harness.args, ...deliveryArgs];
       const child = spawn(harness.bin, args, {
         cwd,
         env: { ...process.env, ...extraEnv },
