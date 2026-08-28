@@ -2,13 +2,26 @@ name: Desktop release
 
 # DAT-237: matrix-build the desktop client on tag push and publish the
 # installers plus the electron-updater metadata feed (latest.yml /
-# latest-linux.yml / latest-mac.yml) to the GitHub Release for that tag.
-# Windows NSIS installer + portable exe are the primary artifacts; macOS dmg
-# and Linux AppImage come from the same electron-builder config.
+# latest-linux.yml) to the GitHub Release for that tag. Windows NSIS
+# installer + portable exe are the primary artifacts; the Linux AppImage
+# comes from the same electron-builder config.
 #
 # Cut a release with:
 #   1. bump "version" in desktop/package.json (the guard below enforces this)
 #   2. git tag v<version> && git push origin v<version>
+#
+# DAT-251: this workflow once burned ~4,700 billable minutes in a single run.
+# @electron/rebuild stalled at "preparing moduleName=node-pty" with no output
+# and, because no job declared a timeout, all three matrix legs sat on
+# GitHub's 6h ceiling. Private-repo minutes bill with per-OS multipliers
+# (Linux 1x, Windows 2x, macOS 10x), so the macOS leg alone was 3,610 of
+# them. Two rules came out of that, and both are load-bearing:
+#
+#   - Every job declares timeout-minutes. A healthy build is ~5 minutes; a
+#     hang must cost minutes, not hours.
+#   - macOS is not built here. It is 10x billing for an artifact that cannot
+#     auto-update anyway until the Developer ID cert lands (DAT-237). Add it
+#     back in the same commit that wires up signing, with a timeout.
 
 on:
   push:
@@ -17,22 +30,31 @@ on:
 permissions:
   contents: write # create the release and upload assets
 
+# Re-pushing a tag (which is how the v0.2.0 mess got retried) must not leave
+# the superseded run burning minutes alongside the new one.
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: ${{ matrix.name }}
     strategy:
-      # One platform failing must not cancel the others — a broken mac build
-      # should never block the primary Windows artifacts.
+      # One platform failing must not cancel the others — a broken Linux
+      # build should never block the primary Windows artifacts.
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             name: Windows (NSIS installer + portable exe)
-          - os: macos-latest
-            name: macOS (dmg)
           - os: ubuntu-latest
             name: Linux (AppImage)
     runs-on: ${{ matrix.os }}
+    # Ceiling, not a target. Observed healthy runs land around 5 minutes;
+    # this is deliberately loose enough to absorb a slow npm install and
+    # tight enough that a repeat of the node-pty stall costs ~25 minutes
+    # across both legs instead of ~1,100.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: desktop
@@ -56,22 +78,28 @@ jobs:
           fi
 
       - name: Install
+        timeout-minutes: 8
         run: npm install --no-audit --no-fund
 
       - name: Build
+        timeout-minutes: 5
         run: npm run build
 
       - name: Package and publish to GitHub Releases
+        # The native rebuild of node-pty is the step that stalled. Its own
+        # cap is what turns a hang into a readable failure.
+        timeout-minutes: 12
         run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # DAT-251: the stall produced zero output for six hours, so there
+          # was nothing to diagnose from. Until a clean release has actually
+          # gone out, keep @electron/rebuild and node-gyp verbose so the next
+          # failure arrives with a log attached.
+          DEBUG: electron-builder,electron-rebuild
+          npm_config_loglevel: verbose
           # Unsigned phase-1 builds (code-signing cert is a procurement item,
           # tracked on DAT-237). When the Windows cert lands, add:
           #   CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           #   CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          # and for macOS signing + notarization:
-          #   CSC_LINK / CSC_KEY_PASSWORD (Developer ID cert)
-          #   APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID
-          # Until then, don't let electron-builder hunt the mac keychain for
-          # an identity that isn't there.
           CSC_IDENTITY_AUTO_DISCOVERY: false
