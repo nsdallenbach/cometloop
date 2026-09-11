@@ -15,9 +15,16 @@ the context handed to agent runners.
   (`databricks-claude-sonnet-5`) for all LLM calls.
 - **Git**: GitHub (`datavail-solutions/engagement-console`), GitHub App for
   repo auth (installation tokens, no PATs at rest), CI deploy on merge.
-- **Agents**: work queue in Postgres; runners (devbox VMs / local emulation
-  via `devbox-runner/`) long-poll, claim atomically, run Claude Code, report
-  back over HTTP or the MCP server (`mcp/`).
+- **Agents**: work queue in Postgres; runners long-poll, claim atomically,
+  drive a coding agent through a harness adapter (`shared/harnesses/`), and
+  report back over HTTP or the MCP server (`mcp/`). Work is either pooled or
+  routed to one developer's machine.
+- **Desktop client** (`desktop/`): Electron shell on each developer's machine
+  — embeds the deployed web console, hosts the routed runner, identity
+  (Databricks OAuth + gh/az/ADO), local deploys that report events home, a
+  terminal, token metrics. Released by tag with silent auto-update. Shares
+  `shared/` (typed API client, design tokens, harness adapters) with the web
+  console: an API or `shared/` change is a two-shell change.
 
 ## Git and delivery flow
 
@@ -28,7 +35,8 @@ the context handed to agent runners.
 - **Nobody merges their own agent PRs.** Agents (and Claude sessions acting
   as agents) open PRs and stop. Merging is the human review gate.
 - **Merged is not deployed.** Every merge to `main` runs the CI gate
-  (typecheck → lint → build) and only then deploys. A red Actions run means
+  (typecheck → lint → build, plus the desktop typecheck) and only then
+  deploys. A red Actions run means
   the merge shipped nothing — check the Actions tab or the ticket's deploy
   badge before believing a feature is live.
 - **Done means deployed.** The board refuses a move into Done until the
@@ -52,13 +60,21 @@ the context handed to agent runners.
 Run what CI runs, from a clean state — targeted lint has burned us twice:
 
 ```bash
-npm run typecheck && npm run lint && npm run build
+npm run typecheck && npm run lint && npm run build   # web console
+cd desktop && npm run typecheck                       # desktop client (its own package; CI runs this too)
 ```
 
 For anything risky, validate in a fresh worktree with `npm ci` first —
 that is CI-identical. Standalone JS subpackages (`mcp/`, `devbox-runner/`,
 `scripts/`) are excluded from the TS lint project on purpose; check them with
-`node --check`.
+`node --check`. The desktop typecheck is what catches a `shared/api-client`
+or route change the desktop consumes — run it whenever you touch `shared/`
+or a route the desktop calls, not only when you edit `desktop/`. In Claude
+Code, `/parity-check` walks this and the parity docs.
+
+The Standards tab mirrors this file plus `docs/beta-runbook.md`; after a
+merge that changes either, run `node scripts/sync-standards.mjs` (dry-run
+with `--dry-run`) rather than editing the tab by hand.
 
 ## Database and migrations
 

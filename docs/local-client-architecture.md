@@ -9,6 +9,33 @@ pattern follows the Databricks *lakebase-off-platform* template
 (env-driven config, auto-refreshing credential manager, dual dev/prod
 auth modes).
 
+## Status (as of 2026-09-11)
+
+This is the plan the desktop client was built from; the sections below are
+kept as the design record. What actually shipped, against the build order:
+
+| Step | Status | Shipped as |
+|---|---|---|
+| 1 — `shared/` extraction | ✅ | DAT-226: `shared/design/tokens.css`, `shared/harnesses/`, `shared/api-client/` (the web `client/` still carries its own token copy — tracked in [feature-parity-tracker.md](./feature-parity-tracker.md)) |
+| 2 — Electron shell, OAuth, My Tickets | ✅ | DAT-226 scaffold, DAT-228 native browser OAuth (PKCE, `safeStorage`), DAT-227/229 assignee-scoped queue + board assignment, DAT-232 Tickets tab = embedded deployed console |
+| 3 — Runner + supervisor | ✅ | DAT-230 embedded runner, DAT-245 multi-instance agents page + auto-start, DAT-240 terminal pane (node-pty + xterm), DAT-234 orphan recovery, DAT-248/264 delivery-scoped permission allowlist, DAT-266 token metrics |
+| 4 — Identity broker | ✅ | DAT-235: GitHub / Azure / ADO device-code sign-ins, MCP secrets, dev-credential runs |
+| 5 — Sync engine + managed sync repos | ⏳ not started | The **Sync** nav entry is a placeholder; no server-side registry routes yet |
+| 6 — Deployment queue + release pipeline | ✅ | DAT-236 local deploy queue + deploy events (web mirror read-only), DAT-237 tag-driven releases + silent auto-update (code signing still procurement-gated) |
+
+Deviations from the plan worth knowing before you read on:
+
+- **Local state is `config.json`** under the Electron `userData` dir (zod
+  schema in `desktop/src/main/config.ts`), not SQLite; run history lives in
+  memory per instance and on the console. `better-sqlite3` and `keytar` are
+  not dependencies — secrets go through Electron `safeStorage` only.
+- **React 19**, matching the web console, not React 18.
+- **Look and feel** — the desktop imports `shared/design/tokens.css`; the web
+  console does not yet, so token edits are made twice until the parity gap
+  ticket lands. The desktop is dark-only today (theme toggle is a tracked gap).
+- **Harness adapters** live in `shared/harnesses/` and are consumed by both
+  the devbox runner and the desktop supervisor, as planned.
+
 ## Goals and non-goals
 
 **Goals**

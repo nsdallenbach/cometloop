@@ -25,8 +25,21 @@ fallback.)
 
 Config lives at `%APPDATA%/delivery-console-desktop/config.json` (written on
 first run) and can be overridden per-run with env vars: `APP_URL`,
-`DATABRICKS_HOST`, `DATABRICKS_PROFILE`, `DATABRICKS_CLI`, `AGENT_NAME`.
-`DATABRICKS_TOKEN` skips the CLI entirely (dev mode; never persisted).
+`DATABRICKS_HOST`, `DATABRICKS_PROFILE`, `DATABRICKS_CLI`, `AGENT_NAME`,
+`HARNESS`, `WORK_ROOT`, `MAX_RUN_MINUTES`, `MCP_SERVER`, `DEPLOY_COMMAND`,
+`AUTO_UPDATE`. `DATABRICKS_TOKEN` skips the CLI entirely (dev mode; never
+persisted).
+
+To develop the desktop against a **local** web console instead of the
+deployed one, start `npm run dev` at the repo root (port 8000) and then:
+
+```bash
+APP_URL=http://localhost:8000 AGENT_NAME=desktop-dev-<you> npm run dev
+```
+
+The Tickets tab, queue and deploy events all hit that local server; the
+runner still claims real work from the shared queue, so name the agent
+distinctly and stop it when you are done.
 
 ## Checks
 
