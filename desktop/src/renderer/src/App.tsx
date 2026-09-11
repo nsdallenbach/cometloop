@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { TerminalPane, type TerminalOpenRequest } from './TerminalPane';
+import { AgentWizard } from './AgentWizard';
+import { harnessBrand, providerBrand } from '../../../../shared/design/AgentLogos';
 
 // Console client conventions: inline styles + theme tokens + mono() — see
 // docs/development-standards.md "Client code". mono() mirrors client/src/util.ts.
@@ -259,205 +261,102 @@ const KIND_LABEL: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'C
  * this machine, tab between live instances, and watch their feeds. Native-app
  * exclusive — the web console never gets a path into anyone's laptop.
  */
-/** Console harness ids for the model catalog lookup. */
+/** Console harness ids, for the logo of each agent type. */
 const KIND_HARNESS: Record<AgentKind, string> = { claude: 'claude-code', codex: 'codex' };
 
 /**
- * Per-agent-type configuration (DAT-280): the developer decides here which
- * projects the instances claim from, which model they run, and which registry
- * MCP servers and skills every run gets. Saved locally (config.json) and
- * reported to the console, which mirrors it on the web Agents page.
+ * One configured agent on this machine (DAT-280): logo, instances, model,
+ * projects, tools. Click → the wizard, at the model step.
  */
-function AgentKindConfigPanel({
+function AgentCard({
   kind,
   config,
-  onSave,
+  instances,
+  engagements,
+  onConfigure,
+  onStartAll,
+  onStopAll,
 }: {
   kind: AgentKind;
-  config: AgentKindConfig;
-  onSave: (opts: Partial<AgentKindConfig>) => void;
+  config: AgentsState['kinds'][AgentKind];
+  instances: InstanceSnapshot[];
+  engagements: EngagementRow[];
+  onConfigure: () => void;
+  onStartAll: () => void;
+  onStopAll: () => void;
 }) {
-  const [projects, setProjects] = useState<EngagementRow[]>([]);
-  const [registry, setRegistry] = useState<RegistryView | null>(null);
-  const [models, setModels] = useState<{ id: string; label: string; default?: boolean }[]>([]);
-  const [error, setError] = useState('');
-  const [draft, setDraft] = useState({
-    projects: config.projects,
-    model: config.model ?? '',
-    mcpServers: config.mcpServers,
-    skills: config.skills,
-  });
-  const [customModel, setCustomModel] = useState(false);
-
-  useEffect(() => {
-    void window.desktopBridge.listEngagements().then((r) => {
-      if (r.ok) setProjects(r.engagements);
-      else setError(r.error);
-    });
-    void window.desktopBridge.consoleModels().then((r) => {
-      if (r.ok) setModels(r.models.harnessModels[KIND_HARNESS[kind]] ?? []);
-    });
-  }, [kind]);
-
-  // The registry view follows the project scope: shared entries plus each scoped project's own.
-  const scopeKey = draft.projects.join(',');
-  useEffect(() => {
-    let stale = false;
-    void window.desktopBridge.consoleRegistry(scopeKey ? scopeKey.split(',') : []).then((r) => {
-      if (stale) return;
-      if (r.ok) setRegistry(r.registry);
-      else setError(r.error);
-    });
-    return () => {
-      stale = true;
-    };
-  }, [scopeKey]);
-
-  const toggle = (k: 'projects' | 'mcpServers' | 'skills', v: string) =>
-    setDraft((d) => ({ ...d, [k]: d[k].includes(v) ? d[k].filter((x) => x !== v) : [...d[k], v] }));
-  const dirty =
-    JSON.stringify(draft.projects) !== JSON.stringify(config.projects) ||
-    (draft.model || null) !== config.model ||
-    JSON.stringify(draft.mcpServers) !== JSON.stringify(config.mcpServers) ||
-    JSON.stringify(draft.skills) !== JSON.stringify(config.skills);
-  const modelInList = models.some((m) => m.id === draft.model);
-  const showCustom = customModel || (draft.model !== '' && !modelInList);
-  const projectLabel = (id: string) => projects.find((p) => p.id === id)?.client ?? id;
-
-  const label: CSSProperties = { ...mono(500, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 5 };
-  const field: CSSProperties = {
-    width: '100%',
-    background: 'var(--bg)',
-    border: '1px solid var(--line2)',
-    borderRadius: 4,
-    color: 'var(--tx)',
-    fontSize: 12,
-    padding: '6px 8px',
-    fontFamily: 'inherit',
-  };
-  const chip = (active: boolean): CSSProperties => ({
-    border: `1px solid ${active ? 'var(--agent)' : 'var(--line2)'}`,
-    background: active ? 'var(--agentsoft, rgba(122,143,245,.13))' : 'transparent',
-    color: active ? 'var(--tx)' : 'var(--tx2)',
-    borderRadius: 4,
-    padding: '4px 9px',
-    ...mono(500, 10),
-    letterSpacing: '.05em',
-    cursor: 'pointer',
-    fontFamily: "'DM Mono', monospace",
-  });
-
+  const brand = harnessBrand(KIND_HARNESS[kind]);
+  const running = instances.filter((i) => i.state === 'running' || i.state === 'completing').length;
+  const waiting = instances.filter((i) => i.state === 'waiting').length;
+  const stopped = instances.filter((i) => i.state === 'stopped').length;
+  const provider = providerBrand(kind === 'codex' ? 'openai' : 'anthropic');
   return (
-    <div style={{ display: 'grid', gap: 12, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
-      {error && <div style={{ fontSize: 11.5, color: 'var(--bad)' }}>{error}</div>}
-      <div>
-        <div style={label}>PROJECTS — instances claim from these (none = any project)</div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {projects.map((p) => (
-            <button key={p.id} className="no-drag" onClick={() => toggle('projects', p.id)} style={chip(draft.projects.includes(p.id))} title={p.name}>
-              {p.client.toUpperCase()}
-            </button>
-          ))}
-          {projects.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>No projects visible — sign in on the Identity tab.</span>}
-        </div>
-      </div>
-      <div>
-        <div style={label}>MODEL</div>
-        {models.length > 0 && !showCustom ? (
-          <select
-            className="no-drag"
-            style={field}
-            value={draft.model}
-            onChange={(e) => {
-              if (e.target.value === '__custom__') {
-                setCustomModel(true);
-                setDraft((d) => ({ ...d, model: '' }));
-                return;
-              }
-              setDraft((d) => ({ ...d, model: e.target.value }));
-            }}
-          >
-            <option value="">— harness default —</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} · {m.id}
-                {m.default ? ' (default)' : ''}
-              </option>
-            ))}
-            <option value="__custom__">Other model id…</option>
-          </select>
-        ) : (
-          <div style={{ display: 'flex', gap: 6 }}>
-            <input className="no-drag" style={{ ...field, ...mono(400, 11.5) }} value={draft.model} placeholder={kind === 'codex' ? 'e.g. gpt-5.3-codex' : 'e.g. claude-opus-5'} onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))} />
-            {models.length > 0 && (
-              <button className="no-drag" onClick={() => { setCustomModel(false); setDraft((d) => ({ ...d, model: '' })); }} style={{ ...btnStyle('var(--tx2)'), padding: '4px 10px', fontSize: 11 }}>
-                List
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div>
-          <div style={label}>MCP SERVERS — from the registry</div>
-          <div style={{ display: 'grid', gap: 4 }}>
-            {(registry?.mcpServers ?? []).map((m) => (
-              <label key={`${m.scope}/${m.slug}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 11.5, cursor: 'pointer' }}>
-                <input type="checkbox" checked={draft.mcpServers.includes(m.slug)} onChange={() => toggle('mcpServers', m.slug)} style={{ marginTop: 2 }} />
-                <span style={{ minWidth: 0 }}>
-                  <span style={{ fontWeight: 600 }}>{m.name}</span>{' '}
-                  <span style={{ ...mono(400, 9), color: m.scope === 'shared' ? 'var(--agent)' : 'var(--tx3)' }}>{m.scope === 'shared' ? 'SHARED' : projectLabel(m.scope).toUpperCase()}</span>
-                  <div style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>
-                    {m.slug} · {m.transport}{m.requiresAuth ? ` · needs ${m.authEnv} (Identity → MCP server auth)` : ''}
-                  </div>
-                </span>
-              </label>
-            ))}
-            {registry && registry.mcpServers.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>Nothing published for this scope.</span>}
-          </div>
-        </div>
-        <div>
-          <div style={label}>SKILLS — from the registry</div>
-          <div style={{ display: 'grid', gap: 4 }}>
-            {(registry?.skills ?? []).map((k) => {
-              const fits = k.harnesses.includes(KIND_HARNESS[kind]);
-              return (
-                <label key={`${k.scope}/${k.slug}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 11.5, cursor: 'pointer', opacity: fits ? 1 : 0.55 }}>
-                  <input type="checkbox" checked={draft.skills.includes(k.slug)} onChange={() => toggle('skills', k.slug)} style={{ marginTop: 2 }} />
-                  <span style={{ minWidth: 0 }}>
-                    <span style={{ fontWeight: 600 }}>{k.name}</span>{' '}
-                    <span style={{ ...mono(400, 9), color: k.scope === 'shared' ? 'var(--agent)' : 'var(--tx3)' }}>{k.scope === 'shared' ? 'SHARED' : projectLabel(k.scope).toUpperCase()}</span>
-                    <div style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>
-                      {k.description || k.slug}{fits ? '' : ` · not written for ${KIND_LABEL[kind]}`}
-                    </div>
-                  </span>
-                </label>
-              );
-            })}
-            {registry && registry.skills.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>Nothing published for this scope.</span>}
-          </div>
-        </div>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 11, color: 'var(--tx3)', lineHeight: 1.5 }}>
-          Saved on this machine and reported to the console; applies to the next claim of every {KIND_LABEL[kind]} instance.
+    <div
+      className="hv-lift"
+      style={{
+        background: 'var(--bg2)',
+        border: '1px solid var(--line)',
+        borderRadius: 12,
+        padding: '16px 16px 14px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        minWidth: 0,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <span style={{ display: 'inline-flex', width: 46, height: 46, borderRadius: 11, background: 'var(--bg3)', border: '1px solid var(--line2)', alignItems: 'center', justifyContent: 'center', flex: 'none' }}>
+          {brand?.mark(28)}
         </span>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{brand?.label ?? kind}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em', marginTop: 2 }}>
+            {running > 0 && <span style={{ color: 'var(--ok)' }}>● {running} RUNNING</span>}
+            {waiting > 0 && <span style={{ color: 'var(--agent)' }}>● {waiting} WAITING</span>}
+            {stopped > 0 && <span>● {stopped} STOPPED</span>}
+            {instances.length === 0 && <span>NO INSTANCES</span>}
+          </div>
+        </div>
+        {!config.installed && <span title="Not found on PATH" style={{ ...mono(500, 8.5), color: 'var(--warn)', border: '1px solid var(--warn)', borderRadius: 3, padding: '1px 6px', letterSpacing: '.08em' }}>NOT INSTALLED</span>}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        <Chip>
+          {provider && <span style={{ display: 'inline-flex', marginRight: 5 }}>{provider.mark(11)}</span>}
+          {config.model ?? 'default model'}
+        </Chip>
+        {config.projects.length === 0 ? (
+          <Chip>any project</Chip>
+        ) : (
+          config.projects.map((id) => <Chip key={id}>{engagements.find((e) => e.id === id)?.client ?? id}</Chip>)
+        )}
+        <Chip>{config.mcpServers.length + 1} MCP</Chip>
+        <Chip>{config.skills.length} skill{config.skills.length === 1 ? '' : 's'}</Chip>
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button className="no-drag" onClick={onConfigure} style={{ ...btnStyle('var(--tx2)'), padding: '6px 12px', fontSize: 12 }}>
+          ⚙ Configure
+        </button>
         <div style={{ flex: 1 }} />
-        {dirty && (
-          <button className="no-drag" onClick={() => setDraft({ projects: config.projects, model: config.model ?? '', mcpServers: config.mcpServers, skills: config.skills })} style={{ ...btnStyle('var(--tx2)'), padding: '5px 10px', fontSize: 11.5 }}>
-            Reset
+        {stopped > 0 && (
+          <button className="no-drag" onClick={onStartAll} style={{ ...btnStyle('var(--ok)'), padding: '6px 12px', fontSize: 12 }}>
+            ▶ Start
           </button>
         )}
-        <button
-          className="no-drag hv-lift"
-          disabled={!dirty}
-          onClick={() => onSave({ projects: draft.projects, model: draft.model.trim() || null, mcpServers: draft.mcpServers, skills: draft.skills })}
-          style={{ ...btnStyle(dirty ? 'var(--agent)' : 'var(--tx3)'), padding: '5px 12px', fontSize: 11.5, opacity: dirty ? 1 : 0.6 }}
-        >
-          Save
-        </button>
+        {waiting > 0 && (
+          <button className="no-drag" onClick={onStopAll} style={{ ...btnStyle('var(--warn)'), padding: '6px 12px', fontSize: 12 }}>
+            ■ Stop
+          </button>
+        )}
       </div>
     </div>
+  );
+}
+
+function Chip({ children }: { children: ReactNode }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', ...mono(500, 9.5), letterSpacing: '.04em', color: 'var(--tx2)', background: 'var(--bg3)', border: '1px solid var(--line)', borderRadius: 4, padding: '3px 8px', whiteSpace: 'nowrap' }}>
+      {children}
+    </span>
   );
 }
 
@@ -466,8 +365,14 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
   const [tab, setTab] = useState<string | null>(null);
   const [work, setWork] = useState<{ queued: AgentTaskRow[]; active: AgentTaskRow[] } | null>(null);
   const [runError, setRunError] = useState('');
-  // Which agent type's configuration panel is expanded (DAT-280).
-  const [configOpen, setConfigOpen] = useState<AgentKind | null>(null);
+  // The new-agent / configure wizard (DAT-280): null = closed, 'new' = pick an agent, kind = reconfigure it.
+  const [wizard, setWizard] = useState<'new' | AgentKind | null>(null);
+  const [engagements, setEngagements] = useState<EngagementRow[]>([]);
+  useEffect(() => {
+    void window.desktopBridge.listEngagements().then((r) => {
+      if (r.ok) setEngagements(r.engagements);
+    });
+  }, []);
   // Interactive terminal (DAT-240): pane docked at the bottom of the page;
   // sessions live in the main process, so hiding the pane kills nothing.
   const [termOpen, setTermOpen] = useState(false);
@@ -554,71 +459,61 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
         </span>
       </div>
 
-      {/* Per-agent-type config: install status, instance count, auto-start. */}
+      {/* Agents on this machine: one card per configured type, plus New agent. */}
       {agents && (
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {(Object.keys(agents.kinds) as AgentKind[]).map((kind) => {
-            const k = agents.kinds[kind];
-            const open = configOpen === kind;
-            return (
-              <div
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+          {(Object.keys(agents.kinds) as AgentKind[])
+            .filter((kind) => agents.kinds[kind].instances > 0)
+            .map((kind) => (
+              <AgentCard
                 key={kind}
-                style={{
-                  background: 'var(--bg2)',
-                  border: `1px solid ${open ? 'var(--line2)' : 'var(--line)'}`,
-                  borderRadius: 8,
-                  padding: '12px 14px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 10,
-                  minWidth: 320,
-                  flex: open ? '1 1 520px' : '0 1 auto',
+                kind={kind}
+                config={agents.kinds[kind]}
+                instances={agents.instances.filter((i) => i.kind === kind)}
+                engagements={engagements}
+                onConfigure={() => setWizard(kind)}
+                onStartAll={() => {
+                  for (const i of agents.instances) if (i.kind === kind && i.state === 'stopped') void window.desktopBridge.agentsStart(i.id).then(apply);
                 }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700 }}>{KIND_LABEL[kind]}</div>
-                  <div style={{ ...mono(400, 10), color: k.installed ? 'var(--ok)' : 'var(--warn)', marginTop: 2 }}>
-                    {k.installed ? `✓ ${k.version ?? 'installed'}` : '⚠ not found on PATH'}
-                  </div>
-                </div>
-                <div style={{ flex: 1 }} />
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} title="Concurrent instances of this agent">
-                  <button className="no-drag" onClick={() => configure(kind, { instances: k.instances - 1 })} disabled={k.instances <= 0} style={stepBtn}>
-                    −
-                  </button>
-                  <span style={{ ...mono(600, 14), width: 18, textAlign: 'center' }}>{k.instances}</span>
-                  <button className="no-drag" onClick={() => configure(kind, { instances: k.instances + 1 })} disabled={k.instances >= 4 || !k.installed} style={stepBtn}>
-                    +
-                  </button>
-                </div>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: 'var(--tx2)', cursor: 'pointer' }} title="Launch these instances with the app so the queue never stalls">
-                  <input
-                    type="checkbox"
-                    checked={k.autoStart}
-                    onChange={(e) => configure(kind, { autoStart: e.target.checked })}
-                  />
-                  auto-start
-                </label>
-                  <button
-                    className="no-drag"
-                    onClick={() => setConfigOpen(open ? null : kind)}
-                    title="Project scope, model, MCP servers and skills for this agent's instances"
-                    style={{ ...btnStyle(open ? 'var(--tx)' : 'var(--tx2)'), padding: '5px 10px', fontSize: 11.5 }}
-                  >
-                    ⚙ {open ? 'Close' : 'Configure'}
-                  </button>
-                </div>
-                <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em' }}>
-                  {k.projects.length ? `${k.projects.length} PROJECT${k.projects.length === 1 ? '' : 'S'}` : 'ANY PROJECT'} ·{' '}
-                  {k.model ? k.model.toUpperCase() : 'HARNESS DEFAULT MODEL'} · {k.mcpServers.length} MCP · {k.skills.length} SKILL
-                  {k.skills.length === 1 ? '' : 'S'}
-                </div>
-                {open && <AgentKindConfigPanel kind={kind} config={k} onSave={(opts) => configure(kind, opts)} />}
-              </div>
-            );
-          })}
+                onStopAll={() => {
+                  for (const i of agents.instances) if (i.kind === kind && i.state === 'waiting') void window.desktopBridge.agentsStop(i.id).then(apply);
+                }}
+              />
+            ))}
+          <button
+            className="no-drag hv-lift"
+            onClick={() => setWizard('new')}
+            style={{
+              minHeight: 132,
+              border: '1px dashed var(--line2)',
+              borderRadius: 12,
+              background: 'transparent',
+              color: 'var(--tx2)',
+              cursor: 'pointer',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              fontFamily: 'inherit',
+            }}
+          >
+            <span style={{ fontSize: 26, lineHeight: 1, color: 'var(--agent)' }}>+</span>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>New agent</span>
+          </button>
         </div>
+      )}
+
+      {wizard && agents && (
+        <AgentWizard
+          kinds={agents.kinds}
+          initialKind={wizard === 'new' ? undefined : wizard}
+          onClose={() => setWizard(null)}
+          onApply={async ({ kind, config }) => {
+            const next = await window.desktopBridge.agentsConfigure(kind, config);
+            apply(next);
+          }}
+        />
       )}
 
       {runError && <div style={{ fontSize: 12, color: 'var(--bad)' }}>{runError}</div>}
@@ -648,7 +543,7 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
       {/* Instance tabs */}
       {agents && agents.instances.length === 0 && (
         <div style={{ fontSize: 12.5, color: 'var(--tx2)' }}>
-          No agent instances configured — add one above (Claude Code + is the usual first move).
+          No agents yet — click New agent above.
         </div>
       )}
       {agents && agents.instances.length > 0 && (

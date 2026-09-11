@@ -87,12 +87,15 @@ first broad rollout.
 The **Agents** page manages the coding agents on this machine: per agent
 type (Claude Code, Codex) it shows install status/version, an instance
 count (0–4) and an auto-start toggle — all persisted in config.json.
-**⚙ Configure** on each type (DAT-280) sets what its instances run: the
-**projects** they claim from (none = any), the **model** (from the console's
-catalog, or any id the harness accepts), and the registry **MCP servers**
-and **skills** attached to every run. This is the one place agents are
-configured — the desktop reports it home (`PUT /api/agent/self`) and the
-web console's Agents page mirrors it read-only for leads and PMs.
+Agents appear as cards with their logo; **New agent** opens a five-step
+wizard (agent → model → projects → tools & skills → launch) and **⚙
+Configure** on a card reopens it (DAT-280). The wizard sets the
+**projects** the instances claim from (none = any), the **model** (from the
+console's catalog, or any id the harness accepts), the registry **MCP
+servers** and **skills** attached to every run, and the instance count /
+auto-start. This is the one place agents are configured — the desktop
+reports it home (`PUT /api/agent/self`) and the web console's Agents page
+mirrors it read-only for leads and PMs.
 Instances run concurrently, each with its own fleet identity
 (`<agentName>-<kind>-<n>`), claim loop, live feed and Start/Stop/Kill,
 tabbed in the UI. Default config auto-starts 1× Claude Code with the app
