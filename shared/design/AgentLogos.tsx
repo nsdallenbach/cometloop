@@ -180,6 +180,47 @@ const OMNIGENT_MARK = (size: number): ReactNode => (
   </svg>
 );
 
+/** GitHub's octocat mark (the Octicons "mark-github" path), in the current text colour. */
+const GITHUB_MARK = (size: number): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    <path
+      fill="var(--tx)"
+      d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"
+    />
+  </svg>
+);
+
+/** Azure's folded "A" in the two Azure blues. */
+const AZURE_MARK = (size: number): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    <path fill="#0078D4" d="M8.9 3h6.2l-6.4 18H2.5z" />
+    <path fill="#50B4F0" d="M15.6 3 21.5 21h-6.1l-3.6-6.6-4.6 6.6H2.5l9.5-8.3z" opacity={0.95} />
+  </svg>
+);
+
+/** Azure DevOps' blue chevron badge. */
+const ADO_MARK = (size: number): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    <path fill="#0078D4" d="M2 8.9 5.7 6l8.4-3v4.6L21.7 5v14l-7.6 3v-4.7L5.6 21 2 18.2z" />
+    <path fill="#FFFFFF" opacity={0.9} d="M14.1 7.6 5.6 9.9v4.7l8.5 2.7z" />
+  </svg>
+);
+
+/**
+ * Services a developer signs in to from the desktop Identity page. Databricks
+ * is the console's identity; the rest are the dev's own (DAT-235).
+ */
+const SERVICES: Record<string, AgentBrand> = {
+  databricks: { label: 'Databricks', mark: DATABRICKS_MARK },
+  github: { label: 'GitHub', mark: GITHUB_MARK },
+  azure: { label: 'Azure', mark: AZURE_MARK },
+  ado: { label: 'Azure DevOps', mark: ADO_MARK },
+};
+
+export function serviceBrand(service: string | null): AgentBrand | null {
+  return service ? (SERVICES[norm(service)] ?? null) : null;
+}
+
 /** Codex reuses the OpenAI knot; the harness has no distinct mark. */
 const HARNESSES: Record<string, AgentBrand> = {
   'claude-code': CLAUDE_CODE,
