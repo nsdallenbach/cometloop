@@ -438,6 +438,22 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
   const act = (fn: (id: string) => Promise<AgentsState>, id: string) => () => void fn(id).then(apply);
 
   const selected = agents?.instances.find((i) => i.id === tab) ?? null;
+
+  // The live feed follows the newest line — like a terminal — unless the
+  // user has scrolled up to read something, in which case it stays put until
+  // they return to the bottom (within a couple of lines).
+  const feedRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottom = useRef(true);
+  const feedLength = selected?.feed.length ?? 0;
+  useEffect(() => {
+    const el = feedRef.current;
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+  }, [feedLength, tab]);
+  const onFeedScroll = () => {
+    const el = feedRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+  };
   const liveIds = new Set((agents?.instances ?? []).map((i) => i.current?.taskId).filter((x) => x != null));
 
   const lineColor: Record<RunnerEvent['kind'], string> = {
@@ -622,6 +638,8 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
               </div>
 
               <div
+                ref={feedRef}
+                onScroll={onFeedScroll}
                 style={{
                   flex: 1,
                   minHeight: 0,
