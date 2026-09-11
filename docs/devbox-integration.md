@@ -173,6 +173,45 @@ its progress note; set `RUNNER_IMAGE_STRICT=1` to fail the task instead of
 delivering work from the wrong environment. Projects that never open the
 Config tab get the default image and no extra libraries.
 
+### Agent configuration (`agentConfig`)
+
+What a lead set for **this agent** on the Agents page (DAT-278 / DAT-238),
+resolved for the claiming runner by its agent name (DAT-279):
+
+```json
+{
+  "model": "claude-opus-5",
+  "mcpServers": [
+    {
+      "slug": "jira", "name": "Jira", "transport": "stdio",
+      "command": "npx", "args": ["-y", "jira-mcp"], "url": null,
+      "env": { "JIRA_SITE": "datavail.atlassian.net" },
+      "requiresAuth": true, "authEnv": "MCP_AUTH_JIRA"
+    }
+  ],
+  "skills": [
+    { "slug": "review-style", "name": "Review style", "description": "How we review", "content": "# Review …", "harnesses": ["claude-code"] }
+  ]
+}
+```
+
+- **`model`** is the harness's own model id (`claude --model …`, `codex -m …`);
+  `null` means the harness default. Pass it through the adapter's
+  `modelArgs(model)` — never hard-code a switch in the runner.
+- **`mcpServers`** are registry entries, shared or scoped to the project.
+  The Claude harness writes them into the workdir `.mcp.json` next to
+  `delivery-console`; a server with `requiresAuth` gets its credential as an
+  env reference (`${MCP_AUTH_<SLUG>}`) so **the value must be in the runner's
+  process environment** and never lands in a file. The bundled runner logs
+  and notes on the ticket any server whose `authEnv` is unset. Codex reads
+  MCP from its global config, so nothing is written for it.
+- **`skills`** become `.claude/skills/<slug>/SKILL.md` for Claude Code and are
+  appended to `AGENTS.md` for Codex.
+
+An agent the console has no record for (a runner name it has never seen)
+gets `{ "model": null, "mcpServers": [], "skills": [] }` — the claim never
+fails on missing configuration.
+
 ### Progress
 
 ```bash

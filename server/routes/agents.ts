@@ -5,7 +5,7 @@ import { loadRunnerPolls, runnerStatus } from './fleet';
 import { AGENT_SECURITY_SCHEMA_SQL, type AgentSecuritySettings, baselineSecurity, parseSecuritySettings } from './agent-security';
 import { accessibleProjectIds } from './project-access';
 import { usageByAgent, type UsageTotals } from './token-usage';
-import { validAttachments } from './registry';
+import { resolveAttachments, validAttachments, type RegistryMcpServer, type RegistrySkill } from './registry';
 
 /**
  * Project agents: the entities behind the /agents architecture map. Three
@@ -115,6 +115,46 @@ const UpdateAgentBody = z.object({
   mcpServers: z.array(z.number().int().positive()).max(40).optional(),
   skills: z.array(z.number().int().positive()).max(40).optional(),
 });
+
+/**
+ * What a run should be configured with (DAT-279): the model the lead picked
+ * for this agent and its registry attachments, resolved to full entries.
+ * Rides in the work package; the runner materializes it in the task workdir.
+ */
+export interface AgentRunConfig {
+  /** Model id for the harness CLI (`claude --model …`, `codex -m …`); null = the harness default. */
+  model: string | null;
+  mcpServers: RegistryMcpServer[];
+  skills: RegistrySkill[];
+}
+
+const EMPTY_RUN_CONFIG: AgentRunConfig = { model: null, mcpServers: [], skills: [] };
+
+/**
+ * The claiming runner's record, by the same (engagement, lower(name)) key the
+ * sync pass upserts on. A runner with no record yet — or a name the console
+ * never saw — gets the empty config, never an error: a missing config must
+ * not fail a claim.
+ */
+export async function agentConfigForWorkPackage(q: Query, engagementId: string, agentName: string): Promise<AgentRunConfig> {
+  if (!agentName) return EMPTY_RUN_CONFIG;
+  try {
+    const row = (
+      await q('SELECT model, mcp_servers, skills FROM app.project_agents WHERE engagement_id = $1 AND lower(name) = lower($2)', [
+        engagementId,
+        agentName,
+      ])
+    ).rows[0];
+    if (!row) return EMPTY_RUN_CONFIG;
+    const ids = attachmentsFromRow(row);
+    const resolved = await resolveAttachments(q, engagementId, ids);
+    const model = txt(row.model).trim();
+    return { model: model || null, mcpServers: resolved.mcpServers, skills: resolved.skills };
+  } catch (err) {
+    console.warn(`[agents] run config lookup failed for ${agentName} on ${engagementId}:`, (err as Error).message);
+    return EMPTY_RUN_CONFIG;
+  }
+}
 
 /** Attachment ids off a project_agents row (jsonb columns, possibly still strings from pg). */
 export function attachmentsFromRow(row: Record<string, unknown> | undefined): { mcpServers: number[]; skills: number[] } {

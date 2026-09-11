@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ConsoleApiError, type ConsoleClient } from '../../../shared/api-client';
-import { getHarness, toolLabel, type Harness } from '../../../shared/harnesses';
+import { getHarness, missingAuthEnv, toolLabel, type AgentRunConfig, type Harness } from '../../../shared/harnesses';
 import type { DesktopConfig } from './config';
 import type { IdentityBroker } from './identity';
 
@@ -67,6 +67,8 @@ interface WorkPackage {
   repo?: { repo_url?: string } | null;
   contextFiles?: { name: string; url: string }[];
   prompt?: string;
+  /** The model and registry attachments the console resolved for this agent (DAT-279). */
+  agentConfig?: AgentRunConfig | null;
 }
 
 export class RunnerHost {
@@ -314,7 +316,22 @@ export class RunnerHost {
     }
 
     const harness = getHarness(this.harnessName);
-    if (this.cfg.mcpServer && existsSync(this.cfg.mcpServer)) harness.writeConfig(dir, this.cfg.mcpServer);
+    // The console's MCP server plus whatever the lead attached to this agent
+    // on the Agents page (DAT-279): registry MCP servers and skills land in
+    // the workdir; a server's credential comes from the identity broker's
+    // MCP_AUTH_<SLUG> env at spawn time, never from a file.
+    const mcpServerPath = this.cfg.mcpServer && existsSync(this.cfg.mcpServer) ? this.cfg.mcpServer : null;
+    const agentConfig = pkg.agentConfig ?? null;
+    harness.writeConfig(dir, mcpServerPath, agentConfig);
+    const mcpEnv = this.identity?.mcpEnv() ?? {};
+    const missingAuth = missingAuthEnv(agentConfig, { ...process.env, ...mcpEnv });
+    for (const m of missingAuth) {
+      this.emit({
+        kind: 'note',
+        text: `MCP server ${m.slug} needs ${m.authEnv} — add it under Identity → MCP server auth, or the server will fail to authenticate`,
+        ts: now(),
+      });
+    }
     this.writeDeliveryPermissions(harness.name, dir);
 
     // Liveness contract (see devbox runner): 404/409 from heartbeat = the
@@ -336,9 +353,17 @@ export class RunnerHost {
           }, this.cfg.maxRunMinutes * 60_000)
         : null;
 
+    const configNote = [
+      agentConfig?.model ? `model ${agentConfig.model}` : null,
+      agentConfig?.mcpServers.length ? `${agentConfig.mcpServers.length} MCP server${agentConfig.mcpServers.length === 1 ? '' : 's'}` : null,
+      agentConfig?.skills.length ? `${agentConfig.skills.length} skill${agentConfig.skills.length === 1 ? '' : 's'}` : null,
+    ].filter((s): s is string => Boolean(s));
     await this.post(`/api/agent/work/${id}/progress`, {
       agent: this.agentName,
-      note: `Claimed on ${os.hostname()} (desktop); starting ${harness.name} run.`,
+      note: [
+        `Claimed on ${os.hostname()} (desktop); starting ${harness.name} run${configNote.length ? ` (${configNote.join(', ')})` : ''}.`,
+        ...missingAuth.map((m) => `⚠ ${m.slug} needs ${m.authEnv}, not set on this machine.`),
+      ].join(' '),
     });
 
     const prompt = pkg.prompt ?? fallbackPrompt(pkg);
@@ -349,11 +374,17 @@ export class RunnerHost {
     // desktop runs use the machine as-is. Deliberate phase-A gap.
     // Env carries: the vended token (work repos), the dev's git credential via
     // env-only git config (client repos), and per-MCP-server secrets — DAT-235.
-    const code = await this.runHarness(harness, prompt, dir, {
-      ...(gitToken ? { GIT_TOKEN: gitToken } : {}),
-      ...gitEnv,
-      ...(this.identity?.mcpEnv() ?? {}),
-    });
+    const code = await this.runHarness(
+      harness,
+      prompt,
+      dir,
+      {
+        ...(gitToken ? { GIT_TOKEN: gitToken } : {}),
+        ...gitEnv,
+        ...mcpEnv,
+      },
+      agentConfig?.model ?? null,
+    );
     await this.toolStream.flush();
     this.toolStream = null;
     await this.usageStream?.flush();
@@ -429,9 +460,17 @@ export class RunnerHost {
     }
   }
 
-  private runHarness(harness: Harness, prompt: string, cwd: string, extraEnv: Record<string, string>): Promise<number> {
+  private runHarness(
+    harness: Harness,
+    prompt: string,
+    cwd: string,
+    extraEnv: Record<string, string>,
+    model: string | null = null,
+  ): Promise<number> {
     return new Promise((resolve) => {
       const viaArg = harness.promptVia === 'arg';
+      // The lead's model choice for this agent (DAT-279), as the harness's own switch.
+      const modelArgs = harness.modelArgs(model);
       // Delivery allowlist, caller-granted (DAT-264): headless Claude Code
       // rightly ignores permission ALLOW rules from a project settings file in
       // a fresh untrusted directory (any cloned repo could self-grant), which
@@ -440,7 +479,9 @@ export class RunnerHost {
       // settings file, which stays as documentation/backstop.
       const deliveryArgs =
         harness.name === 'claude' ? ['--allowedTools', DELIVERY_ALLOW_RULES.join(',')] : [];
-      const args = viaArg ? [...harness.args, ...deliveryArgs, prompt] : [...harness.args, ...deliveryArgs];
+      const args = viaArg
+        ? [...harness.args, ...modelArgs, ...deliveryArgs, prompt]
+        : [...harness.args, ...modelArgs, ...deliveryArgs];
       const child = spawn(harness.bin, args, {
         cwd,
         env: { ...process.env, ...extraEnv },

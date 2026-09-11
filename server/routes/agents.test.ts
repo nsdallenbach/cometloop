@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 import type express from 'express';
-import { PROJECT_AGENTS_SCHEMA_SQL, inferHarness, loadAgentsOverview, setupProjectAgentRoutes } from './agents';
+import { PROJECT_AGENTS_SCHEMA_SQL, agentConfigForWorkPackage, inferHarness, loadAgentsOverview, setupProjectAgentRoutes } from './agents';
 import { baselineSecurity, parseSecuritySettings } from './agent-security';
 import type { Identity } from './roles';
 import { REGISTRY_SCHEMA_SQL } from './registry';
@@ -234,5 +234,52 @@ describe('PATCH /api/projects/:id/agents/:agentId — registry attachments (DAT-
     // A later update without attachment fields leaves them alone.
     expect((await patch(routes, { id: 'eng-a', agentId: String(agent.id) }, { model: 'gpt-5.3-codex' })).statusCode).toBe(200);
     expect(JSON.parse(String((await q('SELECT mcp_servers::text AS m FROM app.project_agents WHERE id = $1', [agent.id])).rows[0].m))).toEqual([ids.shared, ids.own]);
+  });
+});
+
+describe('agentConfigForWorkPackage (DAT-279)', () => {
+  beforeEach(async () => {
+    for (const sql of REGISTRY_SCHEMA_SQL.filter((s) => !s.includes('CREATE UNIQUE INDEX')).map((s) =>
+      s.replace(' REFERENCES app.engagements(id) ON DELETE CASCADE', ''),
+    ))
+      await q(sql);
+    await q(
+      `INSERT INTO app.registry_mcp_servers (engagement_id, slug, name, command, args, requires_auth)
+       VALUES (NULL, 'jira', 'Jira', 'npx', '["-y","jira-mcp"]', true), ('eng-b', 'other', 'Other', 'x', '[]', false)`,
+    );
+    await q(
+      `INSERT INTO app.registry_skills (engagement_id, slug, name, content, status)
+       VALUES (NULL, 'style', 'Style', '# Style', 'published'), (NULL, 'old', 'Old', 'x', 'retired')`,
+    );
+    const idOf = async (table: string, slug: string) =>
+      Number((await q(`SELECT id FROM app.${table} WHERE slug = $1`, [slug])).rows[0].id);
+    const attachedServers = [await idOf('registry_mcp_servers', 'jira'), await idOf('registry_mcp_servers', 'other')];
+    const attachedSkills = [await idOf('registry_skills', 'style'), await idOf('registry_skills', 'old')];
+    await q(
+      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model, mcp_servers, skills)
+       VALUES ('eng-a', 'Desktop-Box-Claude-1', 'runner', 'claude-code', 'claude-opus-5', $1, $2)`,
+      [JSON.stringify(attachedServers), JSON.stringify(attachedSkills)],
+    );
+  });
+
+  it('resolves the claiming agent’s model and attachments, case-insensitively, dropping what it may no longer use', async () => {
+    const cfg = await agentConfigForWorkPackage(q, 'eng-a', 'desktop-box-claude-1');
+    expect(cfg.model).toBe('claude-opus-5');
+    // 'other' belongs to eng-b and 'old' is retired — neither reaches the run.
+    expect(cfg.mcpServers.map((m) => m.slug)).toEqual(['jira']);
+    expect(cfg.mcpServers[0]).toMatchObject({
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'jira-mcp'],
+      requiresAuth: true,
+      authEnv: 'MCP_AUTH_JIRA',
+    });
+    expect(cfg.skills.map((s) => s.slug)).toEqual(['style']);
+    expect(cfg.skills[0].content).toBe('# Style');
+  });
+
+  it('gives an unknown or unnamed agent the empty config rather than an error', async () => {
+    expect(await agentConfigForWorkPackage(q, 'eng-a', 'nobody')).toEqual({ model: null, mcpServers: [], skills: [] });
+    expect(await agentConfigForWorkPackage(q, 'eng-a', '')).toEqual({ model: null, mcpServers: [], skills: [] });
   });
 });

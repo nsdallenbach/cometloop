@@ -176,7 +176,12 @@ sequenceDiagram
 The queue is plain Postgres (`app.agent_tasks`): runners long-poll a wait
 endpoint, claim atomically, and work through Claude Code. The claim payload
 carries everything — including the server-rendered prompt, so prompt changes
-ship with console deploys instead of fleet updates. Runners are expected to
+ship with console deploys instead of fleet updates — and, since DAT-279, the
+claiming agent's own configuration: the model a lead picked for it and its
+registry attachments (MCP servers, skills; `registry.ts`), which the runner
+materializes in the task workdir through the harness adapter. Secrets never
+ride along: a server that needs one names `MCP_AUTH_<SLUG>` and the runner
+supplies it from its own keychain or environment. Runners are expected to
 be chatty (progress notes, sub-2-minute heartbeats, flags instead of silent
 death); a stalled-heartbeat detector and yellow flag badges surface trouble
 on the board without moving lanes.

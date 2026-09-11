@@ -44,7 +44,7 @@ import { execFileSync, spawn } from 'child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { getHarness, normalizeState, toolLabel } from './harnesses.mjs';
+import { getHarness, missingAuthEnv, normalizeState, toolLabel } from './harnesses.mjs';
 
 const APP = (process.env.APP_URL ?? 'https://delivery-console-7474645607548631.aws.databricksapps.com').replace(/\/+$/, '');
 const HOST = process.env.DATABRICKS_HOST ?? 'https://dbc-96494b8f-6b86.cloud.databricks.com';
@@ -297,10 +297,13 @@ function killAgent(run, why) {
  * harness's parser. run.child is exposed so the heartbeat/watchdog sidecars can
  * kill the run.
  */
-function runAgent(prompt, cwd, extraEnv, tools, run) {
+function runAgent(prompt, cwd, extraEnv, tools, run, model = null) {
   return new Promise((resolve) => {
     const viaArg = HARNESS.promptVia === 'arg';
-    const args = viaArg ? [...HARNESS.args, prompt] : HARNESS.args;
+    // The lead's model choice for this agent (DAT-279) rides as the harness's
+    // own switch; no model set means the harness default, as before.
+    const modelArgs = typeof HARNESS.modelArgs === 'function' ? HARNESS.modelArgs(model) : [];
+    const args = viaArg ? [...HARNESS.args, ...modelArgs, prompt] : [...HARNESS.args, ...modelArgs];
     const child = spawn(HARNESS.bin, args, {
       cwd,
       env: { ...process.env, ...extraEnv },
@@ -461,10 +464,16 @@ async function runTask(pkg) {
     }
   }
 
-  // Let the agent talk to the console (progress notes, flags) — wiring is
-  // harness-specific (Claude: workdir .mcp.json; Codex: global config; …).
-  if (process.env.MCP_SERVER && existsSync(process.env.MCP_SERVER)) {
-    HARNESS.writeConfig(dir, process.env.MCP_SERVER);
+  // Let the agent talk to the console (progress notes, flags) and give it
+  // what the lead attached on the Agents page (DAT-279): registry MCP servers
+  // and skills, plus the model. Wiring is harness-specific (Claude: workdir
+  // .mcp.json + .claude/skills; Codex: global MCP config, skills in AGENTS.md).
+  const mcpServerPath = process.env.MCP_SERVER && existsSync(process.env.MCP_SERVER) ? process.env.MCP_SERVER : null;
+  const agentConfig = pkg.agentConfig ?? null;
+  HARNESS.writeConfig(dir, mcpServerPath, agentConfig);
+  const missingAuth = missingAuthEnv(agentConfig);
+  for (const m of missingAuth) {
+    log(`MCP server ${m.slug} requires ${m.authEnv}, which is not set on this runner — it will fail to authenticate`);
   }
 
   // Liveness contract: the heartbeat endpoint answers 404 the moment the
@@ -520,9 +529,18 @@ async function runTask(pkg) {
     return;
   }
 
+  const configNote = [
+    agentConfig?.model ? `model ${agentConfig.model}` : null,
+    agentConfig?.mcpServers?.length ? `${agentConfig.mcpServers.length} MCP server${agentConfig.mcpServers.length === 1 ? '' : 's'}` : null,
+    agentConfig?.skills?.length ? `${agentConfig.skills.length} skill${agentConfig.skills.length === 1 ? '' : 's'}` : null,
+  ].filter(Boolean);
   await call('POST', `/api/agent/work/${id}/progress`, {
     agent: AGENT,
-    note: [`Claimed on ${os.hostname()}; starting ${HARNESS.name} run.`, ...provisioned.notes].join(' '),
+    note: [
+      `Claimed on ${os.hostname()}; starting ${HARNESS.name} run${configNote.length ? ` (${configNote.join(', ')})` : ''}.`,
+      ...missingAuth.map((m) => `⚠ ${m.slug} needs ${m.authEnv}, not set on this runner.`),
+      ...provisioned.notes,
+    ].join(' '),
   }).catch(() => {});
 
   const prompt = pkg.prompt ?? fallbackPrompt(pkg);
@@ -533,7 +551,7 @@ async function runTask(pkg) {
   const code =
     HARNESS.mode === 'service'
       ? await runService(prompt, dir, gitToken, tools, run, pkg)
-      : await runAgent(prompt, dir, { ...provisioned.env, ...(gitToken ? { GIT_TOKEN: gitToken } : {}) }, tools, run);
+      : await runAgent(prompt, dir, { ...provisioned.env, ...(gitToken ? { GIT_TOKEN: gitToken } : {}) }, tools, run, agentConfig?.model ?? null);
   await tools.flush(); // drain the tail of the feed before completing
   clearInterval(heartbeat);
   if (watchdog) clearTimeout(watchdog);

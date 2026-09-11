@@ -2,7 +2,16 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getHarness, isBlockedState, normalizeState, toolLabel } from '../devbox-runner/harnesses.mjs';
+import {
+  appendSkillsTo,
+  getHarness,
+  isBlockedState,
+  mcpServersConfig,
+  missingAuthEnv,
+  normalizeState,
+  toolLabel,
+  writeClaudeSkills,
+} from '../devbox-runner/harnesses.mjs';
 import { HARNESS_PROVIDER, inferHarness } from '../server/routes/agents';
 import { inferHarness as inferRunnerHarness } from '../client/src/components/RunnerLogo';
 import {
@@ -341,5 +350,121 @@ describe('server ↔ client harness tables', () => {
     expect(agentBrand({ harness: null, modelProvider: 'databricks' })?.label).toBe('Databricks');
     expect(agentBrand({ harness: 'cursor', modelProvider: 'anysphere' })?.label).toBe('Cursor');
     expect(agentBrand({ harness: 'sourcegraph-amp', modelProvider: null })).toBeNull();
+  });
+});
+
+// ---------- agent config delivery (DAT-279) ----------
+
+const RUN_CONFIG = {
+  model: 'claude-opus-5',
+  mcpServers: [
+    {
+      slug: 'jira',
+      name: 'Jira',
+      transport: 'stdio' as const,
+      command: 'npx',
+      args: ['-y', 'jira-mcp'],
+      url: null,
+      env: { JIRA_SITE: 'datavail.atlassian.net' },
+      requiresAuth: true,
+      authEnv: 'MCP_AUTH_JIRA',
+    },
+    {
+      slug: 'docs',
+      name: 'Docs',
+      transport: 'http' as const,
+      command: null,
+      args: [],
+      url: 'https://mcp.example.com/docs',
+      env: {},
+      requiresAuth: false,
+      authEnv: null,
+    },
+  ],
+  skills: [
+    {
+      slug: 'review-style',
+      name: 'Review style',
+      description: 'How we review',
+      content: '# Review\n\nBe kind.',
+      harnesses: ['claude-code'],
+    },
+  ],
+};
+
+describe('agent config delivery (DAT-279)', () => {
+  it('writes every attached server into a Claude .mcp.json with auth as an env reference, never a value', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'harness-cfg-'));
+    try {
+      getHarness('claude', {}).writeConfig(dir, 'mcp/server.mjs', RUN_CONFIG);
+      const raw = readFileSync(path.join(dir, '.mcp.json'), 'utf8');
+      const servers = JSON.parse(raw).mcpServers;
+      expect(Object.keys(servers).sort()).toEqual(['delivery-console', 'docs', 'jira']);
+      expect(servers.jira).toEqual({
+        command: 'npx',
+        args: ['-y', 'jira-mcp'],
+        env: { JIRA_SITE: 'datavail.atlassian.net', MCP_AUTH_JIRA: '${MCP_AUTH_JIRA}' },
+      });
+      expect(servers.docs).toEqual({ type: 'http', url: 'https://mcp.example.com/docs' });
+      // The reference is the only thing that mentions the secret's name.
+      expect(raw).not.toMatch(/Bearer [A-Za-z0-9]/);
+
+      // Skills land where Claude Code looks, with frontmatter.
+      const skill = readFileSync(path.join(dir, '.claude', 'skills', 'review-style', 'SKILL.md'), 'utf8');
+      expect(skill.startsWith('---\nname: review-style\ndescription: How we review\n---\n')).toBe(true);
+      expect(skill).toContain('Be kind.');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still writes only the console server when nothing is attached, and nothing without a server path', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'harness-cfg-'));
+    const bare = mkdtempSync(path.join(os.tmpdir(), 'harness-cfg-'));
+    try {
+      getHarness('claude', {}).writeConfig(dir, 'mcp/server.mjs', { model: null, mcpServers: [], skills: [] });
+      expect(Object.keys(JSON.parse(readFileSync(path.join(dir, '.mcp.json'), 'utf8')).mcpServers)).toEqual([
+        'delivery-console',
+      ]);
+      expect(readdirSync(dir)).toEqual(['.mcp.json']);
+      getHarness('claude', {}).writeConfig(bare, null, null);
+      expect(readdirSync(bare)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(bare, { recursive: true, force: true });
+    }
+  });
+
+  it('gives Codex its skills through AGENTS.md and no MCP file', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'harness-cfg-'));
+    try {
+      getHarness('codex', {}).writeConfig(dir, 'mcp/server.mjs', RUN_CONFIG);
+      expect(readdirSync(dir)).toEqual(['AGENTS.md']);
+      const agents = readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+      expect(agents.startsWith('# Agent instructions')).toBe(true);
+      expect(agents).toContain('## Skill: Review style');
+      expect(agents).toContain('Be kind.');
+      // Appending keeps what the file already says.
+      appendSkillsTo(dir, 'AGENTS.md', RUN_CONFIG);
+      expect(readFileSync(path.join(dir, 'AGENTS.md'), 'utf8').startsWith('# Agent instructions')).toBe(true);
+      expect(writeClaudeSkills(dir, null)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('turns the model into each harness’s own switch', () => {
+    expect(getHarness('claude', {}).modelArgs('claude-opus-5')).toEqual(['--model', 'claude-opus-5']);
+    expect(getHarness('codex', {}).modelArgs('gpt-5.3-codex')).toEqual(['-m', 'gpt-5.3-codex']);
+    expect(getHarness('claude', {}).modelArgs(null)).toEqual([]);
+    expect(getHarness('generic', GENERIC_ENV).modelArgs('x')).toEqual([]);
+    expect(getHarness('omnigent', {}).modelArgs('x')).toEqual([]);
+  });
+
+  it('reports servers whose credential the runner cannot supply', () => {
+    expect(missingAuthEnv(RUN_CONFIG, {})).toEqual([{ slug: 'jira', authEnv: 'MCP_AUTH_JIRA' }]);
+    expect(missingAuthEnv(RUN_CONFIG, { MCP_AUTH_JIRA: 'x' })).toEqual([]);
+    expect(missingAuthEnv(null, {})).toEqual([]);
+    expect(mcpServersConfig(null, null)).toEqual({ mcpServers: {} });
   });
 });
