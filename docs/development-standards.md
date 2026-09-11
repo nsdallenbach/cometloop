@@ -25,6 +25,13 @@ the context handed to agent runners.
   terminal, token metrics. Released by tag with silent auto-update. Shares
   `shared/` (typed API client, design tokens, harness adapters) with the web
   console: an API or `shared/` change is a two-shell change.
+- **Agents are managed on the desktop, never from the web.** Runner agents
+  belong to developers: their project scope, model, MCP servers and skills
+  are configured in the desktop Agents page and reported to the console,
+  which only mirrors them (the API refuses web edits on desktop-managed
+  agents). The web's Agents page is the read-only full view for leads and
+  PMs plus lead governance — endpoint agents, security scopes, load
+  balancing, registry publishing. Build agent features desktop-first.
 
 ## Git and delivery flow
 

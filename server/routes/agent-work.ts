@@ -144,8 +144,29 @@ const OrderBody = z.object({
 const ClaimBody = z.object({
   agent: z.string().min(1).max(80),
   engagement: z.string().max(80).optional(),
+  /** Project scope a desktop agent is configured for (DAT-280); several ids, any of them. */
+  engagements: z.array(z.string().min(1).max(80)).max(50).optional(),
   ticket: z.string().max(40).optional(),
 });
+
+/** `?engagement=a` or `?engagements=a,b` → the ids a runner will take work from (empty = any). */
+function engagementScope(query: Record<string, unknown>, body?: { engagement?: string; engagements?: string[] }): string[] {
+  const fromBody = body?.engagements?.length ? body.engagements : body?.engagement ? [body.engagement] : [];
+  if (fromBody.length) return fromBody;
+  const many = typeof query.engagements === 'string' ? query.engagements.split(',').map((s) => s.trim()).filter(Boolean) : [];
+  if (many.length) return many;
+  return typeof query.engagement === 'string' && query.engagement ? [query.engagement] : [];
+}
+
+/** SQL fragment restricting to the scope, pushing its ids onto params; '' when unscoped. */
+function scopeFilter(params: unknown[], scope: string[]): string {
+  if (!scope.length) return '';
+  const placeholders = scope.map((id) => {
+    params.push(id);
+    return `$${params.length}`;
+  });
+  return ` AND engagement_id IN (${placeholders.join(', ')})`;
+}
 
 const ProgressBody = z.object({
   agent: z.string().min(1).max(80),
@@ -536,23 +557,20 @@ export function setupAgentRoutes(
    */
   app.get('/api/agent/work/wait', async (req, res) => {
     try {
-      const engagement = typeof req.query.engagement === 'string' ? req.query.engagement : null;
+      const scope = engagementScope(req.query as Record<string, unknown>);
       const agent = typeof req.query.agent === 'string' ? req.query.agent : null;
-      if (agent) await recordRunnerPoll(q, agent, engagement, 'poll');
+      if (agent) await recordRunnerPoll(q, agent, scope[0] ?? null, 'poll');
       else warnAnonymousPoll();
       const identity = await resolveIdentity(req);
       const deadline = Date.now() + 55_000;
       for (;;) {
         const params: unknown[] = [];
         let where = `state = 'queued'`;
-        if (engagement) {
-          params.push(engagement);
-          where += ` AND engagement_id = $${params.length}`;
-        }
+        where += scopeFilter(params, scope);
         where += ` AND ${assigneeScope(params, identity.email)}`;
         const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
         if (queued.length > 0) {
-          console.log(`[agent] wait poll answered with ${queued.length} queued task(s)${engagement ? ` (engagement ${engagement})` : ''}`);
+          console.log(`[agent] wait poll answered with ${queued.length} queued task(s)${scope.length ? ` (engagements ${scope.join(', ')})` : ''}`);
           res.json({ queued });
           return;
         }
@@ -570,16 +588,13 @@ export function setupAgentRoutes(
 
   app.get('/api/agent/work', async (req, res) => {
     try {
-      const engagement = typeof req.query.engagement === 'string' ? req.query.engagement : null;
+      const scope = engagementScope(req.query as Record<string, unknown>);
       const agent = typeof req.query.agent === 'string' ? req.query.agent : null;
-      if (agent) await recordRunnerPoll(q, agent, engagement, 'poll');
+      if (agent) await recordRunnerPoll(q, agent, scope[0] ?? null, 'poll');
       const identity = await resolveIdentity(req);
       const params: unknown[] = [];
       let where = `state = 'queued'`;
-      if (engagement) {
-        params.push(engagement);
-        where += ` AND engagement_id = $${params.length}`;
-      }
+      where += scopeFilter(params, scope);
       where += ` AND ${assigneeScope(params, identity.email)}`;
       const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
       const active = agent ? (await q(`SELECT * FROM app.agent_tasks WHERE agent = $1 AND state IN ('claimed','working') ORDER BY id`, [agent])).rows : [];
@@ -597,15 +612,14 @@ export function setupAgentRoutes(
       return;
     }
     try {
-      const { agent, engagement, ticket } = parsed.data;
-      await recordRunnerPoll(q, agent, engagement ?? null, 'claim');
+      const { agent, ticket } = parsed.data;
+      const scope = engagementScope({}, parsed.data);
+      await recordRunnerPoll(q, agent, scope[0] ?? null, 'claim');
       const identity = await resolveIdentity(req);
       const filters: string[] = [`state = 'queued'`];
       const params: unknown[] = [];
-      if (engagement) {
-        params.push(engagement);
-        filters.push(`engagement_id = $${params.length}`);
-      }
+      const scoped = scopeFilter(params, scope);
+      if (scoped) filters.push(scoped.replace(/^ AND /, ''));
       if (ticket) {
         params.push(ticket);
         filters.push(`ticket_key = $${params.length}`);

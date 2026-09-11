@@ -4,10 +4,11 @@
 // harness binary detection, auto-start, and routing "run this ticket" to an
 // idle instance.
 import { execFile } from 'node:child_process';
+import os from 'node:os';
 import { promisify } from 'node:util';
 import type { ConsoleClient } from '../../../shared/api-client';
 import { getHarness } from '../../../shared/harnesses';
-import { saveAgentsConfig, type DesktopConfig } from './config';
+import { saveAgentsConfig, type AgentKindConfig, type DesktopConfig } from './config';
 import type { IdentityBroker } from './identity';
 import { RunnerHost, type RunnerEvent, type RunnerSnapshot } from './runner';
 
@@ -24,12 +25,12 @@ export interface InstanceSnapshot extends RunnerSnapshot {
 }
 
 export interface AgentsState {
-  kinds: Record<
-    AgentKind,
-    { installed: boolean; version: string | null; instances: number; autoStart: boolean }
-  >;
+  kinds: Record<AgentKind, AgentKindConfig & { installed: boolean; version: string | null }>;
   instances: InstanceSnapshot[];
 }
+
+/** Desktop agent kind → the console's harness id (what the Agents page brands). */
+export const KIND_HARNESS: Record<AgentKind, string> = { claude: 'claude-code', codex: 'codex' };
 
 interface Instance {
   id: string;
@@ -63,6 +64,40 @@ export class AgentPool {
         for (const inst of this.instances.filter((i) => i.kind === kind)) inst.host.start();
       }
     }
+    this.report();
+  }
+
+  private reportTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Tell the console what this machine runs (DAT-280). Agents are managed
+   * here; the console mirrors them so the web's Agents page shows the real
+   * configuration to leads and PMs. Debounced, best-effort — a report that
+   * fails (offline, signed out) is retried on the next config change or
+   * instance start, and never blocks the UI.
+   */
+  report(): void {
+    if (this.reportTimer) clearTimeout(this.reportTimer);
+    this.reportTimer = setTimeout(() => {
+      this.reportTimer = null;
+      const host = os.hostname();
+      for (const inst of this.instances) {
+        const block = this.cfg.agents[inst.kind];
+        this.client
+          .reportAgent({
+            agent: inst.agentName,
+            harness: KIND_HARNESS[inst.kind],
+            host,
+            projects: block.projects,
+            model: block.model,
+            mcpServers: block.mcpServers,
+            skills: block.skills,
+          })
+          .catch((e: unknown) => {
+            console.warn(`[agents] report for ${inst.agentName} failed: ${e instanceof Error ? e.message : String(e)}`);
+          });
+      }
+    }, 800);
   }
 
   private async detect(): Promise<void> {
@@ -134,11 +169,15 @@ export class AgentPool {
     };
   }
 
-  /** UI config change: persist, resize the pool, start newly added instances. */
-  configure(kind: AgentKind, opts: { instances?: number; autoStart?: boolean }): AgentsState {
+  /** UI config change: persist, resize the pool, start newly added instances, report home. */
+  configure(kind: AgentKind, opts: Partial<AgentKindConfig>): AgentsState {
     const block = this.cfg.agents[kind];
     if (opts.instances !== undefined) block.instances = Math.max(0, Math.min(4, Math.trunc(opts.instances)));
     if (opts.autoStart !== undefined) block.autoStart = opts.autoStart;
+    if (opts.projects !== undefined) block.projects = [...new Set(opts.projects)].slice(0, 50);
+    if (opts.model !== undefined) block.model = opts.model;
+    if (opts.mcpServers !== undefined) block.mcpServers = [...new Set(opts.mcpServers)].slice(0, 40);
+    if (opts.skills !== undefined) block.skills = [...new Set(opts.skills)].slice(0, 40);
     saveAgentsConfig(this.cfg);
     const before = new Set(this.instances.map((i) => i.id));
     this.applyCounts();
@@ -147,6 +186,7 @@ export class AgentPool {
     for (const inst of this.instances) {
       if (inst.kind === kind && !before.has(inst.id)) inst.host.start();
     }
+    this.report();
     return this.state();
   }
 

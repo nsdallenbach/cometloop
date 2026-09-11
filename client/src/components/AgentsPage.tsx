@@ -562,7 +562,7 @@ export function AgentsPage({
         )}
         <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>
           {view === 'grid'
-            ? 'Every agent by project. Open one to configure its model, scope and permissions.'
+            ? 'Every agent by project — runners are managed on their developers’ desktops and mirrored here; leads register endpoint agents and set permissions.'
             : view === 'map'
               ? 'Architecture view — projects at the center, their agents as spokes. Click an agent to configure it.'
               : 'The MCP servers and skills agents can be given — shared across projects or scoped to one.'}

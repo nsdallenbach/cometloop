@@ -44,18 +44,41 @@ const ConfigSchema = z.object({
    */
   agents: z
     .object({
-      claude: z
-        .object({ instances: z.number().int().min(0).max(4).default(1), autoStart: z.boolean().default(true) })
-        .default({ instances: 1, autoStart: true }),
-      codex: z
-        .object({ instances: z.number().int().min(0).max(4).default(0), autoStart: z.boolean().default(false) })
-        .default({ instances: 0, autoStart: false }),
+      claude: agentKindSchema(1, true),
+      codex: agentKindSchema(0, false),
     })
     .default({
-      claude: { instances: 1, autoStart: true },
-      codex: { instances: 0, autoStart: false },
+      claude: agentKindDefaults(1, true),
+      codex: agentKindDefaults(0, false),
     }),
 });
+
+/**
+ * Per-agent-type configuration (DAT-245 + DAT-280). Agents are managed here,
+ * on the developer's machine — the console only mirrors what this reports:
+ *  - `projects`: engagement ids the instances claim from; empty = any project.
+ *  - `model`: the harness's model id (`claude --model …`); null = harness default.
+ *  - `mcpServers` / `skills`: registry slugs attached to every run; resolved
+ *    against the console's registry at claim time, per project.
+ */
+function agentKindDefaults(instances: number, autoStart: boolean) {
+  return { instances, autoStart, projects: [] as string[], model: null as string | null, mcpServers: [] as string[], skills: [] as string[] };
+}
+
+function agentKindSchema(instances: number, autoStart: boolean) {
+  return z
+    .object({
+      instances: z.number().int().min(0).max(4).default(instances),
+      autoStart: z.boolean().default(autoStart),
+      projects: z.array(z.string().min(1)).max(50).default([]),
+      model: z.string().trim().max(80).nullable().default(null),
+      mcpServers: z.array(z.string().min(1)).max(40).default([]),
+      skills: z.array(z.string().min(1)).max(40).default([]),
+    })
+    .default(agentKindDefaults(instances, autoStart));
+}
+
+export type AgentKindConfig = z.infer<ReturnType<typeof agentKindSchema>>;
 
 export type DesktopConfig = z.infer<typeof ConfigSchema> & {
   /** Dev-mode only, from env — never persisted. */

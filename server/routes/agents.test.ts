@@ -115,6 +115,7 @@ function captureRoutes(requireLead: (req: express.Request, res: express.Response
     get: (path: string, h: Handler) => routes.set(`GET ${path}`, h),
     post: (path: string, h: Handler) => routes.set(`POST ${path}`, h),
     patch: (path: string, h: Handler) => routes.set(`PATCH ${path}`, h),
+    put: (path: string, h: Handler) => routes.set(`PUT ${path}`, h),
     delete: (path: string, h: Handler) => routes.set(`DELETE ${path}`, h),
   } as unknown as express.Application;
   setupProjectAgentRoutes(app, q, requireLead, () => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' }));
@@ -281,5 +282,66 @@ describe('agentConfigForWorkPackage (DAT-279)', () => {
   it('gives an unknown or unnamed agent the empty config rather than an error', async () => {
     expect(await agentConfigForWorkPackage(q, 'eng-a', 'nobody')).toEqual({ model: null, mcpServers: [], skills: [] });
     expect(await agentConfigForWorkPackage(q, 'eng-a', '')).toEqual({ model: null, mcpServers: [], skills: [] });
+  });
+});
+
+describe('PUT /api/agent/self — desktop-managed agents (DAT-280)', () => {
+  const put = async (routes: Map<string, Handler>, body: unknown) => {
+    const res = fakeRes();
+    await routes.get('PUT /api/agent/self')?.({ params: {}, body } as unknown as express.Request, res as unknown as express.Response);
+    return res;
+  };
+
+  beforeEach(async () => {
+    await q(`CREATE TABLE app.feed_items (id SERIAL PRIMARY KEY, engagement_id TEXT, actor TEXT, text TEXT, time_label TEXT, reversible BOOLEAN)`);
+    for (const sql of REGISTRY_SCHEMA_SQL.filter((s) => !s.includes('CREATE UNIQUE INDEX')).map((s) =>
+      s.replace(' REFERENCES app.engagements(id) ON DELETE CASCADE', ''),
+    ))
+      await q(sql);
+    await q(
+      `INSERT INTO app.registry_mcp_servers (engagement_id, slug, name, command) VALUES (NULL, 'jira', 'Jira', 'npx'), ('eng-b', 'b-only', 'B only', 'x')`,
+    );
+    await q(`INSERT INTO app.registry_skills (engagement_id, slug, name, content) VALUES (NULL, 'style', 'Style', '# s')`);
+  });
+
+  it('mirrors a desktop report as one row per scoped project, resolving slugs per project', async () => {
+    const routes = captureRoutes(leadGuard);
+    const res = await put(routes, {
+      agent: 'desktop-box-claude-1',
+      harness: 'claude',
+      host: 'BOX',
+      projects: ['eng-b'],
+      model: 'claude-opus-5',
+      mcpServers: ['jira', 'b-only', 'nope'],
+      skills: ['style'],
+    });
+    expect(res.statusCode).toBe(200);
+    const rows = (await q(`SELECT engagement_id, harness, model_provider, model, config::text AS c, mcp_servers::text AS m, skills::text AS s FROM app.project_agents WHERE name = 'desktop-box-claude-1'`)).rows;
+    expect(rows.map((r) => r.engagement_id)).toEqual(['eng-b']);
+    expect(rows[0]).toMatchObject({ harness: 'claude-code', model_provider: 'anthropic', model: 'claude-opus-5' });
+    expect(JSON.parse(String(rows[0].c))).toMatchObject({ managedBy: 'desktop', host: 'BOX', projects: ['eng-b'] });
+    expect((JSON.parse(String(rows[0].m)) as number[]).length).toBe(2); // jira (shared) + b-only; 'nope' dropped
+    expect((JSON.parse(String(rows[0].s)) as number[]).length).toBe(1);
+
+    const { agents } = await loadAgentsOverview(q);
+    expect(agents.find((a) => a.name === 'desktop-box-claude-1')).toMatchObject({ managedBy: 'desktop', host: 'BOX', projects: ['eng-b'], model: 'claude-opus-5' });
+  });
+
+  it('reports an unscoped agent to every project and refuses web edits of its run configuration', async () => {
+    const routes = captureRoutes(leadGuard);
+    expect((await put(routes, { agent: 'desktop-box-codex-1', harness: 'codex', projects: [] })).statusCode).toBe(200);
+    const rows = (await q(`SELECT id, engagement_id FROM app.project_agents WHERE name = 'desktop-box-codex-1' ORDER BY engagement_id`)).rows;
+    expect(rows.map((r) => r.engagement_id)).toEqual(['eng-a', 'eng-b']);
+
+    // The web may still annotate (role, description) but not reconfigure.
+    const id = String(rows[0].id);
+    expect((await patch(routes, { id: 'eng-a', agentId: id }, { model: 'gpt-5.5' })).statusCode).toBe(409);
+    expect((await patch(routes, { id: 'eng-a', agentId: id }, { mcpServers: [] })).statusCode).toBe(409);
+    expect((await patch(routes, { id: 'eng-a', agentId: id }, { description: 'nightly runner' })).statusCode).toBe(200);
+  });
+
+  it('rejects a report without an agent name', async () => {
+    const routes = captureRoutes(leadGuard);
+    expect((await put(routes, { harness: 'claude' })).statusCode).toBe(400);
   });
 });

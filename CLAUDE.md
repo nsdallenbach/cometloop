@@ -52,6 +52,13 @@ Rules that follow from that split:
   *shared by design*: tick the parity item in the PR template, update
   [docs/feature-parity-tracker.md](./docs/feature-parity-tracker.md), or file a
   `parity-gap` ticket. Process: [docs/cross-platform-parity.md](./docs/cross-platform-parity.md).
+- **Agents are managed on the desktop; the web is read-only for them.**
+  Runner agents are developers' local agents: scope, model, MCP servers and
+  skills are configured in the desktop Agents page (`desktop/src/renderer`,
+  persisted in the desktop config, reported via `PUT /api/agent/self`). The
+  web Agents page mirrors that for leads and PMs and only offers governance
+  (endpoint agents, security scopes, load balancing, registry publishing).
+  Never add runner configuration to the web app.
 - **Run `/parity-check` before opening a PR** — the project skill walks the
   classification, the docs that need touching, and the validation for each
   package.

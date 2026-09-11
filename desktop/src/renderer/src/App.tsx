@@ -259,11 +259,215 @@ const KIND_LABEL: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'C
  * this machine, tab between live instances, and watch their feeds. Native-app
  * exclusive — the web console never gets a path into anyone's laptop.
  */
+/** Console harness ids for the model catalog lookup. */
+const KIND_HARNESS: Record<AgentKind, string> = { claude: 'claude-code', codex: 'codex' };
+
+/**
+ * Per-agent-type configuration (DAT-280): the developer decides here which
+ * projects the instances claim from, which model they run, and which registry
+ * MCP servers and skills every run gets. Saved locally (config.json) and
+ * reported to the console, which mirrors it on the web Agents page.
+ */
+function AgentKindConfigPanel({
+  kind,
+  config,
+  onSave,
+}: {
+  kind: AgentKind;
+  config: AgentKindConfig;
+  onSave: (opts: Partial<AgentKindConfig>) => void;
+}) {
+  const [projects, setProjects] = useState<EngagementRow[]>([]);
+  const [registry, setRegistry] = useState<RegistryView | null>(null);
+  const [models, setModels] = useState<{ id: string; label: string; default?: boolean }[]>([]);
+  const [error, setError] = useState('');
+  const [draft, setDraft] = useState({
+    projects: config.projects,
+    model: config.model ?? '',
+    mcpServers: config.mcpServers,
+    skills: config.skills,
+  });
+  const [customModel, setCustomModel] = useState(false);
+
+  useEffect(() => {
+    void window.desktopBridge.listEngagements().then((r) => {
+      if (r.ok) setProjects(r.engagements);
+      else setError(r.error);
+    });
+    void window.desktopBridge.consoleModels().then((r) => {
+      if (r.ok) setModels(r.models.harnessModels[KIND_HARNESS[kind]] ?? []);
+    });
+  }, [kind]);
+
+  // The registry view follows the project scope: shared entries plus each scoped project's own.
+  const scopeKey = draft.projects.join(',');
+  useEffect(() => {
+    let stale = false;
+    void window.desktopBridge.consoleRegistry(scopeKey ? scopeKey.split(',') : []).then((r) => {
+      if (stale) return;
+      if (r.ok) setRegistry(r.registry);
+      else setError(r.error);
+    });
+    return () => {
+      stale = true;
+    };
+  }, [scopeKey]);
+
+  const toggle = (k: 'projects' | 'mcpServers' | 'skills', v: string) =>
+    setDraft((d) => ({ ...d, [k]: d[k].includes(v) ? d[k].filter((x) => x !== v) : [...d[k], v] }));
+  const dirty =
+    JSON.stringify(draft.projects) !== JSON.stringify(config.projects) ||
+    (draft.model || null) !== config.model ||
+    JSON.stringify(draft.mcpServers) !== JSON.stringify(config.mcpServers) ||
+    JSON.stringify(draft.skills) !== JSON.stringify(config.skills);
+  const modelInList = models.some((m) => m.id === draft.model);
+  const showCustom = customModel || (draft.model !== '' && !modelInList);
+  const projectLabel = (id: string) => projects.find((p) => p.id === id)?.client ?? id;
+
+  const label: CSSProperties = { ...mono(500, 9), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 5 };
+  const field: CSSProperties = {
+    width: '100%',
+    background: 'var(--bg)',
+    border: '1px solid var(--line2)',
+    borderRadius: 4,
+    color: 'var(--tx)',
+    fontSize: 12,
+    padding: '6px 8px',
+    fontFamily: 'inherit',
+  };
+  const chip = (active: boolean): CSSProperties => ({
+    border: `1px solid ${active ? 'var(--agent)' : 'var(--line2)'}`,
+    background: active ? 'var(--agentsoft, rgba(122,143,245,.13))' : 'transparent',
+    color: active ? 'var(--tx)' : 'var(--tx2)',
+    borderRadius: 4,
+    padding: '4px 9px',
+    ...mono(500, 10),
+    letterSpacing: '.05em',
+    cursor: 'pointer',
+    fontFamily: "'DM Mono', monospace",
+  });
+
+  return (
+    <div style={{ display: 'grid', gap: 12, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+      {error && <div style={{ fontSize: 11.5, color: 'var(--bad)' }}>{error}</div>}
+      <div>
+        <div style={label}>PROJECTS — instances claim from these (none = any project)</div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {projects.map((p) => (
+            <button key={p.id} className="no-drag" onClick={() => toggle('projects', p.id)} style={chip(draft.projects.includes(p.id))} title={p.name}>
+              {p.client.toUpperCase()}
+            </button>
+          ))}
+          {projects.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>No projects visible — sign in on the Identity tab.</span>}
+        </div>
+      </div>
+      <div>
+        <div style={label}>MODEL</div>
+        {models.length > 0 && !showCustom ? (
+          <select
+            className="no-drag"
+            style={field}
+            value={draft.model}
+            onChange={(e) => {
+              if (e.target.value === '__custom__') {
+                setCustomModel(true);
+                setDraft((d) => ({ ...d, model: '' }));
+                return;
+              }
+              setDraft((d) => ({ ...d, model: e.target.value }));
+            }}
+          >
+            <option value="">— harness default —</option>
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} · {m.id}
+                {m.default ? ' (default)' : ''}
+              </option>
+            ))}
+            <option value="__custom__">Other model id…</option>
+          </select>
+        ) : (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input className="no-drag" style={{ ...field, ...mono(400, 11.5) }} value={draft.model} placeholder={kind === 'codex' ? 'e.g. gpt-5.3-codex' : 'e.g. claude-opus-5'} onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))} />
+            {models.length > 0 && (
+              <button className="no-drag" onClick={() => { setCustomModel(false); setDraft((d) => ({ ...d, model: '' })); }} style={{ ...btnStyle('var(--tx2)'), padding: '4px 10px', fontSize: 11 }}>
+                List
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div>
+          <div style={label}>MCP SERVERS — from the registry</div>
+          <div style={{ display: 'grid', gap: 4 }}>
+            {(registry?.mcpServers ?? []).map((m) => (
+              <label key={`${m.scope}/${m.slug}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 11.5, cursor: 'pointer' }}>
+                <input type="checkbox" checked={draft.mcpServers.includes(m.slug)} onChange={() => toggle('mcpServers', m.slug)} style={{ marginTop: 2 }} />
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ fontWeight: 600 }}>{m.name}</span>{' '}
+                  <span style={{ ...mono(400, 9), color: m.scope === 'shared' ? 'var(--agent)' : 'var(--tx3)' }}>{m.scope === 'shared' ? 'SHARED' : projectLabel(m.scope).toUpperCase()}</span>
+                  <div style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>
+                    {m.slug} · {m.transport}{m.requiresAuth ? ` · needs ${m.authEnv} (Identity → MCP server auth)` : ''}
+                  </div>
+                </span>
+              </label>
+            ))}
+            {registry && registry.mcpServers.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>Nothing published for this scope.</span>}
+          </div>
+        </div>
+        <div>
+          <div style={label}>SKILLS — from the registry</div>
+          <div style={{ display: 'grid', gap: 4 }}>
+            {(registry?.skills ?? []).map((k) => {
+              const fits = k.harnesses.includes(KIND_HARNESS[kind]);
+              return (
+                <label key={`${k.scope}/${k.slug}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 11.5, cursor: 'pointer', opacity: fits ? 1 : 0.55 }}>
+                  <input type="checkbox" checked={draft.skills.includes(k.slug)} onChange={() => toggle('skills', k.slug)} style={{ marginTop: 2 }} />
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ fontWeight: 600 }}>{k.name}</span>{' '}
+                    <span style={{ ...mono(400, 9), color: k.scope === 'shared' ? 'var(--agent)' : 'var(--tx3)' }}>{k.scope === 'shared' ? 'SHARED' : projectLabel(k.scope).toUpperCase()}</span>
+                    <div style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>
+                      {k.description || k.slug}{fits ? '' : ` · not written for ${KIND_LABEL[kind]}`}
+                    </div>
+                  </span>
+                </label>
+              );
+            })}
+            {registry && registry.skills.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>Nothing published for this scope.</span>}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 11, color: 'var(--tx3)', lineHeight: 1.5 }}>
+          Saved on this machine and reported to the console; applies to the next claim of every {KIND_LABEL[kind]} instance.
+        </span>
+        <div style={{ flex: 1 }} />
+        {dirty && (
+          <button className="no-drag" onClick={() => setDraft({ projects: config.projects, model: config.model ?? '', mcpServers: config.mcpServers, skills: config.skills })} style={{ ...btnStyle('var(--tx2)'), padding: '5px 10px', fontSize: 11.5 }}>
+            Reset
+          </button>
+        )}
+        <button
+          className="no-drag hv-lift"
+          disabled={!dirty}
+          onClick={() => onSave({ projects: draft.projects, model: draft.model.trim() || null, mcpServers: draft.mcpServers, skills: draft.skills })}
+          style={{ ...btnStyle(dirty ? 'var(--agent)' : 'var(--tx3)'), padding: '5px 12px', fontSize: 11.5, opacity: dirty ? 1 : 0.6 }}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
   const [agents, setAgents] = useState<AgentsState | null>(null);
   const [tab, setTab] = useState<string | null>(null);
   const [work, setWork] = useState<{ queued: AgentTaskRow[]; active: AgentTaskRow[] } | null>(null);
   const [runError, setRunError] = useState('');
+  // Which agent type's configuration panel is expanded (DAT-280).
+  const [configOpen, setConfigOpen] = useState<AgentKind | null>(null);
   // Interactive terminal (DAT-240): pane docked at the bottom of the page;
   // sessions live in the main process, so hiding the pane kills nothing.
   const [termOpen, setTermOpen] = useState(false);
@@ -321,7 +525,7 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
     if (!res.ok) setRunError(res.error ?? 'Run failed to start.');
   };
 
-  const configure = (kind: AgentKind, opts: { instances?: number; autoStart?: boolean }) =>
+  const configure = (kind: AgentKind, opts: Partial<AgentKindConfig>) =>
     void window.desktopBridge.agentsConfigure(kind, opts).then(apply);
 
   const act = (fn: (id: string) => Promise<AgentsState>, id: string) => () => void fn(id).then(apply);
@@ -346,7 +550,7 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Agents</h2>
         <span style={{ ...mono(400, 10.5), color: 'var(--tx3)' }}>
-          coding agents running on this machine — configured here, invisible to the web app
+          coding agents running on this machine — managed here; the web console mirrors what they report
         </span>
       </div>
 
@@ -355,20 +559,23 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           {(Object.keys(agents.kinds) as AgentKind[]).map((kind) => {
             const k = agents.kinds[kind];
+            const open = configOpen === kind;
             return (
               <div
                 key={kind}
                 style={{
                   background: 'var(--bg2)',
-                  border: '1px solid var(--line)',
+                  border: `1px solid ${open ? 'var(--line2)' : 'var(--line)'}`,
                   borderRadius: 8,
                   padding: '12px 14px',
                   display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
+                  flexDirection: 'column',
+                  gap: 10,
                   minWidth: 320,
+                  flex: open ? '1 1 520px' : '0 1 auto',
                 }}
               >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13.5, fontWeight: 700 }}>{KIND_LABEL[kind]}</div>
                   <div style={{ ...mono(400, 10), color: k.installed ? 'var(--ok)' : 'var(--warn)', marginTop: 2 }}>
@@ -393,6 +600,21 @@ function AgentsView({ onActivity }: { onActivity: (active: boolean) => void }) {
                   />
                   auto-start
                 </label>
+                  <button
+                    className="no-drag"
+                    onClick={() => setConfigOpen(open ? null : kind)}
+                    title="Project scope, model, MCP servers and skills for this agent's instances"
+                    style={{ ...btnStyle(open ? 'var(--tx)' : 'var(--tx2)'), padding: '5px 10px', fontSize: 11.5 }}
+                  >
+                    ⚙ {open ? 'Close' : 'Configure'}
+                  </button>
+                </div>
+                <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em' }}>
+                  {k.projects.length ? `${k.projects.length} PROJECT${k.projects.length === 1 ? '' : 'S'}` : 'ANY PROJECT'} ·{' '}
+                  {k.model ? k.model.toUpperCase() : 'HARNESS DEFAULT MODEL'} · {k.mcpServers.length} MCP · {k.skills.length} SKILL
+                  {k.skills.length === 1 ? '' : 'S'}
+                </div>
+                {open && <AgentKindConfigPanel kind={kind} config={k} onSave={(opts) => configure(kind, opts)} />}
               </div>
             );
           })}
