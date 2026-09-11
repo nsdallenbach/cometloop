@@ -110,7 +110,8 @@ with a Lakebase credential.
 - `api.ts` — engagements, tickets CRUD, planning-agent flows, admin
 - `agent-work.ts` — runner queue: wait/claim/heartbeat/flag/complete, work packages, rendered prompts
 - `fleet.ts` — runner liveness: poll stamps, online/offline, the FLEET DOWN board warning
-- `agents.ts` — the agent map: registered endpoint agents, configured runners, observed runners from task history
+- `agents.ts` — the Agents page: registered endpoint agents, configured runners, observed runners from task history; create / reconfigure (role, model, harness, provider) / remove
+- `agent-models.ts` — the model catalog behind the picker: the workspace's chat-capable serving endpoints (listed live, static fallback) plus the model ids each coding harness accepts
 - `agent-security.ts` — per-agent security settings: model, validation, the lead-only settings API, and the enforcement check the execution paths call
 - `coordination.ts` — inter-agent messages (announce, request/response, SLAs), mirrored to tickets
 - `repos.ts` — GitHub/ADO providers: PR & commit sync, ticket auto-linking, merge-from-drawer, deploy watch

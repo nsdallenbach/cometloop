@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
-import { PROJECT_AGENTS_SCHEMA_SQL, inferHarness, loadAgentsOverview } from './agents';
+import type express from 'express';
+import { PROJECT_AGENTS_SCHEMA_SQL, inferHarness, loadAgentsOverview, setupProjectAgentRoutes } from './agents';
+import { baselineSecurity, parseSecuritySettings } from './agent-security';
+import type { Identity } from './roles';
 import { FLEET_SCHEMA_SQL } from './fleet';
 
 /**
@@ -97,5 +100,107 @@ describe('loadAgentsOverview', () => {
     // Same name, but the configured row is not a runner — both survive.
     expect(agents).toHaveLength(2);
     expect(agents.find((a) => a.agentType === 'serving-endpoint')).toMatchObject({ endpointType: 'model-serving', status: 'planned' });
+  });
+});
+
+// ---------- routes: reconfiguring a stored agent (DAT-278) ----------
+
+type Handler = (req: express.Request, res: express.Response) => Promise<void> | void;
+
+/** Captures the handlers setupProjectAgentRoutes registers, no express needed. */
+function captureRoutes(requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>) {
+  const routes = new Map<string, Handler>();
+  const app = {
+    get: (path: string, h: Handler) => routes.set(`GET ${path}`, h),
+    post: (path: string, h: Handler) => routes.set(`POST ${path}`, h),
+    patch: (path: string, h: Handler) => routes.set(`PATCH ${path}`, h),
+    delete: (path: string, h: Handler) => routes.set(`DELETE ${path}`, h),
+  } as unknown as express.Application;
+  setupProjectAgentRoutes(app, q, requireLead, () => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' }));
+  return routes;
+}
+
+function fakeRes() {
+  const res = {
+    statusCode: 200,
+    body: undefined as unknown,
+    status(code: number) {
+      res.statusCode = code;
+      return res;
+    },
+    json(payload: unknown) {
+      res.body = payload;
+      return res;
+    },
+  };
+  return res;
+}
+
+const leadGuard = (): Promise<Identity | null> => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' });
+
+const patch = async (routes: Map<string, Handler>, params: Record<string, string>, body: unknown) => {
+  const res = fakeRes();
+  await routes.get('PATCH /api/projects/:id/agents/:agentId')?.({ params, body } as unknown as express.Request, res as unknown as express.Response);
+  return res;
+};
+
+describe('PATCH /api/projects/:id/agents/:agentId', () => {
+  beforeEach(async () => {
+    await q(`CREATE TABLE app.feed_items (id SERIAL PRIMARY KEY, engagement_id TEXT, actor TEXT, text TEXT, time_label TEXT, reversible BOOLEAN)`);
+    await q(
+      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, created_by)
+       VALUES ('eng-a', 'codex-writer', 'runner', 'codex', 'openai', 'gpt-5.2-codex', 'lead@datavail.com')`,
+    );
+    await q(
+      `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, created_by)
+       VALUES ('eng-a', 'desktop-box-claude-1', 'runner', 'claude-code', 'anthropic', 'system:observed')`,
+    );
+  });
+
+  const rowFor = async (name: string) => (await q('SELECT * FROM app.project_agents WHERE name = $1', [name])).rows[0];
+
+  it('lets a lead change model, harness and provider, and clears a field sent as null', async () => {
+    const routes = captureRoutes(leadGuard);
+    const id = String((await rowFor('codex-writer')).id);
+    const res = await patch(routes, { id: 'eng-a', agentId: id }, { harness: 'claude-code', modelProvider: 'anthropic', model: 'claude-opus-5' });
+    expect(res.statusCode).toBe(200);
+    expect(await rowFor('codex-writer')).toMatchObject({ harness: 'claude-code', model_provider: 'anthropic', model: 'claude-opus-5' });
+
+    const cleared = await patch(routes, { id: 'eng-a', agentId: id }, { model: null });
+    expect(cleared.statusCode).toBe(200);
+    expect((await rowFor('codex-writer')).model).toBeNull();
+    // Untouched fields survive a partial update.
+    expect((await rowFor('codex-writer')).harness).toBe('claude-code');
+
+    const feed = (await q('SELECT text FROM app.feed_items')).rows.map((r) => String(r.text));
+    expect(feed.some((t) => t.includes('Reconfigured agent codex-writer') && t.includes('claude-opus-5'))).toBe(true);
+  });
+
+  it('refuses to rename a system-synced row and refuses a name another agent on the project holds', async () => {
+    const routes = captureRoutes(leadGuard);
+    const systemId = String((await rowFor('desktop-box-claude-1')).id);
+    expect((await patch(routes, { id: 'eng-a', agentId: systemId }, { name: 'renamed' })).statusCode).toBe(409);
+    expect((await rowFor('desktop-box-claude-1')).name).toBe('desktop-box-claude-1');
+
+    const ownId = String((await rowFor('codex-writer')).id);
+    expect((await patch(routes, { id: 'eng-a', agentId: ownId }, { name: 'Desktop-Box-Claude-1' })).statusCode).toBe(409);
+    expect((await patch(routes, { id: 'eng-a', agentId: ownId }, { name: 'codex-author' })).statusCode).toBe(200);
+    expect(await rowFor('codex-author')).toBeTruthy();
+  });
+
+  it('re-baselines security when the role changes and no lead has edited the scope', async () => {
+    const routes = captureRoutes(leadGuard);
+    const id = String((await rowFor('codex-writer')).id);
+    expect((await patch(routes, { id: 'eng-a', agentId: id }, { role: 'pr-reviewer' })).statusCode).toBe(200);
+    const row = await rowFor('codex-writer');
+    expect(row.role).toBe('pr-reviewer');
+    expect(parseSecuritySettings(row.security_settings, 'pr-reviewer')).toMatchObject(baselineSecurity('pr-reviewer'));
+  });
+
+  it('404s for an agent that is not on the project and 400s an invalid body', async () => {
+    const routes = captureRoutes(leadGuard);
+    const id = String((await rowFor('codex-writer')).id);
+    expect((await patch(routes, { id: 'eng-b', agentId: id }, { model: 'x' })).statusCode).toBe(404);
+    expect((await patch(routes, { id: 'eng-a', agentId: id }, { role: 'overlord' })).statusCode).toBe(400);
   });
 });

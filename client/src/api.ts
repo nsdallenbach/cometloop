@@ -3,6 +3,7 @@ import type {
   AdminData,
   AgentAccessLevel,
   AgentAction,
+  AgentModelCatalog,
   AgentSecurityCatalog,
   AgentSecuritySettings,
   AgentTask,
@@ -790,10 +791,39 @@ export const api = {
     return http(`/api/projects/${encodeURIComponent(projectId)}/agents`, { method: 'POST', ...json(payload) });
   },
 
+  /** What the model picker can offer: workspace chat endpoints + harness model ids (DAT-278). */
+  async agentModels(): Promise<AgentModelCatalog> {
+    const d = await http<{ source?: unknown; servingEndpoints?: Row[]; harnessModels?: Record<string, Row[]> }>('/api/agents/models');
+    return {
+      source: s(d.source) === 'workspace' ? 'workspace' : 'static',
+      servingEndpoints: (d.servingEndpoints ?? []).map((r) => ({
+        name: s(r.name),
+        servedModel: nz(r.servedModel),
+        task: nz(r.task),
+        provider: nz(r.provider),
+        ready: b(r.ready),
+      })),
+      harnessModels: Object.fromEntries(
+        Object.entries(d.harnessModels ?? {}).map(([harness, rows]) => [
+          harness,
+          (rows ?? []).map((r) => ({ id: s(r.id), label: s(r.label), provider: s(r.provider), default: b(r.default) || undefined })),
+        ]),
+      ),
+    };
+  },
+
   updateAgent(
     projectId: string,
     agentId: number,
-    payload: { role?: ProjectAgentRole; description?: string; endpointName?: string }
+    payload: {
+      name?: string;
+      role?: ProjectAgentRole;
+      description?: string | null;
+      endpointName?: string;
+      harness?: string | null;
+      modelProvider?: string | null;
+      model?: string | null;
+    }
   ): Promise<unknown> {
     return http(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}`, {
       method: 'PATCH',

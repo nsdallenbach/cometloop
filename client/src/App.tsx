@@ -6,7 +6,7 @@ import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
 import { parsePath, paths, type Tab } from './routes';
 import { mono, STATUS_LABEL } from './util';
 import { Admin } from './components/Admin';
-import { AgentMap } from './components/AgentMap';
+import { AgentsPage } from './components/AgentsPage';
 import { Landing } from './components/Landing';
 import { Portfolio } from './components/Portfolio';
 import { Setup } from './components/Setup';
@@ -259,8 +259,8 @@ export default function App() {
       },
       {
         key: 'agent-map',
-        label: 'Agent Map',
-        title: 'Agent architecture map — projects and the agents attached to them',
+        label: 'Agents',
+        title: 'Agents — every agent by project: configure, scope, secure; plus the architecture map',
         path: paths.agentMap,
         active: screen.name === 'agent-map',
       },
@@ -665,7 +665,7 @@ export default function App() {
 
       {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
 
-      {screen.name === 'agent-map' && <AgentMap canLead={canLead} toast={showToast} />}
+      {screen.name === 'agent-map' && <AgentsPage canLead={canLead} toast={showToast} />}
 
       {screen.name === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
       {screen.name === 'admin' && !isAdmin && (
