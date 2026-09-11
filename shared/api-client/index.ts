@@ -147,6 +147,56 @@ export class ConsoleClient {
   agentModels(): Promise<AgentModelCatalog> {
     return this.request<AgentModelCatalog>('/api/agents/models');
   }
+
+  // ---- registry publishing (DAT-238), lead-gated server-side ----
+
+  createMcpServer(payload: McpServerPayload): Promise<RegistryMcpServer> {
+    return this.request<RegistryMcpServer>('/api/registry/mcp-servers', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  updateMcpServer(id: number, payload: Partial<McpServerPayload>): Promise<RegistryMcpServer> {
+    return this.request<RegistryMcpServer>(`/api/registry/mcp-servers/${String(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  deleteMcpServer(id: number): Promise<unknown> {
+    return this.request(`/api/registry/mcp-servers/${String(id)}`, { method: 'DELETE' });
+  }
+
+  createSkill(payload: SkillPayload): Promise<RegistrySkill> {
+    return this.request<RegistrySkill>('/api/registry/skills', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  updateSkill(id: number, payload: Partial<SkillPayload>): Promise<RegistrySkill> {
+    return this.request<RegistrySkill>(`/api/registry/skills/${String(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  deleteSkill(id: number): Promise<unknown> {
+    return this.request(`/api/registry/skills/${String(id)}`, { method: 'DELETE' });
+  }
+}
+
+export interface McpServerPayload {
+  engagementId: string | null;
+  slug?: string;
+  name: string;
+  description?: string;
+  transport?: 'stdio' | 'http';
+  command?: string | null;
+  args?: string[];
+  url?: string | null;
+  env?: Record<string, string>;
+  requiresAuth?: boolean;
+  status?: 'published' | 'retired';
+}
+
+export interface SkillPayload {
+  engagementId: string | null;
+  slug?: string;
+  name: string;
+  description?: string;
+  content?: string;
+  harnesses?: string[];
+  status?: 'published' | 'retired';
 }
 
 export interface AgentSelfReport {

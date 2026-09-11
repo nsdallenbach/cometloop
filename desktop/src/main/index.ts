@@ -254,6 +254,71 @@ function registerIpc(): void {
       return { ok: false as const, signInRequired: msg === SIGN_IN_REQUIRED, error: msg === SIGN_IN_REQUIRED ? 'Not signed in to Databricks.' : msg };
     }
   });
+  // Agent Tools (DAT-280): the registry, managed from the desktop. Reads are
+  // open; the console's lead gate decides who may publish where.
+  const fail = (e: unknown) => {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false as const, signInRequired: msg === SIGN_IN_REQUIRED, error: msg === SIGN_IN_REQUIRED ? 'Not signed in to Databricks.' : msg };
+  };
+  ipcMain.handle('registry:list', async (_e, scope: unknown) => {
+    try {
+      const project = typeof scope === 'string' && scope && scope !== 'shared' ? scope : null;
+      const reg = await client.registry(project);
+      // A project scope shows shared entries too; the Tools page lists the scope's own.
+      return {
+        ok: true as const,
+        registry: {
+          mcpServers: project ? reg.mcpServers.filter((m) => m.engagementId === project) : reg.mcpServers,
+          skills: project ? reg.skills.filter((k) => k.engagementId === project) : reg.skills,
+        },
+      };
+    } catch (e) {
+      return fail(e);
+    }
+  });
+  ipcMain.handle('registry:save-mcp', async (_e, id: unknown, payload: unknown) => {
+    try {
+      const body = (payload ?? {}) as Parameters<ConsoleClient['createMcpServer']>[0];
+      const entry = typeof id === 'number' ? await client.updateMcpServer(id, body) : await client.createMcpServer(body);
+      return { ok: true as const, entry };
+    } catch (e) {
+      return fail(e);
+    }
+  });
+  ipcMain.handle('registry:delete-mcp', async (_e, id: unknown) => {
+    try {
+      if (typeof id !== 'number') throw new Error('id required');
+      await client.deleteMcpServer(id);
+      return { ok: true as const };
+    } catch (e) {
+      return fail(e);
+    }
+  });
+  ipcMain.handle('registry:save-skill', async (_e, id: unknown, payload: unknown) => {
+    try {
+      const body = (payload ?? {}) as Parameters<ConsoleClient['createSkill']>[0];
+      const entry = typeof id === 'number' ? await client.updateSkill(id, body) : await client.createSkill(body);
+      return { ok: true as const, entry };
+    } catch (e) {
+      return fail(e);
+    }
+  });
+  ipcMain.handle('registry:delete-skill', async (_e, id: unknown) => {
+    try {
+      if (typeof id !== 'number') throw new Error('id required');
+      await client.deleteSkill(id);
+      return { ok: true as const };
+    } catch (e) {
+      return fail(e);
+    }
+  });
+  ipcMain.handle('console:me', async () => {
+    try {
+      return { ok: true as const, me: await client.me() };
+    } catch (e) {
+      return fail(e);
+    }
+  });
   ipcMain.handle('console:models', async () => {
     try {
       const models = await client.agentModels();

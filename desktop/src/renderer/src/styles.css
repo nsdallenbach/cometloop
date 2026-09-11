@@ -42,3 +42,55 @@ a {
 .no-drag {
   -webkit-app-region: no-drag;
 }
+
+/* ---- form controls: the console's look, not Chromium's ---------------- */
+
+/* Native form popups (select menus) follow the dark theme. */
+:root {
+  color-scheme: dark;
+}
+
+/* Button labels sit dead centre; inline styles that set display:flex still win. */
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.15;
+  font-family: inherit;
+}
+
+/* No Chromium focus box. Keyboard focus shows as a soft accent ring instead. */
+button,
+input,
+select,
+textarea {
+  outline: none;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agentsoft);
+  border-color: var(--agent) !important;
+}
+
+/* Dropdowns: flat, our chevron, our colours. */
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: var(--bg);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2395a3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  padding-right: 28px !important;
+  cursor: pointer;
+}
+select option {
+  background: var(--bg2);
+  color: var(--tx);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--tx3);
+}

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Bot, Gauge, KeyRound, RefreshCw, Rocket, Ticket } from 'lucide-react';
+import { Bot, Gauge, KeyRound, RefreshCw, Rocket, Ticket, Wrench } from 'lucide-react';
 import { TerminalPane, type TerminalOpenRequest } from './TerminalPane';
 import { IdentityView } from './IdentityView';
+import { ToolsView } from './ToolsView';
 import { AgentWizard } from './AgentWizard';
 import { harnessBrand, providerBrand } from '../../../../shared/design/AgentLogos';
 
@@ -17,6 +18,7 @@ const NAV_ICON = { size: 15, strokeWidth: 1.75 } as const;
 const NAV = [
   { id: 'tickets', label: 'Tickets', icon: <Ticket {...NAV_ICON} /> },
   { id: 'agents', label: 'Agents', icon: <Bot {...NAV_ICON} /> },
+  { id: 'tools', label: 'Agent Tools', icon: <Wrench {...NAV_ICON} /> },
   { id: 'metrics', label: 'Metrics', icon: <Gauge {...NAV_ICON} /> },
   { id: 'identity', label: 'Identity', icon: <KeyRound {...NAV_ICON} /> },
   { id: 'sync', label: 'Sync', icon: <RefreshCw {...NAV_ICON} /> },
@@ -1271,6 +1273,8 @@ export function App() {
       <DeploysView />
     ) : nav === 'identity' ? (
       <IdentityView />
+    ) : nav === 'tools' ? (
+      <ToolsView />
     ) : nav === 'tickets' ? null : (
       VIEWS_STATIC[nav]
     );

@@ -219,11 +219,46 @@ a:hover {
 .eec button {
   font-family: inherit;
 }
-.eec input:focus,
-.eec textarea:focus,
-.eec select:focus {
-  outline: 1px solid var(--acc);
-  outline-offset: -1px;
+/* No Chromium focus box; keyboard focus is a soft accent ring. */
+.eec input,
+.eec select,
+.eec textarea {
+  outline: none;
+}
+.eec input:focus-visible,
+.eec textarea:focus-visible,
+.eec select:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agentsoft);
+  border-color: var(--agent) !important;
+}
+
+/* Dropdowns: flat, our chevron, our colours; native popups follow the theme. */
+[data-theme='dark'] {
+  color-scheme: dark;
+}
+[data-theme='light'] {
+  color-scheme: light;
+}
+.eec select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2395a3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  padding-right: 28px !important;
+  cursor: pointer;
+}
+[data-theme='light'] .eec select {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2357646e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+}
+.eec select option {
+  background: var(--bg2);
+  color: var(--tx);
+}
+.eec input::placeholder,
+.eec textarea::placeholder {
+  color: var(--tx3);
 }
 
 /* ============ Microinteractions ============ */
@@ -262,8 +297,15 @@ tr.hv-row td {
   transform: scale(0.97);
 }
 .eec button:focus-visible {
-  outline: 1px solid var(--acc);
-  outline-offset: 1px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agentsoft);
+}
+/* Button labels sit dead centre; inline display:flex/grid still wins. */
+.eec button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.15;
 }
 .eec input,
 .eec select,
