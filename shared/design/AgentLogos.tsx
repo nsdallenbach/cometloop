@@ -56,13 +56,26 @@ const OPENAI_MARK = (size: number): ReactNode => (
   </svg>
 );
 
-/** Anthropic's angular A mark, in the Claude terracotta. */
+/**
+ * The Claude spark — Anthropic's terracotta starburst: twelve rounded rays of
+ * uneven length radiating from the centre. This is the mark people recognise
+ * next to a Claude model; the wordmark "A" read as a letter chip.
+ */
 const ANTHROPIC_MARK = (size: number): ReactNode => (
-  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
-    <path
-      fill="#D97757"
-      d="M13.8 4h-3.9L3 20h4l1.3-3.4h6.3L15.9 20h4L13.8 4zm-4.2 9.4 1.9-5 1.9 5H9.6z"
-    />
+  <svg width={size} height={size} viewBox="-12 -12 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    {[10.5, 7.5, 10, 8, 10.5, 7, 10, 8.5, 10.5, 7.5, 10, 8].map((len, i) => (
+      <line
+        key={i}
+        x1={0}
+        y1={-2.6}
+        x2={0}
+        y2={-len}
+        transform={`rotate(${i * 30 + 8})`}
+        stroke="#D97757"
+        strokeWidth={2.6}
+        strokeLinecap="round"
+      />
+    ))}
   </svg>
 );
 
