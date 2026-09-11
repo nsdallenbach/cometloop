@@ -11,7 +11,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The desktop client consumes shared/ and the console API; a web-side change
+  # that breaks it must fail the gate here, not on the next release tag.
+  desktop-typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      # Typecheck only — no Electron binary needed.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
   deploy:
+    needs: desktop-typecheck
     runs-on: ubuntu-latest
     environment: production
     steps:

@@ -18,6 +18,8 @@ export default tseslint.config(
       '**.databricks/**',
       'tests/**',
       '**/.smoke-test/**',
+      // Nested worktrees (`claude --worktree`, agent runs) carry their own copy of the tree.
+      '**/.claude/**',
       'scripts/**',
       // Standalone subpackages — plain JS outside the TS project service.
       'mcp/**',

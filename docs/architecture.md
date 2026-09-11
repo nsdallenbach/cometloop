@@ -1,12 +1,15 @@
 # Execution Console — System Architecture
 
 How the delivery console is put together: one Databricks App serving humans
-and agent runners, a Postgres work queue between them, and delivery
-automation that closes the loop from ticket → branch → PR → deploy → Done.
+and agent runners, a Postgres work queue between them, a desktop client on
+each developer's machine that runs the routed work, and delivery automation
+that closes the loop from ticket → branch → PR → deploy → Done.
 Companion documents: [development-standards.md](./development-standards.md)
-(working agreements), [agent-coordination.md](./agent-coordination.md)
+(working agreements), [local-client-architecture.md](./local-client-architecture.md)
+(the desktop client, with build status), [cross-platform-parity.md](./cross-platform-parity.md)
+(keeping web and desktop in step), [agent-coordination.md](./agent-coordination.md)
 (inter-agent protocol), [devbox-integration.md](./devbox-integration.md)
-(runner setup).
+(runner contract).
 
 ## System overview
 
@@ -14,6 +17,7 @@ Companion documents: [development-standards.md](./development-standards.md)
 flowchart LR
     subgraph clients["People"]
         browser["Browser SPA\nReact + Vite"]
+        desktop["Desktop client (Electron)\nembedded console · routed runner\nidentity · local deploys"]
         mobile["Claude sessions\n(MCP client)"]
     end
 
@@ -39,6 +43,8 @@ flowchart LR
     github["GitHub\ndatavail-solutions/engagement-console\nGitHub App auth + Actions CI"]
 
     browser --> proxy --> apiRoutes
+    desktop -->|"webview (as the dev)"| proxy
+    desktop -->|"assignee-scoped wait / claim\ndeploy events · token usage"| apiRoutes
     mobile --> mcp --> apiRoutes
     apiRoutes --> lakebase
     apiRoutes --> sow
@@ -67,11 +73,27 @@ a custom pointer engine (floating clone, slot-gap insertion preview,
 persisted ordering). All markdown renders through one sanitized `Markdown`
 component. Mutations are optimistic with rollback; the board polls every 8s.
 
+**The desktop client** (`desktop/`, Electron) runs on each developer's
+machine and is the second shell of the same product. Its Tickets tab embeds
+the *deployed* web console in a webview signed in as the developer (native
+browser OAuth, refresh token in the OS keychain), so every board, drawer and
+planning change reaches the desktop by construction. Around that it adds
+what cannot live on the server: the routed agent runner (0–4 instances per
+harness, auto-start, live feeds), an interactive terminal per task, the
+identity broker (GitHub / Azure / ADO device-code sign-ins, MCP secrets), the
+local deploy executor that posts ticket-keyed deploy events home, and token
+metrics. It shares `shared/` with the web console — the typed API client,
+the design tokens and the harness adapters — which is why an API or
+`shared/` change is a two-shell change. Build status and the plan it came
+from: [local-client-architecture.md](./local-client-architecture.md);
+what is shared by design versus by construction:
+[feature-parity-tracker.md](./feature-parity-tracker.md).
+
 **Data** lives in three places:
 
 | Store | Contents |
 |---|---|
-| Lakebase Postgres (`app.*`) | engagements, tickets (+events/links/tags/attachments/estimates), comments, feed, team, agent_tasks, coordination_messages, repo connections/PRs/commits, PR review-SLA escalations, in-flight planning reviews |
+| Lakebase Postgres (`app.*`) | engagements, tickets (+events/links/tags/attachments/estimates/rejections), comments, feed, notifications, team, agent_tasks (+assignee, reclaims, token usage), runner_polls, project_agents (+security settings), coordination_messages, repo connections/PRs/commits, PR requeues and review-SLA escalations, in-flight planning reviews, deploy events, stale-nudge config, project config/standards |
 | UC volume `sow_docs` | uploaded SOW/SOP documents, per-engagement context files, standards docs |
 | UC volume `agent_telemetry` | per-run tool-call logs archived as NDJSON under `tool-calls/<engagement>/<ticket>/` |
 
@@ -99,9 +121,25 @@ with a Lakebase credential.
 - `ticket-review.ts` — reason-based rejection out of Review: rejection history, requeue, prompt context
 - `estimates.ts` — agent + human hour estimates, per-engagement calibration from actuals
 - `planning-review.ts` — "agent reviewing" status while a planning pass rewrites a ticket: `app.planning_reviews` rows with a TTL, so a pass that dies mid-flight clears its own badge
-- `ticket-events / -links / -tags / -order / -attachments` — the event trail, dependencies, tags, board ordering, file attachments
+- `ticket-decision.ts` — the one call behind the reviewer's Approve / Reject buttons
+- `ticket-consolidate.ts` — merge duplicate tickets into a surviving target, nothing human-written lost
+- `ticket-hours.ts` — hour population and validation so estimates are never a data-entry chore
+- `ticket-events / -links / -tags / -order / -attachments / -activity` — the event trail, dependencies, tags, board ordering, file attachments, activity badges
+- `deploys.ts` — the local deployment queue: desktop clients post ticket-keyed deploy events, the web renders a read-only mirror
+- `deploy-gate.ts` — Done means deployed: a move into Done needs a merged PR with a green deploy (or the `no-deploy` tag)
+- `runner-load-balancing.ts` — spread claims across the online fleet
+- `token-usage.ts` — live token consumption from harness event streams, per task, on the drawer and the agent map
+- `notifications.ts` — the notification centre (mentions, escalations, nudges)
+- `stale-nudges.ts` — business-day sweep that nudges assignees of idle tickets, with digest and config
+- `velocity.ts` — organizational velocity KPIs replayed from the ticket event trail for the Analytics tab
+- `scoping-agent.ts` / `scoping-tools.ts` — planning-agent scoping with board-reading tools and a single-shot fallback
+- `project-config.ts` — per-project runner environment (base image, libraries) that rides along in the claim payload
+- `project-access.ts` — the parent permission for every runner attached to a project
+- `file-library.ts` — engagement file library over the UC volume
 - `tool-calls.ts` — live tool-call streaming from runners, archived to telemetry
-- `standards.ts` — per-engagement standards docs with AI-assisted editing
+- `standards.ts` — per-engagement standards docs with AI-assisted editing (the repo's `docs/development-standards.md` + `docs/beta-runbook.md` are pushed in by `scripts/sync-standards.mjs`)
+- `mcp.ts` — the board-tools MCP endpoint over Streamable HTTP at `POST /api/mcp`, for model-serving agents
+- `utf8-body.ts` — strict UTF-8 ingestion with legacy-codepage recovery (the mojibake fix)
 - `github-app.ts` — GitHub App JWTs, cached installation tokens, webhook HMAC
 - `context-files.ts`, `extract-text.ts`, `roles.ts`, `seed-data.ts` — support
 
@@ -261,5 +299,13 @@ into few deploys). Each deploy restarts the app — expect ~1 minute of 502s.
 - **Humans merge** — agents and Claude sessions stop at the PR.
 - **Prompts are server code** — versioned, deployed, and rendered into work
   packages centrally.
+- **Runners live on developers' machines** — work is routed to a person,
+  runs under their identity on their desktop client, and deploys as them;
+  the server never holds a dev credential, a checkout, or a harness process
+  ([delivery-tool-plan.md](./delivery-tool-plan.md)). The anonymous devbox
+  pool stays for unattended work on the same queue.
+- **Two shells, one product** — the desktop embeds the deployed web console
+  rather than re-implementing it; what it does re-implement is tracked for
+  parity ([cross-platform-parity.md](./cross-platform-parity.md)).
 - **Shared checkout discipline** — parallel Claude sessions use worktrees;
   the local emulation runner is pinned to `main` in its own worktree.

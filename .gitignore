@@ -12,3 +12,6 @@ playwright-report/
 # Auto-generated types (endpoint-specific, varies per developer)
 shared/appkit-types/serving.d.ts
 .claude/settings.local.json
+
+# Nested worktrees from `claude --worktree` / agent runs
+.claude/worktrees/

@@ -1165,6 +1165,13 @@ export function setupRepoRoutes(
  */
 export function startRepoPolling(q: Query, intervalMs = 90_000, hotIntervalMs = 30_000): void {
   const lastSynced = new Map<number, number>();
+  // An instance without the GitHub App key (local dev) cannot sign for
+  // App-auth connections. Skip them instead of failing every tick — a failed
+  // sync marks the shared connection row `error`, which would mislead the
+  // deployed console about a repo it syncs fine.
+  if (!githubAppConfigured()) {
+    console.warn('[repos] GitHub App key not configured on this instance — GitHub App connections are not polled here');
+  }
   const tick = async () => {
     try {
       const { rows } = await q('SELECT * FROM app.repo_connections');
@@ -1180,6 +1187,7 @@ export function startRepoPolling(q: Query, intervalMs = 90_000, hotIntervalMs = 
       );
       for (const row of rows) {
         const conn = toConnection(row);
+        if (conn.auth_type === 'app' && !githubAppConfigured()) continue;
         const due = Date.now() - (lastSynced.get(conn.id) ?? 0) >= (hot.has(conn.id) ? hotIntervalMs : intervalMs);
         if (!due) continue;
         lastSynced.set(conn.id, Date.now());

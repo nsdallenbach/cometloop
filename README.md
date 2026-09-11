@@ -1,207 +1,150 @@
-# delivery-console
+# Delivery Console
 
-A Databricks App powered by [AppKit](https://www.databricks.com/devhub/docs/appkit/v0/), featuring React, TypeScript, and Tailwind CSS.
+Datavail's delivery execution console: portfolio, board, roadmap, planning
+agent, agent runners and the delivery automation that closes the loop from
+ticket → branch → PR → deploy → Done. One product in two shells:
 
-**Enabled plugins:**
-- **Lakebase** -- Fully managed Postgres database for transactional (OLTP) workloads on Databricks
-- **Server** -- Express HTTP server with static file serving and Vite dev mode
+- **Web console** (`client/` + `server/`) — a [Databricks App](https://www.databricks.com/devhub/docs/appkit/v0/)
+  built on AppKit (Express + React/Vite) behind the workspace OAuth proxy.
+  Deployed by CI on every merge to `main`.
+- **Desktop client** (`desktop/`) — an Electron app that embeds the deployed
+  web console and adds the surfaces that must run on a developer's own
+  machine: coding-agent runners, identity, local deploys, a terminal, token
+  metrics. Released by tag; installed builds self-update.
+
+Start with [docs/architecture.md](docs/architecture.md) for how it fits
+together and [docs/development-standards.md](docs/development-standards.md)
+for the working agreement before changing anything.
+
+## Repository map
+
+```
+client/           React SPA (Vite) — board, drawer, roadmap, analytics, agents map, standards
+server/           Express API — one route module per domain under server/routes/, wired in api.ts
+shared/           Imported by both shells: api-client/ (typed console client), design/ (tokens), harnesses/ (agent adapters)
+desktop/          Electron client — own package.json, typecheck and release pipeline
+mcp/              MCP server exposing the console API to Claude Code / agent runs (stdio)
+devbox-runner/    Headless reference runner for devbox VMs (wait → claim → harness → complete)
+scripts/          Ops scripts: dev-role migrations, Standards-tab sync, beta seeding, validators
+tests/            Vitest unit tests for client libs + the Playwright smoke test
+docs/             Architecture, standards, runner contract, runbooks, incidents, prompts
+.github/          deploy.yml (CI gate + bundle deploy), desktop-release.yml (tag → installers)
+databricks.yml    Bundle: app, UC volumes, Lakebase + serving-endpoint resources
+app.yaml          App runtime: start command and resource-injected env
+```
 
 ## Prerequisites
 
 - Node.js v22+ and npm
-- Databricks CLI (for deployment)
-- Access to a Databricks workspace
+- Databricks CLI (v1+) authenticated against the workspace: `databricks auth login --host <workspace>`
+- **Can Use** on the deployed app and access to the `sandbox.engagement_console` schema (local dev shares the workspace resources — there is no separate dev Lakebase branch)
 
-## Databricks Authentication
-
-### Local Development
-
-For local development, configure your environment variables by creating a `.env` file:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and set the environment variables you need:
-
-```env
-DATABRICKS_HOST=https://your-workspace.cloud.databricks.com
-DATABRICKS_APP_PORT=8000
-# ... other environment variables, depending on the plugins you use
-```
-
-#### Lakebase Configuration
-
-The Lakebase plugin requires additional environment variables for PostgreSQL connectivity. To learn how to configure the Lakebase plugin, see the [Lakebase plugin documentation](https://www.databricks.com/devhub/docs/appkit/v0/plugins/lakebase).
-
-### CLI Authentication
-
-The Databricks CLI requires authentication to deploy and manage apps. Configure authentication using one of these methods:
-
-#### OAuth U2M
-
-Interactive browser-based authentication with short-lived tokens:
-
-```bash
-databricks auth login --host https://your-workspace.cloud.databricks.com
-```
-
-This will open your browser to complete authentication. The CLI saves credentials to `~/.databrickscfg`.
-
-#### Configuration Profiles
-
-Use multiple profiles for different workspaces:
-
-```ini
-[DEFAULT]
-host = https://dev-workspace.cloud.databricks.com
-
-[production]
-host = https://prod-workspace.cloud.databricks.com
-client_id = prod-client-id
-client_secret = prod-client-secret
-```
-
-Deploy using a specific profile:
-
-```bash
-databricks bundle deploy --profile production
-```
-
-**Note:** Personal Access Tokens (PATs) are legacy authentication. OAuth is strongly recommended for better security.
-
-## Getting Started
-
-### Install Dependencies
+## Local development — web console
 
 ```bash
 npm install
+cp .env.example .env     # then fill it in, see below
+npm run dev              # http://localhost:8000 — API + Vite HMR in one process
 ```
 
-### Development
+`.env` points the local process at the same workspace resources the deployed
+app uses. Every value is derivable:
 
-Run the app in development mode with hot reload:
+| Variable | Where it comes from |
+|---|---|
+| `DATABRICKS_HOST` | your workspace URL (the `targets.default.workspace.host` in `databricks.yml`) |
+| `DATABRICKS_VOLUME_FILES`, `DATABRICKS_VOLUME_TELEMETRY` | the two volume paths in `databricks.yml` (`/Volumes/sandbox/engagement_console/{sow_docs,agent_telemetry}`) |
+| `DATABRICKS_SERVING_ENDPOINT_NAME` | `serving_endpoint_name` in `databricks.yml` |
+| `LAKEBASE_ENDPOINT` | `projects/engagement-console/branches/production/endpoints/primary` |
+| `PGHOST` | `databricks postgres get-endpoint <LAKEBASE_ENDPOINT> -o json` → `.status.hosts.host` |
+| `PGDATABASE` | `databricks_postgres` (`databricks postgres list-databases projects/engagement-console/branches/production`) |
+| `PGPORT`, `PGSSLMODE` | `5432`, `require` |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | optional — the App id is in `app.yaml`, the PEM in secret scope `delivery-console`. Without them repo sync, PR linking and git-credential vending are off locally; everything else works. |
+
+Authentication is the CLI's: AppKit mints workspace and Lakebase credentials
+from your `DEFAULT` profile. Without the Apps proxy in front, the local
+process treats you as **admin** (`server/routes/roles.ts`).
+
+Boot logs one expected line: `schema statement failed … must be owner of
+table` — developer-owned tables cannot take the app's boot `ALTER`s
+(migrations for those live in `scripts/dev-migrate.cjs`; see the standards).
+
+## Local development — desktop client
 
 ```bash
-npm run dev
+cd desktop
+npm install
+APP_URL=http://localhost:8000 npm run dev    # or omit APP_URL to point at the deployed console
 ```
 
-The app will be available at the URL shown in the console output.
+`desktop/README.md` covers sign-in, config.json, the Agents / Deploys /
+Identity surfaces, and the release + auto-update pipeline.
 
-### Build
+## Validation
 
-Build both client and server for production:
+What CI runs on every push to `main` — run it from a clean state before
+pushing:
 
 ```bash
-npm run build
+npm run typecheck && npm run lint && npm run build      # web console
+cd desktop && npm run typecheck                          # desktop (also a CI job)
 ```
 
-This creates:
-
-- `dist/server.js` - Compiled server bundle
-- `client/dist/` - Bundled client assets
-
-### Production
-
-Run the production build:
+Plus, as needed:
 
 ```bash
-npm start
+npm run test:unit          # vitest (server/routes/*.test.ts, tests/*.test.ts)
+npm run test:smoke         # Playwright smoke against a local dev server
+npm run format             # prettier --check
+node --check mcp/server.mjs devbox-runner/runner.mjs    # standalone JS packages
 ```
 
-## Code Quality
+Run `/parity-check` in Claude Code before opening a PR — it classifies the
+change against the web/desktop split and names the docs to update
+([docs/cross-platform-parity.md](docs/cross-platform-parity.md)).
 
-There are a few commands to help you with code quality:
+## Build and deploy
 
 ```bash
-# Type checking
-npm run typecheck
-
-# Linting
-npm run lint
-npm run lint:fix
-
-# Formatting
-npm run format
-npm run format:fix
+npm run build              # dist/server.js + client/dist/
+npm start                  # serve the production build locally
 ```
 
-## Deployment with Databricks Asset Bundles
+Deploys are CI-driven: `.github/workflows/deploy.yml` runs the gate, then
+`databricks bundle deploy`, the dev-role migrations, and `databricks bundle
+run app`. A manual deploy is the same two bundle commands with an
+authenticated CLI. Each deploy restarts the app (~1 minute of 502s).
 
-### 1. Configure Bundle
+Desktop releases: bump `desktop/package.json` version, push a `v<version>`
+tag; `.github/workflows/desktop-release.yml` builds the Windows installer +
+portable exe, macOS dmg and Linux AppImage onto a GitHub Release, which
+installed builds pick up automatically.
 
-Update `databricks.yml` with your workspace settings:
+## Agent runners
 
-```yaml
-targets:
-  default:
-    workspace:
-      host: https://your-workspace.cloud.databricks.com
-```
+Tickets are handed to coding agents from the board: queue a card for the
+shared pool, or assign it to one developer so their desktop client's runner
+picks it up. Runners long-poll `GET /api/agent/work/wait`, claim atomically,
+receive the work package (ticket, comments, rendered prompt, repo
+coordinates, context files), post progress and complete with `done` or
+`failed`. Humans merge.
 
-Make sure to replace all placeholder values in `databricks.yml` with your actual resource IDs.
+- [docs/devbox-integration.md](docs/devbox-integration.md) — the HTTP contract: authentication, endpoints, a minimal runner loop
+- [devbox-runner/README.md](devbox-runner/README.md) — the headless reference runner and the harness adapters (Claude Code, Codex, generic, Omnigent)
+- [desktop/README.md](desktop/README.md) — the embedded desktop runner, agent instances, identity and local deploys
+- [mcp/README.md](mcp/README.md) — the MCP server agents use to read the board and drive their own lifecycle
+- [docs/omnigent-runner-architecture.md](docs/omnigent-runner-architecture.md) — running a hosted agent as a runner
 
-### 2. Validate Bundle
+## Documentation index
 
-```bash
-databricks bundle validate
-```
-
-### 3. Deploy
-
-Deploy to the default target:
-
-```bash
-databricks bundle deploy
-```
-
-### 4. Run
-
-Start the deployed app:
-
-```bash
-databricks bundle run <APP_NAME> -t dev
-```
-
-### Deploy to Production
-
-1. Configure the production target in `databricks.yml`
-2. Deploy to production:
-
-```bash
-databricks bundle deploy -t prod
-```
-
-## Project Structure
-
-```
-* client/          # React frontend
-  * src/           # Source code
-  * public/        # Static assets
-* server/          # Express backend
-  * server.ts      # Server entry point
-  * routes/        # Routes
-* shared/          # Shared types
-* databricks.yml   # Bundle configuration
-* app.yaml         # App configuration
-* .env.example     # Environment variables example
-```
-
-## Tech Stack
-
-- **Backend**: Node.js, Express
-- **Frontend**: React.js, TypeScript, Vite, Tailwind CSS, React Router
-- **UI Components**: Radix UI, shadcn/ui
-- **Databricks**: AppKit SDK
-
-## Agent Runners
-
-Tickets can be handed off to autonomous agents straight from the board. Dragging a card into the **◆ Deploy to Agent** lane (or clicking **Queue for agent** in the ticket drawer) queues it on the console's HTTP work queue; order within the lane is claim priority.
-
-External devbox runners pick up work with a wait/claim loop: each runner long-polls `GET /api/agent/work/wait` until a ticket is queued, atomically claims it via `POST /api/agent/work/claim`, receives the work package (ticket, lead instructions, repo coordinates, context files), then posts progress notes and completes with `done` or `failed`.
-
-See:
-
-- [docs/devbox-integration.md](docs/devbox-integration.md) -- the HTTP contract: authentication, endpoints, and a minimal runner loop
-- [devbox-runner/README.md](devbox-runner/README.md) -- the reference runner implementation and how to run it
-- [docs/omnigent-runner-architecture.md](docs/omnigent-runner-architecture.md) -- running a **hosted** agent as a runner: the service-adapter seam, task handoff, polling, credentials and open vendor questions
+| Doc | What it covers |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | System overview, runtime components, server modules, the agent platform, delivery automation |
+| [docs/development-standards.md](docs/development-standards.md) | The working agreement (also mirrored into the app's Standards tab) |
+| [docs/cross-platform-parity.md](docs/cross-platform-parity.md) · [docs/feature-parity-tracker.md](docs/feature-parity-tracker.md) | Keeping web and desktop in step: parity classes, PR flow, tracker |
+| [docs/delivery-tool-plan.md](docs/delivery-tool-plan.md) · [docs/local-client-architecture.md](docs/local-client-architecture.md) | Why runners moved to developers' machines, and the desktop build plan with status |
+| [docs/beta-runbook.md](docs/beta-runbook.md) | Beta tester runbook: install, scripted scenarios, feedback intake |
+| [docs/agent-coordination.md](docs/agent-coordination.md) · [docs/coordination-drills.md](docs/coordination-drills.md) | Inter-agent protocol over Postgres and the drills that verified it |
+| [docs/llm-fallbacks.md](docs/llm-fallbacks.md) · [docs/llm-hours-estimation.md](docs/llm-hours-estimation.md) | Per-flow model fallbacks; how hour estimates are produced |
+| [docs/github-app-setup.md](docs/github-app-setup.md) · [docs/mcp-databricks-registration.md](docs/mcp-databricks-registration.md) | GitHub App provisioning; registering the console's MCP endpoint with model serving |
+| [docs/incidents/](docs/incidents) · [docs/prompts/](docs/prompts) | Incident write-ups; the PR reviewer prompts |
