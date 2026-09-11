@@ -83,7 +83,14 @@ interface DesktopBridge {
   >;
   boardPickup: (ticketKey: string) => Promise<{ ok: boolean; error?: string }>;
   agentsState: () => Promise<AgentsState>;
-  agentsConfigure: (kind: AgentKind, opts: { instances?: number; autoStart?: boolean }) => Promise<AgentsState>;
+  agentsConfigure: (kind: AgentKind, opts: Partial<AgentKindConfig>) => Promise<AgentsState>;
+  consoleRegistry: (
+    projects: string[],
+  ) => Promise<{ ok: true; registry: RegistryView } | { ok: false; error: string; signInRequired?: boolean }>;
+  consoleModels: () => Promise<
+    | { ok: true; models: { source: string; harnessModels: Record<string, { id: string; label: string; default?: boolean }[]> } }
+    | { ok: false; error: string; signInRequired?: boolean }
+  >;
   agentsStart: (id: string) => Promise<AgentsState>;
   agentsStop: (id: string) => Promise<AgentsState>;
   agentsKill: (id: string) => Promise<AgentsState>;
@@ -185,9 +192,28 @@ interface InstanceSnapshot {
   sessionUsage: UsageTotals;
 }
 
+/** Per-agent-type configuration, managed on this machine (DAT-245 + DAT-280). */
+interface AgentKindConfig {
+  instances: number;
+  autoStart: boolean;
+  /** Engagement ids the instances claim from; empty = any project. */
+  projects: string[];
+  /** Harness model id; null = harness default. */
+  model: string | null;
+  /** Registry slugs attached to every run. */
+  mcpServers: string[];
+  skills: string[];
+}
+
 interface AgentsState {
-  kinds: Record<AgentKind, { installed: boolean; version: string | null; instances: number; autoStart: boolean }>;
+  kinds: Record<AgentKind, AgentKindConfig & { installed: boolean; version: string | null }>;
   instances: InstanceSnapshot[];
+}
+
+/** Registry entries this machine may attach (DAT-238), deduplicated across the scoped projects. */
+interface RegistryView {
+  mcpServers: { slug: string; name: string; description: string; transport: string; requiresAuth: boolean; authEnv: string | null; scope: string }[];
+  skills: { slug: string; name: string; description: string; harnesses: string[]; scope: string }[];
 }
 
 interface Window {

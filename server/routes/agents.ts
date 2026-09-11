@@ -156,6 +156,19 @@ export async function agentConfigForWorkPackage(q: Query, engagementId: string, 
   }
 }
 
+/** Published registry entries a project may attach, as slug → id maps (for the desktop's slug-based report). */
+async function loadRegistryForScope(q: Query, engagementId: string): Promise<{ mcp: Map<string, number>; skills: Map<string, number> }> {
+  const pick = async (table: string) =>
+    new Map(
+      (
+        await q(`SELECT id, slug FROM app.${table} WHERE (engagement_id IS NULL OR engagement_id = $1) AND status = 'published' ORDER BY engagement_id NULLS LAST`, [
+          engagementId,
+        ])
+      ).rows.map((r) => [txt(r.slug), num(r.id)] as const),
+    );
+  return { mcp: await pick('registry_mcp_servers'), skills: await pick('registry_skills') };
+}
+
 /** Attachment ids off a project_agents row (jsonb columns, possibly still strings from pg). */
 export function attachmentsFromRow(row: Record<string, unknown> | undefined): { mcpServers: number[]; skills: number[] } {
   const ids = (v: unknown): number[] => {
@@ -341,12 +354,15 @@ export async function syncProjectAgents(q: Query): Promise<void> {
       lastPolled: lastPolled === null ? null : new Date(lastPolled).toISOString(),
     });
     // security_settings is written on insert only — a sync must never overwrite
-    // a scope a lead has set on the panel (DAT-212).
+    // a scope a lead has set on the panel (DAT-212). config is MERGED, not
+    // replaced: the desktop's self-report (managedBy, host, projects — DAT-280)
+    // lives in the same JSON and must survive every sync.
     await q(
       `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, status, config, created_by, security_settings)
        VALUES ($1,$2,'runner',$3,$4,$5,$6,'system:observed',$7)
        ON CONFLICT (engagement_id, lower(name))
-       DO UPDATE SET status = $5, config = $6, harness = COALESCE(app.project_agents.harness, $3),
+       DO UPDATE SET status = $5, config = COALESCE(app.project_agents.config, '{}'::jsonb) || $6::jsonb,
+                     harness = COALESCE(app.project_agents.harness, $3),
                      model_provider = COALESCE(app.project_agents.model_provider, $4)`,
       [txt(r.engagement_id), name, harness, HARNESS_PROVIDER[harness] ?? null, status, config, JSON.stringify(baselineSecurity('delivery'))],
     );
@@ -480,7 +496,48 @@ export interface OverviewAgent {
   /** Registry attachments (DAT-238): published MCP server / skill ids. */
   mcpServers: number[];
   skills: number[];
+  /** 'desktop' when a developer's client manages this agent and reports it (DAT-280); the web is read-only for it. */
+  managedBy: string | null;
+  host: string | null;
+  /** Engagement ids the agent claims from, as reported; empty = any. */
+  projects: string[];
 }
+
+/** The desktop-reported management facts off a row's config JSON. */
+function managementFromConfig(cfg: Record<string, unknown>): { managedBy: string | null; host: string | null; projects: string[] } {
+  return {
+    managedBy: typeof cfg.managedBy === 'string' ? cfg.managedBy : null,
+    host: typeof cfg.host === 'string' ? cfg.host : null,
+    projects: Array.isArray(cfg.projects) ? cfg.projects.filter((p): p is string => typeof p === 'string') : [],
+  };
+}
+
+/** Desktop agent kinds → console harness ids (RunnerLogo/AgentLogos vocabulary). */
+const KIND_TO_HARNESS: Record<string, string> = { claude: 'claude-code', 'claude-code': 'claude-code', codex: 'codex' };
+
+/**
+ * Body of PUT /api/agent/self (DAT-280): what a developer's desktop client
+ * says about one of its agent instances. Attachments are registry slugs —
+ * the desktop thinks in slugs; ids are resolved per project here.
+ */
+const SelfReportBody = z.object({
+  agent: z.string().trim().min(1).max(80),
+  harness: z.string().trim().min(1).max(40),
+  host: z.string().trim().max(120).optional(),
+  projects: z.array(z.string().trim().min(1).max(80)).max(50).default([]),
+  model: z.string().trim().max(80).nullable().default(null),
+  mcpServers: z.array(z.string().trim().min(1).max(60)).max(40).default([]),
+  skills: z.array(z.string().trim().min(1).max(60)).max(40).default([]),
+});
+
+const parseConfig = (v: unknown): Record<string, unknown> => {
+  try {
+    const raw: unknown = typeof v === 'string' ? JSON.parse(v) : (v ?? {});
+    return raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+};
 
 export interface OverviewProject {
   id: string;
@@ -536,6 +593,7 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
       createdAt: iso(r.created_at),
       security: parseSecuritySettings(r.security_settings, txt(r.role) || 'delivery'),
       ...attachmentsFromRow(r),
+      ...managementFromConfig(cfg),
     };
   });
 
@@ -587,6 +645,7 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
       createdAt: null,
       security: parseSecuritySettings(stored?.security_settings, role),
       ...attachmentsFromRow(stored),
+      ...managementFromConfig(parseConfig(stored?.config)),
     };
   });
 
@@ -746,6 +805,19 @@ export function setupProjectAgentRoutes(
         return;
       }
       const { name, role, description, endpointName, harness, modelProvider, model, mcpServers, skills } = parsed.data;
+      // Desktop-managed agents (DAT-280) are configured on the developer's
+      // machine; the web mirrors them. Governance (role, description) stays
+      // editable here, the run configuration does not.
+      const managed = managementFromConfig(parseConfig(row.config));
+      if (
+        managed.managedBy === 'desktop' &&
+        [harness, modelProvider, model, mcpServers, skills].some((v) => v !== undefined)
+      ) {
+        res.status(409).json({
+          error: `${txt(row.name)} is managed from ${managed.host ? `${managed.host}'s` : 'a'} desktop client — change its model, harness or attachments there`,
+        });
+        return;
+      }
       if (name !== undefined && txt(row.created_by).startsWith('system:')) {
         res.status(409).json({ error: 'System-synced agents are named by the runner itself — rename the runner, not the record' });
         return;
@@ -840,6 +912,69 @@ export function setupProjectAgentRoutes(
     } catch (err) {
       console.error('update agent failed:', err);
       res.status(500).json({ error: 'Failed to update the agent' });
+    }
+  });
+
+  /**
+   * A developer's desktop client reporting one of its agents (DAT-280). Agents
+   * are managed on the machine; this is how the console learns what each one
+   * runs — harness, model, project scope, registry attachments — so the web's
+   * Agents page can show it. One row per scoped project (every project when
+   * unscoped), keyed like the observed-runner sync so the two never split.
+   * Any signed-in identity may report, as with polling and claiming.
+   */
+  app.put('/api/agent/self', async (req, res) => {
+    const parsed = SelfReportBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid agent report' });
+      return;
+    }
+    try {
+      const who = await resolveIdentity(req);
+      const b = parsed.data;
+      const harness = KIND_TO_HARNESS[b.harness.toLowerCase()] ?? b.harness.toLowerCase();
+      const all = (await q('SELECT id FROM app.engagements')).rows.map((r) => txt(r.id));
+      const scope = b.projects.length ? b.projects.filter((p) => all.includes(p)) : all;
+      const reported = new Date().toISOString();
+      const rows: { engagementId: string; mcpServers: number[]; skills: number[] }[] = [];
+      for (const engagementId of scope) {
+        // Slugs → the ids this project may attach (shared or its own, published).
+        const reg = await loadRegistryForScope(q, engagementId);
+        const mcpIds = b.mcpServers.map((slug) => reg.mcp.get(slug)).filter((id): id is number => typeof id === 'number');
+        const skillIds = b.skills.map((slug) => reg.skills.get(slug)).filter((id): id is number => typeof id === 'number');
+        const config = JSON.stringify({
+          managedBy: 'desktop',
+          host: b.host ?? null,
+          projects: b.projects,
+          reportedBy: who.email,
+          reportedAt: reported,
+        });
+        await q(
+          `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, status, config, created_by, security_settings, mcp_servers, skills)
+           VALUES ($1,$2,'runner',$3,$4,$5,'configured',$6::jsonb,'system:observed',$7,$8::jsonb,$9::jsonb)
+           ON CONFLICT (engagement_id, lower(name))
+           DO UPDATE SET harness = $3, model_provider = $4, model = $5,
+                         config = COALESCE(app.project_agents.config, '{}'::jsonb) || $6::jsonb,
+                         mcp_servers = $8::jsonb, skills = $9::jsonb`,
+          [
+            engagementId,
+            b.agent,
+            harness,
+            HARNESS_PROVIDER[harness] ?? null,
+            b.model,
+            config,
+            JSON.stringify(baselineSecurity('delivery')),
+            JSON.stringify(mcpIds),
+            JSON.stringify(skillIds),
+          ],
+        );
+        rows.push({ engagementId, mcpServers: mcpIds, skills: skillIds });
+      }
+      console.log(`[agents] ${b.agent} reported from ${b.host ?? 'a desktop'}: ${harness}${b.model ? ` / ${b.model}` : ''}, ${scope.length} project(s)`);
+      res.json({ ok: true, agent: b.agent, harness, projects: rows });
+    } catch (err) {
+      console.error('agent self-report failed:', err);
+      res.status(500).json({ error: 'Failed to record the agent report' });
     }
   });
 

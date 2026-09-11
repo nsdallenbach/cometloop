@@ -290,6 +290,12 @@ export interface ProjectAgent {
   /** Registry attachments (DAT-238): ids of published MCP servers / skills this agent may reach. */
   mcpServers: number[];
   skills: number[];
+  /** 'desktop' when a developer's client manages this agent and reports it here (DAT-280); the web is read-only for it. */
+  managedBy: string | null;
+  /** Machine the desktop client reported from. */
+  host: string | null;
+  /** Engagement ids the agent claims from as reported; empty = any. */
+  projects: string[];
 }
 
 /** An MCP server published to the registry (DAT-238); shared when engagementId is null. */

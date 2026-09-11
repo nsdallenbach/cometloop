@@ -314,5 +314,12 @@ into few deploys). Each deploy restarts the app — expect ~1 minute of 502s.
 - **Two shells, one product** — the desktop embeds the deployed web console
   rather than re-implementing it; what it does re-implement is tracked for
   parity ([cross-platform-parity.md](./cross-platform-parity.md)).
+- **Agents are managed on the desktop; the web is read-only for them**
+  (DAT-280). A runner agent's scope, model, MCP servers and skills are set by
+  its developer in the desktop client's Agents page and reported to the
+  console (`PUT /api/agent/self`), which mirrors them for leads and PMs. The
+  web never configures a runner (the API answers 409 for desktop-managed
+  rows); what leads do on the web is governance — register workspace endpoint
+  agents, set security scopes and load balancing, publish registry entries.
 - **Shared checkout discipline** — parallel Claude sessions use worktrees;
   the local emulation runner is pinned to `main` in its own worktree.

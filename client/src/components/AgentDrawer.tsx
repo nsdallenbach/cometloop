@@ -69,7 +69,9 @@ function draftFrom(agent: ProjectAgent | null, projectId: string): Draft {
   return {
     projectId: agent?.engagementId ?? projectId,
     name: agent?.name ?? '',
-    agentType: agent?.agentType ?? 'runner',
+    // New agents registered from the web are workspace endpoints; runner
+    // agents come from developers' desktop clients (DAT-280).
+    agentType: agent?.agentType ?? 'agentbricks',
     role: agent?.role ?? 'delivery',
     description: agent?.description ?? '',
     endpointName: agent?.endpointName ?? '',
@@ -170,7 +172,11 @@ export function AgentDrawer({
   const lead = canLead(draft.projectId);
   const stored = agent ? agent.recordId !== null : true;
   const systemRow = agent?.source === 'observed' || agent?.name === 'planning-agent';
-  const editable = lead && (creating || stored);
+  // Runner agents are managed on developers' desktops (DAT-280): the web only
+  // mirrors what they report. Everything about their run configuration is
+  // read-only here; lead governance (security scopes, load balancing) stays.
+  const runnerAgent = agent?.agentType === 'runner';
+  const editable = lead && (creating || stored) && !runnerAgent;
   const endpointBacked = isEndpointBacked(draft.agentType);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }));
 
@@ -388,7 +394,7 @@ export function AgentDrawer({
                 whiteSpace: 'nowrap',
               }}
             >
-              {creating ? 'NEW AGENT' : agent?.name}
+              {creating ? 'REGISTER ENDPOINT AGENT' : agent?.name}
             </div>
             <div
               style={{
@@ -455,7 +461,29 @@ export function AgentDrawer({
                 color: 'var(--tx3)',
               }}
             >
-              Read-only — only the project&apos;s leads can configure its agents.
+              Read-only — only the project&apos;s leads can manage its endpoint agents and security settings.
+            </div>
+          )}
+          {runnerAgent && (
+            <div
+              style={{
+                border: '1px solid var(--agent)',
+                borderRadius: 3,
+                padding: '8px 10px',
+                fontSize: 11.5,
+                color: 'var(--tx2)',
+                lineHeight: 1.5,
+              }}
+            >
+              <span style={{ ...mono(600, 9), letterSpacing: '.1em', color: 'var(--agent)' }}>DESKTOP-MANAGED</span>{' '}
+              {agent?.managedBy === 'desktop'
+                ? `Configured on ${agent.host ?? 'its developer’s'} desktop client — scope, model, MCP servers and skills are set there; this is what it reported.`
+                : 'This runner has not reported from a desktop client yet. Its scope, model and attachments are managed on its developer’s machine, not here.'}
+              {agent && agent.projects.length > 0 && (
+                <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', marginTop: 4, letterSpacing: '.04em' }}>
+                  CLAIMS FROM: {agent.projects.map((p) => projects.find((x) => x.id === p)?.client ?? p).join(' · ')}
+                </div>
+              )}
             </div>
           )}
           {agent && agent.recordId === null && lead && (
@@ -523,7 +551,6 @@ export function AgentDrawer({
                     value={draft.agentType}
                     onChange={(e) => set('agentType', e.target.value as ProjectAgentType)}
                   >
-                    <option value="runner">Agent runner (coding harness)</option>
                     <option value="agentbricks">Agent Bricks agent</option>
                     <option value="serving-endpoint">Model serving endpoint</option>
                     <option value="foundry" disabled>

@@ -62,7 +62,7 @@ const DELIVERY_ALLOW_RULES = [
 ];
 
 interface WorkPackage {
-  task: { id: number; ticket_key: string };
+  task: { id: number; ticket_key: string; engagement_id?: string };
   ticket?: { key?: string; title?: string };
   repo?: { repo_url?: string } | null;
   contextFiles?: { name: string; url: string }[];
@@ -204,15 +204,28 @@ export class RunnerHost {
 
   // ---- loop ----
 
+  /** This instance's local configuration (DAT-280): scope, model, attachments — managed on the Agents page. */
+  private localConfig() {
+    const kinds = this.cfg.agents as Record<string, { projects: string[]; model: string | null; mcpServers: string[]; skills: string[] } | undefined>;
+    return kinds[this.harnessName] ?? { projects: [], model: null, mcpServers: [], skills: [] };
+  }
+
   private async loop(): Promise<void> {
-    this.emit({ kind: 'note', text: `runner ${this.agentName} started (harness: ${this.harnessName})`, ts: now() });
+    const scope = this.localConfig().projects;
+    this.emit({
+      kind: 'note',
+      text: `runner ${this.agentName} started (harness: ${this.harnessName}${scope.length ? `, projects: ${scope.join(', ')}` : ', any project'})`,
+      ts: now(),
+    });
     while (!this.stopRequested) {
       this.setState('waiting');
       try {
-        const hit = await this.client.request<{ queued: unknown[] } | null>(
-          `/api/agent/work/wait?agent=${encodeURIComponent(this.agentName)}`,
-          { signal: AbortSignal.timeout(70_000) },
-        );
+        const scoped = this.localConfig().projects;
+        const params = new URLSearchParams({ agent: this.agentName });
+        if (scoped.length) params.set('engagements', scoped.join(','));
+        const hit = await this.client.request<{ queued: unknown[] } | null>(`/api/agent/work/wait?${params.toString()}`, {
+          signal: AbortSignal.timeout(70_000),
+        });
         if (this.stopRequested) break;
         if (!hit || !Array.isArray(hit.queued) || hit.queued.length === 0) continue;
       } catch (e) {
@@ -223,9 +236,10 @@ export class RunnerHost {
       }
       let pkg: WorkPackage;
       try {
+        const scoped = this.localConfig().projects;
         pkg = await this.client.request<WorkPackage>('/api/agent/work/claim', {
           method: 'POST',
-          body: JSON.stringify({ agent: this.agentName }),
+          body: JSON.stringify({ agent: this.agentName, ...(scoped.length ? { engagements: scoped } : {}) }),
         });
       } catch (e) {
         if (e instanceof ConsoleApiError && e.status === 403) {
@@ -321,7 +335,10 @@ export class RunnerHost {
     // the workdir; a server's credential comes from the identity broker's
     // MCP_AUTH_<SLUG> env at spawn time, never from a file.
     const mcpServerPath = this.cfg.mcpServer && existsSync(this.cfg.mcpServer) ? this.cfg.mcpServer : null;
-    const agentConfig = pkg.agentConfig ?? null;
+    // Local configuration wins (DAT-280): what the developer set on the Agents
+    // page, resolved against the project's registry now. The console's
+    // agentConfig (its mirror of the same report) is the fallback.
+    const agentConfig = await this.resolveLocalConfig(pkg);
     harness.writeConfig(dir, mcpServerPath, agentConfig);
     const mcpEnv = this.identity?.mcpEnv() ?? {};
     const missingAuth = missingAuthEnv(agentConfig, { ...process.env, ...mcpEnv });
@@ -536,6 +553,36 @@ export class RunnerHost {
         this.usageStream?.push(sample);
       },
     };
+  }
+
+  /**
+   * The run configuration from this machine's settings (DAT-280): the local
+   * model, plus registry entries picked by slug and resolved against the
+   * task's project (shared + that project's own, published). Nothing local
+   * set → the console's mirror as delivered in the work package.
+   */
+  private async resolveLocalConfig(pkg: WorkPackage): Promise<AgentRunConfig | null> {
+    const local = this.localConfig();
+    const fromServer = pkg.agentConfig ?? null;
+    if (!local.model && !local.mcpServers.length && !local.skills.length) return fromServer;
+    const project = pkg.task.engagement_id ?? null;
+    try {
+      const reg = await this.client.registry(project);
+      const pick = <T extends { slug: string; status: string; engagementId: string | null }>(entries: T[], slugs: string[]) =>
+        slugs
+          .map((slug) => entries.find((e) => e.slug === slug && e.status === 'published' && e.engagementId === project) ?? entries.find((e) => e.slug === slug && e.status === 'published'))
+          .filter((e): e is T => Boolean(e));
+      const mcpServers = pick(reg.mcpServers, local.mcpServers);
+      const skills = pick(reg.skills, local.skills);
+      const missing = [...local.mcpServers.filter((s) => !mcpServers.some((m) => m.slug === s)), ...local.skills.filter((s) => !skills.some((k) => k.slug === s))];
+      if (missing.length) {
+        this.emit({ kind: 'note', text: `registry entries not available to this project, skipped: ${missing.join(', ')}`, ts: now() });
+      }
+      return { model: local.model ?? fromServer?.model ?? null, mcpServers, skills };
+    } catch (e) {
+      this.emit({ kind: 'note', text: `registry lookup failed (${msg(e)}) — using the console's copy of this agent's config`, ts: now() });
+      return fromServer ? { ...fromServer, model: local.model ?? fromServer.model } : { model: local.model, mcpServers: [], skills: [] };
+    }
   }
 
   /** Dev token from the identity broker; failures degrade to null (fallbacks run). */

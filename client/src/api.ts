@@ -793,6 +793,9 @@ export const api = {
         security: mapAgentSecurity(r.security),
         mcpServers: idList(r.mcpServers),
         skills: idList(r.skills),
+        managedBy: nz(r.managedBy),
+        host: nz(r.host),
+        projects: Array.isArray(r.projects) ? r.projects.map((p) => s(p)).filter(Boolean) : [],
       })),
     };
   },

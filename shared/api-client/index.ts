@@ -124,11 +124,80 @@ export class ConsoleClient {
    * the shared pool plus tasks routed to the caller; `active` is what the
    * named runner currently holds.
    */
-  listAgentWork(agent: string, engagement?: string): Promise<AgentWork> {
+  listAgentWork(agent: string, engagements?: string[]): Promise<AgentWork> {
     const params = new URLSearchParams({ agent });
-    if (engagement) params.set('engagement', engagement);
+    if (engagements?.length) params.set('engagements', engagements.join(','));
     return this.request<AgentWork>(`/api/agent/work?${params.toString()}`);
   }
+
+  /**
+   * Report what this machine runs (DAT-280): agents are managed locally, the
+   * console mirrors them so the web's Agents page shows the real configuration.
+   */
+  reportAgent(payload: AgentSelfReport): Promise<unknown> {
+    return this.request('/api/agent/self', { method: 'PUT', body: JSON.stringify(payload) });
+  }
+
+  /** The registry a project may attach from: shared entries plus its own (DAT-238). */
+  registry(project?: string | null): Promise<Registry> {
+    return this.request<Registry>(`/api/registry${project ? `?project=${encodeURIComponent(project)}` : ''}`);
+  }
+
+  /** Model ids per harness + the workspace's chat endpoints (DAT-278). */
+  agentModels(): Promise<AgentModelCatalog> {
+    return this.request<AgentModelCatalog>('/api/agents/models');
+  }
+}
+
+export interface AgentSelfReport {
+  agent: string;
+  /** Console harness id: 'claude-code' | 'codex' | … */
+  harness: string;
+  host?: string;
+  /** Engagement ids the agent claims from; empty = any project. */
+  projects?: string[];
+  model?: string | null;
+  /** Registry slugs. */
+  mcpServers?: string[];
+  skills?: string[];
+}
+
+export interface RegistryMcpServer {
+  id: number;
+  engagementId: string | null;
+  slug: string;
+  name: string;
+  description: string;
+  transport: 'stdio' | 'http';
+  command: string | null;
+  args: string[];
+  url: string | null;
+  env: Record<string, string>;
+  requiresAuth: boolean;
+  authEnv: string | null;
+  status: string;
+}
+
+export interface RegistrySkill {
+  id: number;
+  engagementId: string | null;
+  slug: string;
+  name: string;
+  description: string;
+  content: string;
+  harnesses: string[];
+  status: string;
+}
+
+export interface Registry {
+  mcpServers: RegistryMcpServer[];
+  skills: RegistrySkill[];
+}
+
+export interface AgentModelCatalog {
+  source: 'workspace' | 'static';
+  servingEndpoints: { name: string; servedModel: string | null; task: string | null; provider: string | null; ready: boolean }[];
+  harnessModels: Record<string, { id: string; label: string; provider: string; default?: boolean }[]>;
 }
 
 export interface Me {

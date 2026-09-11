@@ -26,8 +26,21 @@ const bridge = {
   boardOverview: () => ipcRenderer.invoke('board:overview'),
   boardPickup: (ticketKey: string) => ipcRenderer.invoke('board:pickup', ticketKey),
   agentsState: () => ipcRenderer.invoke('agents:state'),
-  agentsConfigure: (kind: string, opts: { instances?: number; autoStart?: boolean }) =>
-    ipcRenderer.invoke('agents:configure', kind, opts),
+  agentsConfigure: (
+    kind: string,
+    opts: {
+      instances?: number;
+      autoStart?: boolean;
+      projects?: string[];
+      model?: string | null;
+      mcpServers?: string[];
+      skills?: string[];
+    },
+  ) => ipcRenderer.invoke('agents:configure', kind, opts),
+  // Agent configuration sources (DAT-280): the console's registry and model
+  // catalog, read as the dev — the desktop decides, the console mirrors.
+  consoleRegistry: (projects: string[]) => ipcRenderer.invoke('console:registry', projects),
+  consoleModels: () => ipcRenderer.invoke('console:models'),
   agentsStart: (id: string) => ipcRenderer.invoke('agents:start', id),
   agentsStop: (id: string) => ipcRenderer.invoke('agents:stop', id),
   agentsKill: (id: string) => ipcRenderer.invoke('agents:kill', id),

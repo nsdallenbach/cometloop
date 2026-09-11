@@ -207,11 +207,61 @@ function registerIpc(): void {
     if (typeof kind !== 'string' || !AGENT_KINDS.includes(kind as AgentKind)) {
       return { error: 'unknown agent kind' };
     }
-    const o = (opts ?? {}) as { instances?: unknown; autoStart?: unknown };
+    const o = (opts ?? {}) as {
+      instances?: unknown;
+      autoStart?: unknown;
+      projects?: unknown;
+      model?: unknown;
+      mcpServers?: unknown;
+      skills?: unknown;
+    };
+    const strings = (v: unknown): string[] | undefined =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : undefined;
     return pool.configure(kind as AgentKind, {
       instances: typeof o.instances === 'number' ? o.instances : undefined,
       autoStart: typeof o.autoStart === 'boolean' ? o.autoStart : undefined,
+      projects: strings(o.projects),
+      model: o.model === null ? null : typeof o.model === 'string' ? o.model.trim() || null : undefined,
+      mcpServers: strings(o.mcpServers),
+      skills: strings(o.skills),
     });
+  });
+
+  // Agent configuration sources (DAT-280): the console's registry (union of
+  // the scoped projects' views, shared entries once) and model catalog.
+  ipcMain.handle('console:registry', async (_e, projects: unknown) => {
+    try {
+      const ids = Array.isArray(projects) ? projects.filter((p): p is string => typeof p === 'string' && p.length > 0) : [];
+      const scopes = ids.length ? ids : [null];
+      const mcp = new Map<string, { slug: string; name: string; description: string; transport: string; requiresAuth: boolean; authEnv: string | null; scope: string }>();
+      const skills = new Map<string, { slug: string; name: string; description: string; harnesses: string[]; scope: string }>();
+      for (const scope of scopes) {
+        const reg = await client.registry(scope);
+        for (const m of reg.mcpServers) {
+          if (m.status !== 'published') continue;
+          const key = `${m.engagementId ?? ''}/${m.slug}`;
+          if (!mcp.has(key)) mcp.set(key, { slug: m.slug, name: m.name, description: m.description, transport: m.transport, requiresAuth: m.requiresAuth, authEnv: m.authEnv, scope: m.engagementId ?? 'shared' });
+        }
+        for (const k of reg.skills) {
+          if (k.status !== 'published') continue;
+          const key = `${k.engagementId ?? ''}/${k.slug}`;
+          if (!skills.has(key)) skills.set(key, { slug: k.slug, name: k.name, description: k.description, harnesses: k.harnesses, scope: k.engagementId ?? 'shared' });
+        }
+      }
+      return { ok: true as const, registry: { mcpServers: [...mcp.values()], skills: [...skills.values()] } };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false as const, signInRequired: msg === SIGN_IN_REQUIRED, error: msg === SIGN_IN_REQUIRED ? 'Not signed in to Databricks.' : msg };
+    }
+  });
+  ipcMain.handle('console:models', async () => {
+    try {
+      const models = await client.agentModels();
+      return { ok: true as const, models: { source: models.source, harnessModels: models.harnessModels } };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false as const, signInRequired: msg === SIGN_IN_REQUIRED, error: msg === SIGN_IN_REQUIRED ? 'Not signed in to Databricks.' : msg };
+    }
   });
   ipcMain.handle('agents:start', (_e, id: unknown) => {
     if (typeof id === 'string') pool.instance(id)?.host.start();
