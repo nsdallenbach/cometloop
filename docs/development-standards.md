@@ -42,6 +42,13 @@ the context handed to agent runners.
   a code bug until the Actions run has settled.
 - **Delete branches after merge.** Stale branches pile up fast with agent
   work; the PR preserves history.
+- **Shared UI/UX changes carry their parity status.** Any PR touching
+  `shared/design/`, `desktop/src/renderer/`, or a client idiom the desktop
+  mirrors (tokens, markdown rendering, toasts, theme, fonts) ticks the parity
+  item in the PR template: either both platforms are covered and the
+  [parity tracker](./feature-parity-tracker.md) row is updated in the same PR,
+  or a `parity-gap` ticket is filed for the lagging platform. Process and
+  ownership: [cross-platform-parity.md](./cross-platform-parity.md).
 - **Parallel sessions use worktrees.** Multiple Claude sessions share this
   checkout. Never commit on, stage over, or switch another session's branch —
   make a fresh worktree from `origin/main` for independent work, and stage
