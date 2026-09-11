@@ -79,7 +79,7 @@ any other workspace principal does — over this MCP endpoint.
    https://delivery-console-7474645607548631.aws.databricksapps.com/api/mcp
    ```
 
-   The same URL is on the /agents page — the New agent form and every
+   The same URL is on the Agent Map tab (/agent-map) — the New agent form and every
    endpoint-backed agent's detail popup show it with a copy button, resolved
    from the console you are looking at.
 
@@ -92,7 +92,7 @@ any other workspace principal does — over this MCP endpoint.
    direction: it is how the console invokes the agent when a PR opens. Until it
    is granted, the agent node on the map reads `UNREACHABLE` and says why.
 
-4. **Register the agent** on the /agents page: New agent → Agent Bricks agent →
+4. **Register the agent** on the Agent Map tab (/agent-map): New agent → Agent Bricks agent →
    the serving endpoint name → role **PR reviewer**. The node appears on that
    project's cluster with live endpoint status.
 

@@ -214,7 +214,7 @@ credential vending — so Claude sessions and runners speak one protocol.
 
 Every agent on the map carries a `security_settings` object on
 `app.project_agents`: an enable switch plus the permission scope it may
-execute. Leads edit it from the agent's panel on `/agents`
+execute. Leads edit it from the agent's panel on the Agent Map (`/agent-map`)
 (`PUT /api/projects/:id/agents/:agentId/security`, lead/admin only — an agent
 can never widen its own scope). Four scopes map one-to-one onto real execution
 points, and the check runs there, not at configuration time:

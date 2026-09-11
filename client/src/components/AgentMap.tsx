@@ -18,7 +18,8 @@ import { agentBrand, HARNESS_DEFAULT_PROVIDER, HARNESS_OPTIONS, PROVIDER_OPTIONS
 import { MAP_LINKS_CLASS, MAP_MARK_CLASS, MapViewport } from './MapViewport';
 
 /**
- * /agents — the agent architecture map. Every project renders as a central hub
+ * /agent-map — the Agent Map tab in the primary nav (DAT-267; /agents still
+ * redirects here). Every project renders as a central hub
  * node with its agents as spokes around it: observed runners (from the work
  * queue), endpoint-backed agents built in AgentBricks or Model Serving and
  * registered here, and staged runner configs awaiting fleet rollout.

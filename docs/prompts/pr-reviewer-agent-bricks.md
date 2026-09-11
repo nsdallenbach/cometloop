@@ -72,7 +72,7 @@ Add the Delivery Console as a **custom MCP server**:
 https://delivery-console-7474645607548631.aws.databricksapps.com/api/mcp
 ```
 
-The /agents page shows this URL with a copy button — on the New agent form and
+The Agent Map tab (/agent-map) shows this URL with a copy button — on the New agent form and
 on any endpoint-backed agent's detail popup — resolved from whichever console
 you are looking at. It serves `search_tickets`, `get_ticket`, `link_tickets`,
 `consolidate_tickets` and `submit_pr_review`.
@@ -86,7 +86,7 @@ you are looking at. It serves `search_tickets`, `get_ticket`, `link_tickets`,
 
 ## Register it on the board
 
-/agents → **New agent** on the project hub → *Agent Bricks agent* → the serving
+Agent Map (/agent-map) → **New agent** on the project hub → *Agent Bricks agent* → the serving
 endpoint name → role **PR reviewer** → description (above). The node appears on
 that project's cluster immediately, with live endpoint status.
 

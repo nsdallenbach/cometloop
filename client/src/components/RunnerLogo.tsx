@@ -14,7 +14,7 @@ export { CLAUDE_CODE };
 /**
  * A runner names its own harness (`codex-1`, `gemini-2`, …). This mirrors
  * `inferHarness` in server/routes/agents.ts, which brands the same fleet on
- * the /agents map — keep the two in step when a harness is added.
+ * the /agent-map Agent Map — keep the two in step when a harness is added.
  */
 export function inferHarness(runner: string): string {
   const n = runner.toLowerCase();

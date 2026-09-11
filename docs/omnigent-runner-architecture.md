@@ -519,7 +519,7 @@ and the event shapes below are verified, not assumed.
 | `tests/harness-abstraction.test.ts` | Service-adapter shape assertions, the server↔client table pins, and `normalizeState()` coverage for Omnigent's real `idle\|running\|waiting\|failed` vocabulary. |
 
 A runner named `omnigent-1` therefore already registers, brands and groups correctly
-on the `/agents` map and on ticket cards — the console half is genuinely done.
+on the `/agent-map` Agent Map and on ticket cards — the console half is genuinely done.
 
 ### 7.1 Implementation checklist
 
