@@ -34,6 +34,9 @@ import type {
   PrReview,
   ProjectRunnerConfig,
   ProjectStandards,
+  Registry,
+  RegistryMcpServer,
+  RegistrySkill,
   RunnerConfigIssue,
   RepoCommit,
   RepoConnection,
@@ -290,6 +293,69 @@ const json = (body: unknown): RequestInit => ({
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 });
+
+const idList = (v: unknown): number[] => (Array.isArray(v) ? v.map((x) => n(x)).filter((x) => x > 0) : []);
+
+export interface McpServerPayload {
+  engagementId: string | null;
+  slug?: string;
+  name: string;
+  description?: string;
+  transport?: 'stdio' | 'http';
+  command?: string | null;
+  args?: string[];
+  url?: string | null;
+  env?: Record<string, string>;
+  requiresAuth?: boolean;
+  status?: 'published' | 'retired';
+}
+
+export interface SkillPayload {
+  engagementId: string | null;
+  slug?: string;
+  name: string;
+  description?: string;
+  content?: string;
+  harnesses?: string[];
+  status?: 'published' | 'retired';
+}
+
+function mapMcpServer(r: Row): RegistryMcpServer {
+  return {
+    id: n(r.id),
+    engagementId: nz(r.engagementId),
+    slug: s(r.slug),
+    name: s(r.name),
+    description: s(r.description),
+    transport: s(r.transport) === 'http' ? 'http' : 'stdio',
+    command: nz(r.command),
+    args: Array.isArray(r.args) ? r.args.map((a) => s(a)) : [],
+    url: nz(r.url),
+    env: r.env && typeof r.env === 'object' ? Object.fromEntries(Object.entries(r.env as Record<string, unknown>).map(([k, v]) => [k, s(v)])) : {},
+    requiresAuth: b(r.requiresAuth),
+    authEnv: nz(r.authEnv),
+    status: s(r.status) === 'retired' ? 'retired' : 'published',
+    createdBy: s(r.createdBy),
+    updatedBy: s(r.updatedBy),
+    updatedAt: nz(r.updatedAt),
+  };
+}
+
+function mapSkill(r: Row): RegistrySkill {
+  return {
+    id: n(r.id),
+    engagementId: nz(r.engagementId),
+    slug: s(r.slug),
+    name: s(r.name),
+    description: s(r.description),
+    content: s(r.content),
+    harnesses: Array.isArray(r.harnesses) ? r.harnesses.map((h) => s(h)) : [],
+    status: s(r.status) === 'retired' ? 'retired' : 'published',
+    createdBy: s(r.createdBy),
+    updatedBy: s(r.updatedBy),
+    updatedAt: nz(r.updatedAt),
+  };
+}
 
 export const api = {
   async notifications(): Promise<{ notifications: Notification[]; unread: number }> {
@@ -725,6 +791,8 @@ export const api = {
         lastSeen: r.lastSeen == null ? null : s(r.lastSeen),
         createdAt: r.createdAt == null ? null : s(r.createdAt),
         security: mapAgentSecurity(r.security),
+        mcpServers: idList(r.mcpServers),
+        skills: idList(r.skills),
       })),
     };
   },
@@ -823,6 +891,8 @@ export const api = {
       harness?: string | null;
       modelProvider?: string | null;
       model?: string | null;
+      mcpServers?: number[];
+      skills?: number[];
     }
   ): Promise<unknown> {
     return http(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}`, {
@@ -833,6 +903,37 @@ export const api = {
 
   deleteAgent(projectId: string, agentId: number): Promise<unknown> {
     return http(`/api/projects/${encodeURIComponent(projectId)}/agents/${String(agentId)}`, { method: 'DELETE' });
+  },
+
+  // ---- MCP / skills registry (DAT-238) ----
+
+  async registry(projectId?: string | null): Promise<Registry> {
+    const d = await http<{ mcpServers?: Row[]; skills?: Row[] }>(`/api/registry${projectId ? `?project=${encodeURIComponent(projectId)}` : ''}`);
+    return { mcpServers: (d.mcpServers ?? []).map(mapMcpServer), skills: (d.skills ?? []).map(mapSkill) };
+  },
+
+  createMcpServer(payload: McpServerPayload): Promise<RegistryMcpServer> {
+    return http<Row>('/api/registry/mcp-servers', { method: 'POST', ...json(payload) }).then(mapMcpServer);
+  },
+
+  updateMcpServer(id: number, payload: Partial<McpServerPayload>): Promise<RegistryMcpServer> {
+    return http<Row>(`/api/registry/mcp-servers/${String(id)}`, { method: 'PATCH', ...json(payload) }).then(mapMcpServer);
+  },
+
+  deleteMcpServer(id: number): Promise<unknown> {
+    return http(`/api/registry/mcp-servers/${String(id)}`, { method: 'DELETE' });
+  },
+
+  createSkill(payload: SkillPayload): Promise<RegistrySkill> {
+    return http<Row>('/api/registry/skills', { method: 'POST', ...json(payload) }).then(mapSkill);
+  },
+
+  updateSkill(id: number, payload: Partial<SkillPayload>): Promise<RegistrySkill> {
+    return http<Row>(`/api/registry/skills/${String(id)}`, { method: 'PATCH', ...json(payload) }).then(mapSkill);
+  },
+
+  deleteSkill(id: number): Promise<unknown> {
+    return http(`/api/registry/skills/${String(id)}`, { method: 'DELETE' });
   },
 
   // ---- PR review gate ----

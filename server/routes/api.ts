@@ -7,6 +7,7 @@ import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
 import { PROJECT_AGENTS_SCHEMA_SQL, setupProjectAgentRoutes } from './agents';
 import { setupAgentModelRoutes } from './agent-models';
+import { REGISTRY_SCHEMA_SQL, setupRegistryRoutes } from './registry';
 import { FLEET_SCHEMA_SQL, loadFleetStatus, startFleetWatch } from './fleet';
 import { setupAgentSecurityRoutes } from './agent-security';
 import { RUNNER_LOAD_BALANCING_SCHEMA_SQL, setupRunnerLoadBalancingRoutes } from './runner-load-balancing';
@@ -216,6 +217,7 @@ async function initSchema(appkit: AppKitServices) {
     ...REPO_SCHEMA_SQL,
     ...AGENT_SCHEMA_SQL,
     ...PROJECT_AGENTS_SCHEMA_SQL,
+    ...REGISTRY_SCHEMA_SQL,
     ...FLEET_SCHEMA_SQL,
     ...RUNNER_LOAD_BALANCING_SCHEMA_SQL,
     ...TOOL_CALL_SCHEMA_SQL,
@@ -2175,6 +2177,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupAgentRoutes(app, q, appkit.files('files'), requireProjectAccess, telemetry);
     setupProjectAgentRoutes(app, q, requireLead, resolveIdentity);
     setupAgentModelRoutes(app);
+    setupRegistryRoutes(app, q, requireLead);
     setupRunnerLoadBalancingRoutes(app, q, requireLead);
     setupAgentSecurityRoutes(app, q, requireLead);
     setupToolCallRoutes(app, q);

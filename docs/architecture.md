@@ -112,6 +112,7 @@ with a Lakebase credential.
 - `fleet.ts` — runner liveness: poll stamps, online/offline, the FLEET DOWN board warning
 - `agents.ts` — the Agents page: registered endpoint agents, configured runners, observed runners from task history; create / reconfigure (role, model, harness, provider) / remove
 - `agent-models.ts` — the model catalog behind the picker: the workspace's chat-capable serving endpoints (listed live, static fallback) plus the model ids each coding harness accepts
+- `registry.ts` — the MCP / skills registry (DAT-238): MCP servers and SKILL.md skills, shared or scoped to one project, lead-gated publishing, attached to agents by id and resolved into the work package at claim time; secrets never stored (a server that needs one names the `MCP_AUTH_<SLUG>` env the runner injects)
 - `agent-security.ts` — per-agent security settings: model, validation, the lead-only settings API, and the enforcement check the execution paths call
 - `coordination.ts` — inter-agent messages (announce, request/response, SLAs), mirrored to tickets
 - `repos.ts` — GitHub/ADO providers: PR & commit sync, ticket auto-linking, merge-from-drawer, deploy watch

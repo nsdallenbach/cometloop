@@ -4,6 +4,7 @@ import type express from 'express';
 import { PROJECT_AGENTS_SCHEMA_SQL, inferHarness, loadAgentsOverview, setupProjectAgentRoutes } from './agents';
 import { baselineSecurity, parseSecuritySettings } from './agent-security';
 import type { Identity } from './roles';
+import { REGISTRY_SCHEMA_SQL } from './registry';
 import { FLEET_SCHEMA_SQL } from './fleet';
 
 /**
@@ -202,5 +203,36 @@ describe('PATCH /api/projects/:id/agents/:agentId', () => {
     const id = String((await rowFor('codex-writer')).id);
     expect((await patch(routes, { id: 'eng-b', agentId: id }, { model: 'x' })).statusCode).toBe(404);
     expect((await patch(routes, { id: 'eng-a', agentId: id }, { role: 'overlord' })).statusCode).toBe(400);
+  });
+});
+
+describe('PATCH /api/projects/:id/agents/:agentId — registry attachments (DAT-238)', () => {
+  beforeEach(async () => {
+    await q(`CREATE TABLE app.feed_items (id SERIAL PRIMARY KEY, engagement_id TEXT, actor TEXT, text TEXT, time_label TEXT, reversible BOOLEAN)`);
+    for (const sql of REGISTRY_SCHEMA_SQL.filter((s) => !s.includes('CREATE UNIQUE INDEX')).map((s) => s.replace(' REFERENCES app.engagements(id) ON DELETE CASCADE', ''))) await q(sql);
+    await q(`INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, config, created_by) VALUES ('eng-a', 'codex-writer', 'runner', 'codex', 'openai', '{"notes":"keep"}', 'lead@datavail.com')`);
+    await q(`INSERT INTO app.registry_mcp_servers (engagement_id, slug, name, command) VALUES (NULL, 'shared', 'Shared', 'x'), ('eng-a', 'own', 'Own', 'x'), ('eng-b', 'other', 'Other', 'x')`);
+    await q(`INSERT INTO app.registry_skills (engagement_id, slug, name, status) VALUES (NULL, 'live', 'Live', 'published'), (NULL, 'gone', 'Gone', 'retired')`);
+  });
+
+  it('stores only attachments the project may see, keeps the rest of config, and reports them on the overview', async () => {
+    const routes = captureRoutes(leadGuard);
+    const agent = (await q(`SELECT id FROM app.project_agents WHERE name = 'codex-writer'`)).rows[0];
+    const ids = Object.fromEntries((await q('SELECT slug, id FROM app.registry_mcp_servers')).rows.map((r) => [String(r.slug), Number(r.id)]));
+    const skillIds = Object.fromEntries((await q('SELECT slug, id FROM app.registry_skills')).rows.map((r) => [String(r.slug), Number(r.id)]));
+    const res = await patch(routes, { id: 'eng-a', agentId: String(agent.id) }, { mcpServers: [ids.shared, ids.own, ids.other, 4242], skills: [skillIds.live, skillIds.gone] });
+    expect(res.statusCode).toBe(200);
+    const row = (await q('SELECT config::text AS c, mcp_servers::text AS m, skills::text AS s FROM app.project_agents WHERE id = $1', [agent.id])).rows[0];
+    // Attachments live in their own columns; config (the sync pass's scratch space) is untouched.
+    expect(JSON.parse(String(row.c))).toEqual({ notes: 'keep' });
+    expect(JSON.parse(String(row.m))).toEqual([ids.shared, ids.own]);
+    expect(JSON.parse(String(row.s))).toEqual([skillIds.live]);
+
+    const { agents } = await loadAgentsOverview(q);
+    expect(agents.find((a) => a.name === 'codex-writer')).toMatchObject({ mcpServers: [ids.shared, ids.own], skills: [skillIds.live] });
+
+    // A later update without attachment fields leaves them alone.
+    expect((await patch(routes, { id: 'eng-a', agentId: String(agent.id) }, { model: 'gpt-5.3-codex' })).statusCode).toBe(200);
+    expect(JSON.parse(String((await q('SELECT mcp_servers::text AS m FROM app.project_agents WHERE id = $1', [agent.id])).rows[0].m))).toEqual([ids.shared, ids.own]);
   });
 });

@@ -13,6 +13,7 @@ import { agentBrand, harnessBrand } from './AgentLogos';
 import { AgentDrawer, ModelChip } from './AgentDrawer';
 import { AgentMapLegend, AgentMapView } from './AgentMap';
 import { LoadBalancingModal } from './AgentPanels';
+import { RegistryView } from './RegistryView';
 import {
   agentState,
   fmtTokens,
@@ -34,14 +35,15 @@ import {
  * keyed by agent id so a poll never resets an edit in progress.
  */
 
-type View = 'grid' | 'map';
+type View = 'grid' | 'map' | 'registry';
 type Kind = 'all' | 'runners' | 'endpoints';
 
 const VIEW_KEY = 'eec-agents-view';
 
 function readView(): View {
   try {
-    return localStorage.getItem(VIEW_KEY) === 'map' ? 'map' : 'grid';
+    const v = localStorage.getItem(VIEW_KEY);
+    return v === 'map' || v === 'registry' ? v : 'grid';
   } catch {
     return 'grid';
   }
@@ -278,6 +280,11 @@ function AgentCard({
             {agent.tokens24h.costUsd != null ? ` · $${agent.tokens24h.costUsd.toFixed(2)}` : ''}
           </span>
         )}
+        {(agent.mcpServers.length > 0 || agent.skills.length > 0) && (
+          <span title="Registry attachments delivered at claim time">
+            {agent.mcpServers.length} MCP · {agent.skills.length} SKILL{agent.skills.length === 1 ? '' : 'S'}
+          </span>
+        )}
         {agent.lastSeen && <span>SEEN {relTime(agent.lastSeen).toUpperCase()}</span>}
         <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
           {isGeneralCodingAgent(agent) && (
@@ -410,9 +417,12 @@ function ProjectSection({
 
 export function AgentsPage({
   canLead,
+  canPublishShared,
   toast,
 }: {
   canLead: (engagementId: string) => boolean;
+  /** Admins publish SHARED registry entries; leads publish for their projects. */
+  canPublishShared: boolean;
   toast: (msg: string) => void;
 }) {
   const [data, setData] = useState<AgentsOverview | null>(null);
@@ -553,11 +563,13 @@ export function AgentsPage({
         <span style={{ fontSize: 11.5, color: 'var(--tx3)' }}>
           {view === 'grid'
             ? 'Every agent by project. Open one to configure its model, scope and permissions.'
-            : 'Architecture view — projects at the center, their agents as spokes. Click an agent to configure it.'}
+            : view === 'map'
+              ? 'Architecture view — projects at the center, their agents as spokes. Click an agent to configure it.'
+              : 'The MCP servers and skills agents can be given — shared across projects or scoped to one.'}
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
           <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 3, overflow: 'hidden' }}>
-            {(['grid', 'map'] as View[]).map((v) => (
+            {(['grid', 'map', 'registry'] as View[]).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
@@ -572,11 +584,11 @@ export function AgentsPage({
                   color: view === v ? 'var(--tx)' : 'var(--tx3)',
                 }}
               >
-                {v === 'grid' ? '▦ GRID' : '◎ MAP'}
+                {v === 'grid' ? '▦ GRID' : v === 'map' ? '◎ MAP' : '⌘ REGISTRY'}
               </button>
             ))}
           </div>
-          {leadAnywhere && (
+          {leadAnywhere && view !== 'registry' && (
             <button
               className="hv-border"
               onClick={() => openNew(defaultProjectForNew())}
@@ -599,9 +611,16 @@ export function AgentsPage({
 
       {/* Filters */}
       <div
-        style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '12px 0 14px', flex: 'none' }}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          flexWrap: 'wrap',
+          margin: view === 'registry' ? '6px 0 8px' : '12px 0 14px',
+          flex: 'none',
+        }}
       >
-        {view === 'grid' ? (
+        {view === 'registry' ? null : view === 'grid' ? (
           <>
             <span style={{ ...mono(400, 9), color: 'var(--tx3)', letterSpacing: '.08em' }}>PROJECT</span>
             <Chip active={projectFilter === 'all'} onClick={() => setProjectFilter('all')}>
@@ -732,6 +751,16 @@ export function AgentsPage({
             )}
           </div>
         </LayoutGroup>
+      )}
+
+      {data && view === 'registry' && (
+        <RegistryView
+          projects={data.projects}
+          agents={data.agents}
+          canLead={canLead}
+          canPublishShared={canPublishShared}
+          toast={toast}
+        />
       )}
 
       {data && data.projects.length > 0 && view === 'map' && (
