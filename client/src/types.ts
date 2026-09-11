@@ -322,6 +322,34 @@ export interface RunnerLoadBalance {
   activeTasks: number;
 }
 
+/** One chat-capable serving endpoint in the workspace, for the model picker. */
+export interface ServingEndpointOption {
+  name: string;
+  /** Underlying served model (system.ai.databricks-claude-opus-5 → databricks-claude-opus-5). */
+  servedModel: string | null;
+  /** Endpoint task, e.g. llm/v1/chat or agent/v1/responses. */
+  task: string | null;
+  /** Model provider id (anthropic, openai, google, …) inferred from the model name; drives the logo. */
+  provider: string | null;
+  ready: boolean;
+}
+
+/** A model id a harness accepts on its command line (claude --model, codex -m). */
+export interface HarnessModelOption {
+  id: string;
+  label: string;
+  provider: string;
+  default?: boolean;
+}
+
+/** GET /api/agents/models — what the model picker offers per agent kind. */
+export interface AgentModelCatalog {
+  /** 'workspace' when the endpoints were listed live; 'static' when the list is the built-in fallback. */
+  source: 'workspace' | 'static';
+  servingEndpoints: ServingEndpointOption[];
+  harnessModels: Record<string, HarnessModelOption[]>;
+}
+
 export interface RunnerLoadBalancing {
   modelType: string;
   runners: RunnerLoadBalance[];

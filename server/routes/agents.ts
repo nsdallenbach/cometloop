@@ -90,10 +90,20 @@ const DeployAgentBody = z
     message: 'Name the workspace serving endpoint this agent runs on',
   });
 
+/**
+ * Everything a lead can change after creation. `agentType` stays immutable —
+ * a runner and an endpoint are different things, re-register instead. `name`
+ * is accepted only for rows a person created: system-synced rows are keyed
+ * by the runner's own name and would re-register under the old one.
+ */
 const UpdateAgentBody = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
   role: z.enum(AGENT_ROLES).optional(),
-  description: z.string().trim().max(2000).optional(),
+  description: z.string().trim().max(2000).nullable().optional(),
   endpointName: z.string().trim().max(200).optional(),
+  harness: z.string().trim().max(40).nullable().optional(),
+  modelProvider: z.string().trim().max(40).nullable().optional(),
+  model: z.string().trim().max(80).nullable().optional(),
 });
 
 const txt = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -664,20 +674,60 @@ export function setupProjectAgentRoutes(
         res.status(404).json({ error: 'Agent not found on this project' });
         return;
       }
-      const { role, description, endpointName } = parsed.data;
+      const { name, role, description, endpointName, harness, modelProvider, model } = parsed.data;
+      if (name !== undefined && txt(row.created_by).startsWith('system:')) {
+        res.status(409).json({ error: 'System-synced agents are named by the runner itself — rename the runner, not the record' });
+        return;
+      }
+      if (name !== undefined && name.toLowerCase() !== txt(row.name).toLowerCase()) {
+        const dup = (
+          await q('SELECT id FROM app.project_agents WHERE engagement_id = $1 AND lower(name) = lower($2) AND id <> $3', [
+            engId,
+            name,
+            num(row.id),
+          ])
+        ).rows[0];
+        if (dup) {
+          res.status(409).json({ error: `This project already has an agent named ${name}` });
+          return;
+        }
+      }
       // Re-role an agent and its baseline scope follows — otherwise promoting an
       // agent to pr-reviewer would leave it without the review scope and the
       // gate would reject it. Settings a lead has edited (updatedBy set) are
       // never rewritten here; they change only through the security panel.
       const current = parseSecuritySettings(row.security_settings, txt(row.role) || 'delivery');
       const rebaseline = role && role !== txt(row.role) && current.updatedBy === null ? JSON.stringify(baselineSecurity(role)) : null;
+      // Nullable text fields: `undefined` keeps the stored value, `null` clears
+      // it — the drawer sends null when a lead empties the model or harness.
+      const keep = <T>(v: T | undefined): { set: boolean; value: T | null } => ({ set: v !== undefined, value: v ?? null });
+      const h = keep(harness);
+      const p = keep(modelProvider);
+      const m = keep(model);
+      const d = keep(description);
       const updated = await q(
         `UPDATE app.project_agents
-         SET role = COALESCE($2, role), description = COALESCE($3, description), endpoint_name = COALESCE($4, endpoint_name),
-             security_settings = COALESCE($5::jsonb, security_settings)
+         SET name = COALESCE($2, name),
+             role = COALESCE($3, role),
+             description = CASE WHEN $4 THEN $5 ELSE description END,
+             endpoint_name = COALESCE($6, endpoint_name),
+             harness = CASE WHEN $7 THEN $8 ELSE harness END,
+             model_provider = CASE WHEN $9 THEN $10 ELSE model_provider END,
+             model = CASE WHEN $11 THEN $12 ELSE model END,
+             security_settings = COALESCE($13::jsonb, security_settings)
          WHERE id = $1 RETURNING *`,
-        [num(row.id), role ?? null, description ?? null, endpointName ?? null, rebaseline],
+        [num(row.id), name ?? null, role ?? null, d.set, d.value, endpointName ?? null, h.set, h.value, p.set, p.value, m.set, m.value, rebaseline],
       );
+      const changed = Object.entries({ name, role, model, harness, modelProvider: modelProvider, endpointName })
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => `${k} → ${v ?? '—'}`);
+      if (changed.length) {
+        await q(
+          `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, reversible)
+           VALUES ($1, 'YOU', $2, 'JUST NOW', false)`,
+          [engId, `Reconfigured agent ${txt(row.name)}: ${changed.join(', ')}.`],
+        ).catch(() => {});
+      }
       res.json(updated.rows[0]);
     } catch (err) {
       console.error('update agent failed:', err);
