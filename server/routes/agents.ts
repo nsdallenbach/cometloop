@@ -5,6 +5,7 @@ import { loadRunnerPolls, runnerStatus } from './fleet';
 import { AGENT_SECURITY_SCHEMA_SQL, type AgentSecuritySettings, baselineSecurity, parseSecuritySettings } from './agent-security';
 import { accessibleProjectIds } from './project-access';
 import { usageByAgent, type UsageTotals } from './token-usage';
+import { validAttachments } from './registry';
 
 /**
  * Project agents: the entities behind the /agents architecture map. Three
@@ -55,6 +56,11 @@ export const PROJECT_AGENTS_SCHEMA_SQL = [
   `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS description TEXT`,
   // DAT-212: per-agent security settings + the safe-baseline rollout migration.
   ...AGENT_SECURITY_SCHEMA_SQL,
+  // DAT-238: registry attachments live in their own columns, not in `config` —
+  // the sync pass rewrites `config` for observed runners on every overview
+  // load, which would silently drop anything a lead attached.
+  `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS mcp_servers JSONB NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS skills JSONB NOT NULL DEFAULT '[]'`,
 ];
 
 /** Node kinds the map renders. 'foundry' is still a placeholder. */
@@ -104,7 +110,27 @@ const UpdateAgentBody = z.object({
   harness: z.string().trim().max(40).nullable().optional(),
   modelProvider: z.string().trim().max(40).nullable().optional(),
   model: z.string().trim().max(80).nullable().optional(),
+  // Registry attachments (DAT-238): ids of published MCP servers / skills the
+  // agent may reach. Validated against the agent's project scope on save.
+  mcpServers: z.array(z.number().int().positive()).max(40).optional(),
+  skills: z.array(z.number().int().positive()).max(40).optional(),
 });
+
+/** Attachment ids off a project_agents row (jsonb columns, possibly still strings from pg). */
+export function attachmentsFromRow(row: Record<string, unknown> | undefined): { mcpServers: number[]; skills: number[] } {
+  const ids = (v: unknown): number[] => {
+    let raw: unknown = v;
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch {
+        raw = [];
+      }
+    }
+    return Array.isArray(raw) ? raw.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0) : [];
+  };
+  return { mcpServers: ids(row?.mcp_servers), skills: ids(row?.skills) };
+}
 
 const txt = (v: unknown): string => (typeof v === 'string' ? v : '');
 const num = (v: unknown): number => (typeof v === 'number' ? v : Number(v) || 0);
@@ -411,6 +437,9 @@ export interface OverviewAgent {
   createdAt: string | null;
   /** Per-agent security controls (DAT-212) — the settings the runtime enforces. */
   security: AgentSecuritySettings;
+  /** Registry attachments (DAT-238): published MCP server / skill ids. */
+  mcpServers: number[];
+  skills: number[];
 }
 
 export interface OverviewProject {
@@ -466,6 +495,7 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
       lastSeen: typeof cfg.lastSeen === 'string' ? cfg.lastSeen : typeof cfg.checkedAt === 'string' ? cfg.checkedAt : null,
       createdAt: iso(r.created_at),
       security: parseSecuritySettings(r.security_settings, txt(r.role) || 'delivery'),
+      ...attachmentsFromRow(r),
     };
   });
 
@@ -516,6 +546,7 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
       lastSeen: iso(r.last_seen),
       createdAt: null,
       security: parseSecuritySettings(stored?.security_settings, role),
+      ...attachmentsFromRow(stored),
     };
   });
 
@@ -674,7 +705,7 @@ export function setupProjectAgentRoutes(
         res.status(404).json({ error: 'Agent not found on this project' });
         return;
       }
-      const { name, role, description, endpointName, harness, modelProvider, model } = parsed.data;
+      const { name, role, description, endpointName, harness, modelProvider, model, mcpServers, skills } = parsed.data;
       if (name !== undefined && txt(row.created_by).startsWith('system:')) {
         res.status(409).json({ error: 'System-synced agents are named by the runner itself — rename the runner, not the record' });
         return;
@@ -705,6 +736,14 @@ export function setupProjectAgentRoutes(
       const p = keep(modelProvider);
       const m = keep(model);
       const d = keep(description);
+      // Attachments: only ids the project may see (shared or its own, published)
+      // survive; the drawer offers exactly those, so a dropped id was stale.
+      const attach =
+        mcpServers !== undefined || skills !== undefined
+          ? await validAttachments(q, engId, { mcpServers, skills })
+          : null;
+      const setMcp = attach !== null && mcpServers !== undefined;
+      const setSkills = attach !== null && skills !== undefined;
       const updated = await q(
         `UPDATE app.project_agents
          SET name = COALESCE($2, name),
@@ -714,11 +753,40 @@ export function setupProjectAgentRoutes(
              harness = CASE WHEN $7 THEN $8 ELSE harness END,
              model_provider = CASE WHEN $9 THEN $10 ELSE model_provider END,
              model = CASE WHEN $11 THEN $12 ELSE model END,
-             security_settings = COALESCE($13::jsonb, security_settings)
+             security_settings = COALESCE($13::jsonb, security_settings),
+             mcp_servers = CASE WHEN $15 THEN $14::jsonb ELSE mcp_servers END,
+             skills = CASE WHEN $17 THEN $16::jsonb ELSE skills END
          WHERE id = $1 RETURNING *`,
-        [num(row.id), name ?? null, role ?? null, d.set, d.value, endpointName ?? null, h.set, h.value, p.set, p.value, m.set, m.value, rebaseline],
+        [
+          num(row.id),
+          name ?? null,
+          role ?? null,
+          d.set,
+          d.value,
+          endpointName ?? null,
+          h.set,
+          h.value,
+          p.set,
+          p.value,
+          m.set,
+          m.value,
+          rebaseline,
+          JSON.stringify(attach?.mcpServers ?? []),
+          setMcp,
+          JSON.stringify(attach?.skills ?? []),
+          setSkills,
+        ],
       );
-      const changed = Object.entries({ name, role, model, harness, modelProvider: modelProvider, endpointName })
+      const changed = Object.entries({
+        name,
+        role,
+        model,
+        harness,
+        modelProvider: modelProvider,
+        endpointName,
+        mcpServers: attach && mcpServers !== undefined ? `${attach.mcpServers.length} server${attach.mcpServers.length === 1 ? '' : 's'}` : undefined,
+        skills: attach && skills !== undefined ? `${attach.skills.length} skill${attach.skills.length === 1 ? '' : 's'}` : undefined,
+      })
         .filter(([, v]) => v !== undefined)
         .map(([k, v]) => `${k} → ${v ?? '—'}`);
       if (changed.length) {

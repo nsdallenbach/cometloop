@@ -287,6 +287,50 @@ export interface ProjectAgent {
   createdAt: string | null;
   /** Per-agent security controls, editable by leads from the agent's panel. */
   security: AgentSecuritySettings;
+  /** Registry attachments (DAT-238): ids of published MCP servers / skills this agent may reach. */
+  mcpServers: number[];
+  skills: number[];
+}
+
+/** An MCP server published to the registry (DAT-238); shared when engagementId is null. */
+export interface RegistryMcpServer {
+  id: number;
+  engagementId: string | null;
+  slug: string;
+  name: string;
+  description: string;
+  transport: 'stdio' | 'http';
+  command: string | null;
+  args: string[];
+  url: string | null;
+  env: Record<string, string>;
+  requiresAuth: boolean;
+  /** Env var the runner must provide when requiresAuth (MCP_AUTH_<SLUG>). */
+  authEnv: string | null;
+  status: 'published' | 'retired';
+  createdBy: string;
+  updatedBy: string;
+  updatedAt: string | null;
+}
+
+/** A skill (SKILL.md) published to the registry; materialized into the task workdir at claim time. */
+export interface RegistrySkill {
+  id: number;
+  engagementId: string | null;
+  slug: string;
+  name: string;
+  description: string;
+  content: string;
+  harnesses: string[];
+  status: 'published' | 'retired';
+  createdBy: string;
+  updatedBy: string;
+  updatedAt: string | null;
+}
+
+export interface Registry {
+  mcpServers: RegistryMcpServer[];
+  skills: RegistrySkill[];
 }
 
 /** Latest automated review for a PR, as shown next to the PR on a ticket. */

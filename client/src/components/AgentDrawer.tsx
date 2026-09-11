@@ -9,9 +9,17 @@ import type {
   ProjectAgent,
   ProjectAgentRole,
   ProjectAgentType,
+  Registry,
 } from '../types';
 import { mono } from '../util';
-import { agentBrand, HARNESS_DEFAULT_PROVIDER, HARNESS_OPTIONS, PROVIDER_OPTIONS, providerBrand } from './AgentLogos';
+import {
+  agentBrand,
+  HARNESS_DEFAULT_PROVIDER,
+  HARNESS_OPTIONS,
+  harnessBrand,
+  PROVIDER_OPTIONS,
+  providerBrand,
+} from './AgentLogos';
 import { CopyField, SecurityPanel } from './AgentPanels';
 import {
   agentState,
@@ -52,6 +60,9 @@ interface Draft {
   provider: string;
   model: string;
   notes: string;
+  /** Registry attachments (DAT-238). */
+  mcpServers: number[];
+  skills: number[];
 }
 
 function draftFrom(agent: ProjectAgent | null, projectId: string): Draft {
@@ -66,6 +77,8 @@ function draftFrom(agent: ProjectAgent | null, projectId: string): Draft {
     provider: agent ? (agent.modelProvider ?? '') : 'anthropic',
     model: agent?.model ?? '',
     notes: '',
+    mcpServers: agent?.mcpServers ?? [],
+    skills: agent?.skills ?? [],
   };
 }
 
@@ -178,10 +191,32 @@ export function AgentDrawer({
   const showCustomEndpoint = customEndpoint || (draft.endpointName !== '' && !endpointInList);
   const pickedEndpoint = (models?.servingEndpoints ?? []).find((e) => e.name === draft.endpointName) ?? null;
 
+  // What this project may attach: shared registry entries plus its own. Reloads
+  // when a new agent is pointed at a different project.
+  const [registry, setRegistry] = useState<Registry | null>(null);
+  useEffect(() => {
+    let stale = false;
+    api
+      .registry(draft.projectId)
+      .then((r) => {
+        if (!stale) setRegistry(r);
+      })
+      .catch(() => {
+        if (!stale) setRegistry(null);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [draft.projectId]);
+  const toggleId = (k: 'mcpServers' | 'skills', id: number) =>
+    setDraft((d) => ({ ...d, [k]: d[k].includes(id) ? d[k].filter((x) => x !== id) : [...d[k], id] }));
+
   const dirty = useMemo(() => {
     if (creating) return true;
     const base = draftFrom(agent, initialProjectId);
-    return (Object.keys(base) as (keyof Draft)[]).some((k) => k !== 'notes' && base[k] !== draft[k]);
+    return (Object.keys(base) as (keyof Draft)[]).some(
+      (k) => k !== 'notes' && JSON.stringify(base[k]) !== JSON.stringify(draft[k])
+    );
   }, [agent, creating, draft, initialProjectId]);
 
   const brandPreview = agentBrand({
@@ -217,13 +252,19 @@ export function AgentDrawer({
           model: endpointBacked ? undefined : draft.model.trim() || undefined,
           notes: draft.notes.trim() || undefined,
         })
-        .then(() =>
+        .then(async (created) => {
+          // Attachments are a PATCH concern; a create with any selected follows
+          // up on the new record before the drawer closes.
+          const id = (created as { id?: number } | null)?.id;
+          if (id && (draft.mcpServers.length || draft.skills.length)) {
+            await api.updateAgent(draft.projectId, id, { mcpServers: draft.mcpServers, skills: draft.skills });
+          }
           done(
             endpointBacked
               ? `${draft.name.trim()} registered on ${project?.client ?? 'the project'}`
               : `${draft.name.trim()} configured for ${project?.client ?? 'the project'} — rollout pending`
-          )
-        )
+          );
+        })
         .catch(fail);
       return;
     }
@@ -240,6 +281,8 @@ export function AgentDrawer({
       if (draft.provider !== base.provider) payload.modelProvider = draft.provider || null;
       if (draft.model.trim() !== base.model) payload.model = draft.model.trim() || null;
     }
+    if (JSON.stringify(draft.mcpServers) !== JSON.stringify(base.mcpServers)) payload.mcpServers = draft.mcpServers;
+    if (JSON.stringify(draft.skills) !== JSON.stringify(base.skills)) payload.skills = draft.skills;
     api
       .updateAgent(agent.engagementId, agent.recordId, payload)
       .then(() => done(`${draft.name.trim() || agent.name} updated`))
@@ -721,7 +764,10 @@ export function AgentDrawer({
             )}
           </Section>
 
-          <Section title="MCP SERVERS & SKILLS" hint="registry — DAT-238">
+          <Section
+            title="MCP SERVERS & SKILLS"
+            hint={registry ? 'from the registry — delivered at claim time' : 'registry unavailable'}
+          >
             {endpointBacked && (
               <CopyField
                 label="DELIVERY CONSOLE MCP SERVER (ATTACH THIS TO THE AGENT)"
@@ -729,18 +775,64 @@ export function AgentDrawer({
                 toast={toast}
               />
             )}
-            <div
-              style={{
-                border: '1px dashed var(--line2)',
-                borderRadius: 4,
-                padding: '9px 11px',
-                fontSize: 11.5,
-                color: 'var(--tx3)',
-                lineHeight: 1.5,
-              }}
-            >
-              The MCP / skills registry is not built yet. Once it lands, this is where a lead attaches published MCP
-              servers and skills to the agent; they ride along in the work package at claim time.
+            <div>
+              <div style={LABEL}>MCP SERVERS</div>
+              <AttachRow
+                checked
+                locked
+                title="delivery-console"
+                sub="built in · tickets, progress, flags, git credentials"
+                tag="ALWAYS"
+              />
+              {(registry?.mcpServers ?? [])
+                .filter((m) => m.status === 'published' || draft.mcpServers.includes(m.id))
+                .map((m) => (
+                  <AttachRow
+                    key={m.id}
+                    checked={draft.mcpServers.includes(m.id)}
+                    disabled={!editable}
+                    onToggle={() => toggleId('mcpServers', m.id)}
+                    title={m.name}
+                    sub={`${m.transport === 'http' ? m.url : [m.command, ...m.args].filter(Boolean).join(' ')}${m.requiresAuth ? ` · needs ${m.authEnv}` : ''}${m.status === 'retired' ? ' · RETIRED' : ''}`}
+                    tag={m.engagementId ? (project?.client.toUpperCase() ?? 'PROJECT') : 'SHARED'}
+                  />
+                ))}
+              {registry && registry.mcpServers.length === 0 && (
+                <div style={{ fontSize: 10.5, color: 'var(--tx3)', marginTop: 4 }}>
+                  Nothing published yet — add servers on the REGISTRY view.
+                </div>
+              )}
+            </div>
+            <div>
+              <div style={LABEL}>SKILLS</div>
+              {(registry?.skills ?? [])
+                .filter((k) => k.status === 'published' || draft.skills.includes(k.id))
+                .map((k) => {
+                  const fits = endpointBacked || !draft.harness || k.harnesses.includes(draft.harness);
+                  return (
+                    <AttachRow
+                      key={k.id}
+                      checked={draft.skills.includes(k.id)}
+                      disabled={!editable}
+                      muted={!fits}
+                      onToggle={() => toggleId('skills', k.id)}
+                      title={k.name}
+                      sub={`${k.description || k.slug}${fits ? '' : ` · not written for ${harnessBrand(draft.harness)?.label ?? draft.harness}`}${k.status === 'retired' ? ' · RETIRED' : ''}`}
+                      tag={k.engagementId ? (project?.client.toUpperCase() ?? 'PROJECT') : 'SHARED'}
+                      marks={k.harnesses}
+                    />
+                  );
+                })}
+              {registry && registry.skills.length === 0 && (
+                <div style={{ fontSize: 10.5, color: 'var(--tx3)', marginTop: 4 }}>
+                  Nothing published yet — add skills on the REGISTRY view.
+                </div>
+              )}
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--tx3)', lineHeight: 1.5 }}>
+              Attachments are saved on the agent now; runners materialize them into the task workdir at claim time (the
+              next delivery step). Secrets never travel — a server that needs one is filled from the runner
+              machine&apos;s own keychain.
             </div>
           </Section>
 
@@ -884,6 +976,92 @@ export function AgentDrawer({
         </div>
       </motion.aside>
     </>
+  );
+}
+
+/** One attachable registry entry: a checkbox row with scope tag and, for skills, the harness marks. */
+function AttachRow({
+  checked,
+  locked,
+  disabled,
+  muted,
+  onToggle,
+  title,
+  sub,
+  tag,
+  marks,
+}: {
+  checked: boolean;
+  locked?: boolean;
+  disabled?: boolean;
+  muted?: boolean;
+  onToggle?: () => void;
+  title: string;
+  sub: string;
+  tag: string;
+  marks?: string[];
+}) {
+  return (
+    <label
+      style={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 8,
+        padding: '6px 0',
+        borderBottom: '1px solid var(--line)',
+        cursor: locked || disabled ? 'default' : 'pointer',
+        opacity: muted ? 0.55 : 1,
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={locked || disabled}
+        onChange={onToggle}
+        style={{ marginTop: 2, accentColor: 'var(--agent)' }}
+      />
+      <span style={{ minWidth: 0, flex: 1 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ ...mono(600, 11), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {title}
+          </span>
+          {marks?.map((h) => {
+            const b = harnessBrand(h);
+            return b ? (
+              <span key={h} title={b.label} style={{ display: 'inline-flex' }}>
+                {b.mark(11)}
+              </span>
+            ) : null;
+          })}
+          <span
+            style={{
+              ...mono(500, 7.5),
+              letterSpacing: '.08em',
+              marginLeft: 'auto',
+              color: tag === 'SHARED' ? 'var(--agent)' : tag === 'ALWAYS' ? 'var(--ok)' : 'var(--tx3)',
+              border: `1px solid ${tag === 'SHARED' ? 'var(--agent)' : tag === 'ALWAYS' ? 'var(--ok)' : 'var(--line2)'}`,
+              borderRadius: 3,
+              padding: '1px 5px',
+              flex: 'none',
+            }}
+          >
+            {tag}
+          </span>
+        </span>
+        <span
+          style={{
+            display: 'block',
+            ...mono(400, 9.5),
+            color: 'var(--tx3)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {sub}
+        </span>
+      </span>
+    </label>
   );
 }
 

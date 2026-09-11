@@ -665,7 +665,7 @@ export default function App() {
 
       {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
 
-      {screen.name === 'agent-map' && <AgentsPage canLead={canLead} toast={showToast} />}
+      {screen.name === 'agent-map' && <AgentsPage canLead={canLead} canPublishShared={isAdmin} toast={showToast} />}
 
       {screen.name === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
       {screen.name === 'admin' && !isAdmin && (
