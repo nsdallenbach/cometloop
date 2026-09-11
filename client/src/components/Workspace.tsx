@@ -1,6 +1,17 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, LayoutGroup, motion, useMotionValue } from 'motion/react';
-import { Plus, Rocket } from 'lucide-react';
+import {
+  Activity,
+  BookOpen,
+  ChartColumn,
+  Database,
+  Milestone,
+  Plus,
+  Rocket,
+  SlidersHorizontal,
+  SquareKanban,
+  Users,
+} from 'lucide-react';
 import { api } from '../api';
 import type { AgentTask, ContextFile, Engagement, EngagementDetail, FileLibrary, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util';
@@ -234,16 +245,17 @@ export function Workspace({
   const composerText = composer ?? eng.composer;
   const isPushed = pushed ?? eng.pushed;
 
-  const tabs: { key: Tab; label: string }[] = [
-    { key: 'board', label: 'Board' },
-    { key: 'roadmap', label: 'Roadmap' },
-    { key: 'analytics', label: 'Analytics' },
-    { key: 'sources', label: 'Sources' },
-    { key: 'deploys', label: 'Deploys' },
-    { key: 'config', label: 'Config' },
-    { key: 'standards', label: 'Standards' },
-    { key: 'team', label: 'Team' },
-    { key: 'feed', label: 'Status Feed' },
+  const tabIcon = { size: 14, strokeWidth: 1.75 } as const;
+  const tabs: { key: Tab; label: string; icon: ReactNode }[] = [
+    { key: 'board', label: 'Board', icon: <SquareKanban {...tabIcon} /> },
+    { key: 'roadmap', label: 'Roadmap', icon: <Milestone {...tabIcon} /> },
+    { key: 'analytics', label: 'Analytics', icon: <ChartColumn {...tabIcon} /> },
+    { key: 'sources', label: 'Sources', icon: <Database {...tabIcon} /> },
+    { key: 'deploys', label: 'Deploys', icon: <Rocket {...tabIcon} /> },
+    { key: 'config', label: 'Config', icon: <SlidersHorizontal {...tabIcon} /> },
+    { key: 'standards', label: 'Standards', icon: <BookOpen {...tabIcon} /> },
+    { key: 'team', label: 'Team', icon: <Users {...tabIcon} /> },
+    { key: 'feed', label: 'Status Feed', icon: <Activity {...tabIcon} /> },
   ];
 
   const acceptTicket = (t: Ticket) => {
@@ -1078,8 +1090,12 @@ export function Workspace({
                 fontSize: 12.5,
                 fontWeight: 600,
                 cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 7,
               }}
             >
+              <span style={{ display: 'inline-flex', color: tab === t.key ? 'var(--acc)' : 'var(--tx3)' }}>{t.icon}</span>
               {t.label}
               {t.key === 'board' && proposedTickets.length > 0 && (
                 <span style={{ marginLeft: 6, ...mono(500, 10), background: 'var(--agentsoft)', color: 'var(--agent)', borderRadius: 2, padding: '1px 5px' }}>

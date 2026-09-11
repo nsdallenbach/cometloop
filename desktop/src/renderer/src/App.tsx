@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Bot, Gauge, KeyRound, RefreshCw, Rocket, Ticket } from 'lucide-react';
 import { TerminalPane, type TerminalOpenRequest } from './TerminalPane';
 import { AgentWizard } from './AgentWizard';
 import { harnessBrand, providerBrand } from '../../../../shared/design/AgentLogos';
@@ -11,13 +12,14 @@ const mono = (weight: number, size: number): CSSProperties => ({
   fontSize: size,
 });
 
+const NAV_ICON = { size: 15, strokeWidth: 1.75 } as const;
 const NAV = [
-  { id: 'tickets', label: 'Tickets', icon: '▤' },
-  { id: 'agents', label: 'Agents', icon: '◆' },
-  { id: 'metrics', label: 'Metrics', icon: '≋' },
-  { id: 'identity', label: 'Identity', icon: '⛉' },
-  { id: 'sync', label: 'Sync', icon: '⇅' },
-  { id: 'deploys', label: 'Deploys', icon: '▲' },
+  { id: 'tickets', label: 'Tickets', icon: <Ticket {...NAV_ICON} /> },
+  { id: 'agents', label: 'Agents', icon: <Bot {...NAV_ICON} /> },
+  { id: 'metrics', label: 'Metrics', icon: <Gauge {...NAV_ICON} /> },
+  { id: 'identity', label: 'Identity', icon: <KeyRound {...NAV_ICON} /> },
+  { id: 'sync', label: 'Sync', icon: <RefreshCw {...NAV_ICON} /> },
+  { id: 'deploys', label: 'Deploys', icon: <Rocket {...NAV_ICON} /> },
 ] as const;
 
 type NavId = (typeof NAV)[number]['id'];
@@ -1710,7 +1712,7 @@ export function App() {
                 fontFamily: 'inherit',
               }}
             >
-              <span style={{ color: nav === n.id ? 'var(--acc)' : 'var(--tx3)', width: 14 }}>
+              <span style={{ color: nav === n.id ? 'var(--acc)' : 'var(--tx3)', width: 16, display: 'inline-flex', justifyContent: 'center' }}>
                 {n.icon}
               </span>
               {n.label}
