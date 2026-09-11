@@ -11,6 +11,7 @@ import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
 import { runnerConfigForWorkPackage } from './project-config';
+import { agentConfigForWorkPackage } from './agents';
 import { humanDuration, recordRunnerPoll } from './fleet';
 import { checkAgentAction, enforceAgentAction } from './agent-security';
 import { runnerCanClaim } from './runner-load-balancing';
@@ -340,6 +341,10 @@ export function setupAgentRoutes(
     // Prior review rejections ride along so a re-claimed ticket arrives with the
     // reviewer's feedback instead of a cold re-read (DAT-217).
     const rejections = await loadRejections(q, ticketKey).catch(() => []);
+    // The claiming agent's own configuration (DAT-279): the model a lead
+    // picked for it and its registry attachments, resolved to full entries so
+    // the runner can write them into the workdir without another round trip.
+    const agentConfig = await agentConfigForWorkPackage(q, engagementId, typeof task.agent === 'string' ? task.agent : '');
     return {
       task,
       ticket,
@@ -349,6 +354,7 @@ export function setupAgentRoutes(
       contextFiles,
       attachments,
       runnerConfig,
+      agentConfig,
       rejections,
       prompt: renderPrompt(task, ticket, engagement, repo, contextFiles, comments, attachments, rejections),
     };

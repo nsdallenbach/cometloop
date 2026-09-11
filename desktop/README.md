@@ -143,6 +143,14 @@ windows. The lifecycle is the devbox runner's: claim → workdir under
 complete. Not ported yet, deliberately: project provisioning (base
 image/library installs) and service-mode harnesses.
 
+What the run is configured with comes from the console, not this machine
+(DAT-279): the work package carries the **model** a lead picked for this
+agent on the Agents page and its **registry attachments** — MCP servers
+written into the workdir `.mcp.json`, skills into `.claude/skills/` (Claude)
+or `AGENTS.md` (Codex). A server that requires a credential is filled from
+**Identity → MCP server auth** (`MCP_AUTH_<SLUG>`); if that secret is
+missing the run's feed and the ticket say so before the harness starts.
+
 ## Layout
 
 ```

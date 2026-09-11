@@ -6,4 +6,12 @@
 // path — moving the file now would conflict with open branches. Once those
 // land, the file moves here and this shim inverts (devbox-runner re-exports).
 // Consumers should import from shared/harnesses either way.
-export { getHarness, normalizeState, toolLabel } from '../../devbox-runner/harnesses.mjs';
+export {
+  appendSkillsTo,
+  getHarness,
+  mcpServersConfig,
+  missingAuthEnv,
+  normalizeState,
+  toolLabel,
+  writeClaudeSkills,
+} from '../../devbox-runner/harnesses.mjs';

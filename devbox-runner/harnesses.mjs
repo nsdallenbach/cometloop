@@ -28,10 +28,88 @@
 //   fetchResult(handle, ctx) → { summary, prUrl? },  // becomes RESULT.md
 //   cancel(handle, ctx),               // best-effort abort (watchdog / lead recall)
 //   writeConfig(dir, mcpServerPath),   // usually a no-op — nothing runs locally
-import { writeFileSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 
 const splitArgs = (s) => (s ?? '').split(' ').filter(Boolean);
+
+// ---------- agent config delivery (DAT-279) ----------
+//
+// The work package carries `agentConfig` — the model a lead picked for this
+// agent plus its registry attachments (MCP servers, skills), already resolved
+// by the console. Adapters materialize what their harness can consume; the
+// helpers below are shared so every adapter writes the same shapes.
+
+/**
+ * Claude Code `.mcp.json` entries for the console's own server plus every
+ * attached registry server. A server that requires auth gets its credential
+ * as a `${MCP_AUTH_<SLUG>}` reference — Claude Code expands env references in
+ * .mcp.json at load time, so the value comes from the runner process and the
+ * file on disk never holds a secret.
+ */
+export function mcpServersConfig(mcpServerPath, agentConfig) {
+  const servers = {};
+  if (mcpServerPath) {
+    servers['delivery-console'] = { command: 'node', args: [path.resolve(mcpServerPath)] };
+  }
+  for (const s of agentConfig?.mcpServers ?? []) {
+    if (!s?.slug) continue;
+    const authRef = s.requiresAuth && s.authEnv ? `\${${s.authEnv}}` : null;
+    if (s.transport === 'http') {
+      servers[s.slug] = {
+        type: 'http',
+        url: s.url,
+        ...(authRef ? { headers: { Authorization: `Bearer ${authRef}` } } : {}),
+      };
+    } else {
+      const env = { ...(s.env ?? {}), ...(authRef ? { [s.authEnv]: authRef } : {}) };
+      servers[s.slug] = {
+        command: s.command,
+        args: Array.isArray(s.args) ? s.args : [],
+        ...(Object.keys(env).length ? { env } : {}),
+      };
+    }
+  }
+  return { mcpServers: servers };
+}
+
+/** `.claude/skills/<slug>/SKILL.md` per attached skill, with the frontmatter Claude Code reads. */
+export function writeClaudeSkills(dir, agentConfig) {
+  const written = [];
+  for (const k of agentConfig?.skills ?? []) {
+    if (!k?.slug) continue;
+    const skillDir = path.join(dir, '.claude', 'skills', k.slug);
+    mkdirSync(skillDir, { recursive: true });
+    const front = `---\nname: ${k.slug}\ndescription: ${(k.description || k.name || k.slug).replace(/\n+/g, ' ').trim()}\n---\n\n`;
+    writeFileSync(path.join(skillDir, 'SKILL.md'), front + (k.content ?? '').trim() + '\n');
+    written.push(k.slug);
+  }
+  return written;
+}
+
+/**
+ * Harnesses without a skills directory get the skills appended to the file
+ * they do read for standing instructions (Codex: AGENTS.md in the cwd).
+ */
+export function appendSkillsTo(dir, file, agentConfig) {
+  const skills = (agentConfig?.skills ?? []).filter((k) => k?.slug);
+  if (!skills.length) return [];
+  const target = path.join(dir, file);
+  const existing = existsSync(target) ? readFileSync(target, 'utf8') : '';
+  const block = skills
+    .map((k) => `\n\n## Skill: ${k.name || k.slug}\n\n${k.description ? `${k.description}\n\n` : ''}${(k.content ?? '').trim()}\n`)
+    .join('');
+  if (existing) appendFileSync(target, block);
+  else writeFileSync(target, `# Agent instructions${block}`);
+  return skills.map((k) => k.slug);
+}
+
+/** Servers that require a credential the runner's environment does not provide. */
+export function missingAuthEnv(agentConfig, env = process.env) {
+  return (agentConfig?.mcpServers ?? [])
+    .filter((s) => s?.requiresAuth && s.authEnv && !env[s.authEnv])
+    .map((s) => ({ slug: s.slug, authEnv: s.authEnv }));
+}
 
 /** Short one-line label for a tool call: file path, command, or a JSON prefix. */
 export function toolLabel(input) {
@@ -95,12 +173,15 @@ function claudeHarness(env) {
         emit.print(line);
       }
     },
-    writeConfig(dir, mcpServerPath) {
-      // Claude Code auto-loads a workdir .mcp.json.
-      writeFileSync(
-        path.join(dir, '.mcp.json'),
-        JSON.stringify({ mcpServers: { 'delivery-console': { command: 'node', args: [path.resolve(mcpServerPath)] } } }, null, 2),
-      );
+    /** `--model` is Claude Code's model switch; family aliases (opus, sonnet) and full ids both work. */
+    modelArgs(model) {
+      return model ? ['--model', model] : [];
+    },
+    writeConfig(dir, mcpServerPath, agentConfig) {
+      // Claude Code auto-loads a workdir .mcp.json and .claude/skills/*/SKILL.md.
+      const cfg = mcpServersConfig(mcpServerPath, agentConfig);
+      if (Object.keys(cfg.mcpServers).length) writeFileSync(path.join(dir, '.mcp.json'), JSON.stringify(cfg, null, 2));
+      writeClaudeSkills(dir, agentConfig);
     },
   };
 }
@@ -177,12 +258,19 @@ function codexHarness(env) {
       }
       emit.print(line); // unknown event type — stay visible rather than silent
     },
+    /** `codex exec -m <model>`. */
+    modelArgs(model) {
+      return model ? ['-m', model] : [];
+    },
     // Codex reads MCP from its global config ($CODEX_HOME/config.toml), not a
-    // per-workdir file, so there is nothing to write here. The runner still
-    // drives the task lifecycle; wire MCP globally on the box if you want the
-    // agent to post its own progress/flags. Otherwise it uses GIT_TOKEN and the
-    // HTTP endpoints described in the prompt.
-    writeConfig() {},
+    // per-workdir file, so no MCP is written here. The runner still drives the
+    // task lifecycle; wire MCP globally on the box if you want the agent to
+    // post its own progress/flags. Otherwise it uses GIT_TOKEN and the HTTP
+    // endpoints described in the prompt. Skills do have a home: Codex reads
+    // AGENTS.md from the cwd, so attached skills are appended there.
+    writeConfig(dir, _mcpServerPath, agentConfig) {
+      appendSkillsTo(dir, 'AGENTS.md', agentConfig);
+    },
   };
 }
 
@@ -328,6 +416,10 @@ function omnigentHarness(env) {
     // so the delivery-console server is registered on the session instead:
     // POST /v1/sessions/{id}/agent/mcp-servers (write-up §7.1 step 7).
     writeConfig() {},
+    // The model behind a hosted run is the vendor's choice (DAT-221).
+    modelArgs() {
+      return [];
+    },
   };
 }
 
@@ -344,6 +436,10 @@ function genericHarness(env) {
       emit.print(line); // no structured stream — the raw output is the live log
     },
     writeConfig() {},
+    // An arbitrary CLI has no known model switch; set it through AGENT_ARGS.
+    modelArgs() {
+      return [];
+    },
   };
 }
 
