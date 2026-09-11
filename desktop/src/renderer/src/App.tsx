@@ -1311,6 +1311,7 @@ export function App() {
                 fontSize: 13,
                 fontWeight: nav === n.id ? 600 : 500,
                 cursor: 'pointer',
+                justifyContent: 'flex-start',
                 textAlign: 'left',
                 fontFamily: 'inherit',
               }}

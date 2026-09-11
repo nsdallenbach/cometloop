@@ -50,13 +50,16 @@ a {
   color-scheme: dark;
 }
 
-/* Button labels sit dead centre; inline styles that set display:flex still win. */
+/* Button labels sit dead centre. Buttons that lay themselves out (sidebar,
+   wizard rail, tiles) set display/justify-content inline and are untouched. */
 button {
+  font-family: inherit;
+  line-height: 1.2;
+}
+button:not([style*='display']) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  line-height: 1.15;
-  font-family: inherit;
 }
 
 /* No Chromium focus box. Keyboard focus shows as a soft accent ring instead. */

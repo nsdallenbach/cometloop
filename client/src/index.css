@@ -300,12 +300,15 @@ tr.hv-row td {
   outline: none;
   box-shadow: 0 0 0 2px var(--agentsoft);
 }
-/* Button labels sit dead centre; inline display:flex/grid still wins. */
+/* Button labels sit dead centre. Buttons that lay themselves out set
+   display inline and are untouched. */
 .eec button {
+  line-height: 1.2;
+}
+.eec button:not([style*='display']) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  line-height: 1.15;
 }
 .eec input,
 .eec select,

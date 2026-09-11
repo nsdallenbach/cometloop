@@ -168,6 +168,7 @@ export function AgentWizard({
                   fontFamily: 'inherit',
                   fontSize: 12.5,
                   fontWeight: active ? 600 : 500,
+                  justifyContent: 'flex-start',
                   textAlign: 'left',
                   opacity: i === 0 && editing ? 0.45 : 1,
                 }}
@@ -487,7 +488,7 @@ function Tile({
       disabled={disabled}
       onClick={onClick}
       style={{
-        textAlign: 'left',
+        textAlign: tall ? 'center' : 'left',
         background: selected ? 'var(--agentsoft, rgba(122,143,245,.13))' : 'var(--bg)',
         border: `1px solid ${selected ? 'var(--agent)' : 'var(--line2)'}`,
         borderRadius: 10,
