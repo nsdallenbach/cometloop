@@ -145,9 +145,11 @@ with `--dry-run`) rather than editing the tab by hand.
   `mono()` helper) — no CSS frameworks; shared classes live in `index.css`.
 - All markdown renders through the `Markdown` component (marked + DOMPurify).
   Never `dangerouslySetInnerHTML` unsanitized content.
-- Board cards animate via Motion layout springs with `layoutId`
-  `card-<ticketKey>` inside the `LayoutGroup` — reuse that identity for any
-  new card surface so cross-lane morphs keep working.
+- Board cards live on the canvas (`CanvasBoard`): positions are derived
+  from zones and dependency layers in `lib/canvas-layout.ts` (pure, unit
+  tested), never stored, and cards spring to a new place with Motion
+  (`animate={{ x, y }}`). A new card surface reuses `TicketCard` rather than
+  redrawing the anatomy.
 - Mutations are optimistic with rollback on API failure plus a toast.
 - The board polls every 8s; remember the served bundle does NOT hot-reload
   after a deploy — a stale tab shows old UI until hard refresh.
