@@ -90,6 +90,12 @@ export interface MapViewportProps {
   frameless?: boolean;
   /** Where the zoom cluster sits. */
   controls?: 'top-right' | 'bottom-right';
+  /** Called on every frame of the live transform (springs included), for a
+   *  host that paints something in step with it — the canvas board's dot
+   *  grid. Write to the DOM here, never to React state. */
+  onTransform?: (x: number, y: number, scale: number) => void;
+  /** Host background; 'transparent' lets the parent paint behind the content. */
+  background?: string;
 }
 
 export function MapViewport({
@@ -101,6 +107,8 @@ export function MapViewport({
   onViewChange,
   frameless = false,
   controls = 'top-right',
+  onTransform,
+  background = 'var(--bg)',
 }: MapViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -120,6 +128,18 @@ export function MapViewport({
   useEffect(() => {
     onViewChangeRef.current = onViewChange;
   });
+  const onTransformRef = useRef(onTransform);
+  useEffect(() => {
+    onTransformRef.current = onTransform;
+  });
+  // The live transform, frame by frame: the MotionValues, not the committed
+  // view, so anything painted from this stays in step through a zoom spring.
+  useEffect(() => {
+    const emit = () => onTransformRef.current?.(x.get(), y.get(), scale.get());
+    emit();
+    const offs = [x.on('change', emit), y.on('change', emit), scale.on('change', emit)];
+    return () => offs.forEach((off) => off());
+  }, [x, y, scale]);
 
   // Cached viewport rect: pointer-move must not force a layout read per event.
   const rect = useRef({ left: 0, top: 0, width: 0, height: 0 });
@@ -426,7 +446,7 @@ export function MapViewport({
         cursor: 'grab',
         border: frameless ? 'none' : '1px solid var(--line)',
         borderRadius: frameless ? 0 : 5,
-        background: 'var(--bg)',
+        background,
         outlineOffset: -2,
       }}
     >

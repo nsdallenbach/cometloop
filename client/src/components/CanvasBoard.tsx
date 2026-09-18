@@ -37,6 +37,8 @@ import {
  */
 
 const POLL_MS = 8000;
+/** Dot grid pitch in world pixels. */
+const GRID = 24;
 const MARGIN = 40;
 const PR_STATE_COLOR: Record<string, string> = { open: 'var(--warn)', merged: 'var(--ok)', closed: 'var(--tx3)' };
 const STATUS_COLOR: Record<TicketStatus, string> = {
@@ -539,7 +541,21 @@ export function CanvasBoard({
       </div>
 
       <div style={{ flex: 1, minHeight: 0, display: 'flex', margin: '0 22px 16px', border: '1px solid var(--line)', borderRadius: 5, overflow: 'hidden' }}>
-        <div ref={hostRef} style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
+        {/* The dot grid is painted here, on the viewport, and follows the live
+            transform — on the content layer it stopped at the world's edge. */}
+        <div
+          ref={hostRef}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            position: 'relative',
+            display: 'flex',
+            backgroundColor: 'var(--bg)',
+            backgroundImage: 'radial-gradient(var(--line) 1px, transparent 1px)',
+            backgroundSize: `${GRID}px ${GRID}px`,
+            backgroundPosition: `${GRID / 2}px ${GRID / 2}px`,
+          }}
+        >
           <MapViewport
             ariaLabel="Canvas board — scroll or pinch to zoom, drag to pan, 0 to reset"
             hint={null}
@@ -550,18 +566,15 @@ export function CanvasBoard({
             onViewChange={(v) => {
               viewRef.current = v;
             }}
+            background="transparent"
+            onTransform={(tx, ty, s) => {
+              const el = hostRef.current;
+              if (!el) return;
+              const size = GRID * s;
+              el.style.backgroundSize = `${size}px ${size}px`;
+              el.style.backgroundPosition = `${tx + size / 2}px ${ty + size / 2}px`;
+            }}
           >
-            {/* dot grid: the surface reads as a canvas, not a page */}
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
-                backgroundImage: 'radial-gradient(var(--line) 1px, transparent 1px)',
-                backgroundSize: '24px 24px',
-                backgroundPosition: '12px 12px',
-                pointerEvents: 'none',
-              }}
-            />
 
             {zones.map((z) => {
               const b = layout.zoneBoxes.get(z.id);
