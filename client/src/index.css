@@ -192,6 +192,16 @@ a:hover {
     opacity: 0.35;
   }
 }
+/* Canvas board agent traffic (DAT-281): the dash pattern flows along the
+   line; the reduced-motion rule below freezes it like every other animation. */
+@keyframes eec-flow {
+  to {
+    stroke-dashoffset: -34;
+  }
+}
+.eec-flow {
+  animation: eec-flow 2.6s linear infinite;
+}
 @keyframes eec-fadeUp {
   from {
     opacity: 0;

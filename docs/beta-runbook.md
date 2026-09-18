@@ -89,7 +89,7 @@ The left nav has five entries:
 ## 4. How work flows
 
 ```
-board (Backlog) → ◆ Deploy to Agent lane / Queue for agent → queued
+board (Backlog) → ◇ QUEUE on the card / Queue for agent → queued
   → routed (to a person) or pool (anyone's runner)
   → claimed by an agent instance → ticket moves to In Progress, feed goes live
   → agent pushes branch DAT-xxx-<slug>, opens a PR (branch/title contains the key → auto-link)

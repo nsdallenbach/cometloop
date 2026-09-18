@@ -10,6 +10,9 @@ import type {
   AgentTaskState,
   AgentsOverview,
   BurndownDay,
+  CanvasData,
+  CanvasLink,
+  CanvasZone,
   CommitDay,
   ContextFile,
   FileLibrary,
@@ -293,6 +296,8 @@ const json = (body: unknown): RequestInit => ({
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 });
+
+const zoneRow = (r: Row): CanvasZone => ({ id: n(r.id), tag: s(r.tag), x: n(r.x), y: n(r.y), cols: n(r.cols) || 2 });
 
 const idList = (v: unknown): number[] => (Array.isArray(v) ? v.map((x) => n(x)).filter((x) => x > 0) : []);
 
@@ -732,6 +737,43 @@ export const api = {
 
   removeTicketLink(key: string, id: number) {
     return http(`/api/tickets/${key}/links/${id}`, { method: 'DELETE' });
+  },
+
+  // ---- canvas board (DAT-281) ----
+
+  async canvas(engId: string): Promise<CanvasData> {
+    const d = await http<{ zones: Row[]; links: Row[]; traffic: Row[] }>(`/api/engagements/${engId}/canvas`);
+    return {
+      zones: d.zones.map(zoneRow),
+      links: d.links.map((r) => ({
+        id: r.id == null ? null : n(r.id),
+        from: s(r.from),
+        to: s(r.to),
+        type: (s(r.type) as CanvasLink['type']) || 'relates',
+      })),
+      traffic: d.traffic.map((r) => ({
+        id: n(r.id),
+        from: r.from == null ? null : s(r.from),
+        to: r.to == null ? null : s(r.to),
+        sender: s(r.sender),
+        recipient: r.recipient == null ? null : s(r.recipient),
+        type: s(r.type),
+        body: s(r.body),
+        createdAt: s(r.createdAt),
+      })),
+    };
+  },
+
+  async createZone(engId: string, tag: string, at?: { x: number; y: number }): Promise<CanvasZone> {
+    return zoneRow(await http<Row>(`/api/engagements/${engId}/canvas/zones`, { method: 'POST', ...json({ tag, ...at }) }));
+  },
+
+  async updateZone(engId: string, zoneId: number, patch: { x?: number; y?: number; cols?: number }): Promise<CanvasZone> {
+    return zoneRow(await http<Row>(`/api/engagements/${engId}/canvas/zones/${zoneId}`, { method: 'PATCH', ...json(patch) }));
+  },
+
+  deleteZone(engId: string, zoneId: number) {
+    return http(`/api/engagements/${engId}/canvas/zones/${zoneId}`, { method: 'DELETE' });
   },
 
   async mergePr(ticketKey: string, number: number): Promise<RepoPr> {

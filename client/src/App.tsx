@@ -391,7 +391,7 @@ export default function App() {
         label: `${e.client} — open Board`,
         hint: '',
         description: e.name,
-        keywords: ['board', 'kanban', 'tickets', e.id],
+        keywords: ['board', 'canvas', 'tickets', e.id],
         run: () => openEngagement(e.id, 'board'),
       })),
       ...(canCreate

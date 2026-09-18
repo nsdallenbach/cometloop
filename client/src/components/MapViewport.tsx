@@ -73,7 +73,35 @@ interface Slot {
   y: number;
 }
 
-export function MapViewport({ children, minHeight = 340 }: { children: ReactNode; minHeight?: number }) {
+export interface MapViewportProps {
+  children: ReactNode;
+  minHeight?: number;
+  /** Screen-reader name for the surface; the default describes the agent map. */
+  ariaLabel?: string;
+  /** Bottom-left gesture hint; null hides it. */
+  hint?: string | null;
+  /** A fixed world size for the content layer (the canvas board); omitted, the
+   *  layer is as wide as the host and as tall as its children, with padding. */
+  contentSize?: { w: number; h: number };
+  /** Called with every committed view, for children that convert pointer
+   *  positions into world coordinates (card dragging on the canvas board). */
+  onViewChange?: (view: View) => void;
+  /** Drop the border and radius when the host already frames the surface. */
+  frameless?: boolean;
+  /** Where the zoom cluster sits. */
+  controls?: 'top-right' | 'bottom-right';
+}
+
+export function MapViewport({
+  children,
+  minHeight = 340,
+  ariaLabel = 'Agent map — scroll or pinch to zoom, drag to pan, 0 to reset',
+  hint = 'SCROLL OR PINCH TO ZOOM · DRAG TO PAN · + − 0',
+  contentSize,
+  onViewChange,
+  frameless = false,
+  controls = 'top-right',
+}: MapViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const readoutRef = useRef<HTMLSpanElement>(null);
@@ -88,6 +116,10 @@ export function MapViewport({ children, minHeight = 340 }: { children: ReactNode
    *  animated MotionValues, so rapid input accumulates toward one target. */
   const viewRef = useRef<View>({ ...DEFAULT_VIEW });
   const reduced = useRef(false);
+  const onViewChangeRef = useRef(onViewChange);
+  useEffect(() => {
+    onViewChangeRef.current = onViewChange;
+  });
 
   // Cached viewport rect: pointer-move must not force a layout read per event.
   const rect = useRef({ left: 0, top: 0, width: 0, height: 0 });
@@ -156,6 +188,7 @@ export function MapViewport({ children, minHeight = 340 }: { children: ReactNode
       // Sub-pixel noise and pushes against a bound are not worth an animation.
       if (!viewChanged(viewRef.current, view)) return;
       viewRef.current = view;
+      onViewChangeRef.current?.(view);
       markBusy();
       if (animated && !reduced.current) {
         void animate(x, view.x, transition);
@@ -377,7 +410,7 @@ export function MapViewport({ children, minHeight = 340 }: { children: ReactNode
     <div
       ref={hostRef}
       tabIndex={0}
-      aria-label="Agent map — scroll or pinch to zoom, drag to pan, 0 to reset"
+      aria-label={ariaLabel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endPointer}
@@ -391,15 +424,19 @@ export function MapViewport({ children, minHeight = 340 }: { children: ReactNode
         overflow: 'hidden',
         touchAction: 'none',
         cursor: 'grab',
-        border: '1px solid var(--line)',
-        borderRadius: 5,
+        border: frameless ? 'none' : '1px solid var(--line)',
+        borderRadius: frameless ? 0 : 5,
         background: 'var(--bg)',
         outlineOffset: -2,
       }}
     >
       <motion.div
         ref={contentRef}
-        style={{ x, y, scale, transformOrigin: '0 0', width: '100%', padding: '10px 12px 16px' }}
+        style={
+          contentSize
+            ? { x, y, scale, transformOrigin: '0 0', position: 'relative', width: contentSize.w, height: contentSize.h }
+            : { x, y, scale, transformOrigin: '0 0', width: '100%', padding: '10px 12px 16px' }
+        }
       >
         {children}
       </motion.div>
@@ -411,21 +448,24 @@ export function MapViewport({ children, minHeight = 340 }: { children: ReactNode
         onIn={() => step(1)}
         onOut={() => step(-1)}
         onReset={reset}
+        placement={controls}
       />
 
-      <div
-        style={{
-          position: 'absolute',
-          left: 10,
-          bottom: 8,
-          ...mono(400, 8.5),
-          color: 'var(--tx3)',
-          letterSpacing: '.08em',
-          pointerEvents: 'none',
-        }}
-      >
-        SCROLL OR PINCH TO ZOOM · DRAG TO PAN · + − 0
-      </div>
+      {hint !== null && (
+        <div
+          style={{
+            position: 'absolute',
+            left: 10,
+            bottom: 8,
+            ...mono(400, 8.5),
+            color: 'var(--tx3)',
+            letterSpacing: '.08em',
+            pointerEvents: 'none',
+          }}
+        >
+          {hint}
+        </div>
+      )}
     </div>
   );
 }
@@ -450,6 +490,7 @@ function ZoomControls({
   onIn,
   onOut,
   onReset,
+  placement,
 }: {
   readoutRef: React.RefObject<HTMLSpanElement | null>;
   zoomInRef: React.RefObject<HTMLButtonElement | null>;
@@ -457,12 +498,20 @@ function ZoomControls({
   onIn: () => void;
   onOut: () => void;
   onReset: () => void;
+  placement: 'top-right' | 'bottom-right';
 }) {
   return (
     <div
       // The controls sit over the map, so their own clicks must not pan it.
       onPointerDown={(e) => e.stopPropagation()}
-      style={{ position: 'absolute', right: 10, top: 10, display: 'flex', alignItems: 'center', gap: 5 }}
+      style={{
+        position: 'absolute',
+        right: 10,
+        ...(placement === 'top-right' ? { top: 10 } : { bottom: 10 }),
+        display: 'flex',
+        alignItems: 'center',
+        gap: 5,
+      }}
     >
       <button
         ref={zoomOutRef}
