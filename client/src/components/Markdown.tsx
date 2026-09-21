@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { splitMermaid } from '../lib/md-segments';
+import { retryableLazy, withRetry } from '../lib/lazy-retry';
 import { mono } from '../util';
 
 /**
@@ -15,33 +16,34 @@ import { mono } from '../util';
  * with a note — bad model output must never eat the rest of the plan.
  */
 
-let mermaidReady: Promise<typeof import('mermaid').default> | null = null;
-
-function loadMermaid(): Promise<typeof import('mermaid').default> {
-  if (mermaidReady === null) {
-    mermaidReady = import('mermaid').then((mod) => {
-      // No themeVariables: the app's tokens live on [data-theme] containers,
-      // not :root, so they can't be read once at init (and baking literals
-      // breaks light mode). All paint comes from the `.md-diagram` CSS-token
-      // overrides in index.css, which follow the active theme live.
-      mod.default.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        theme: 'neutral',
-        fontFamily: "'DM Sans', sans-serif",
-        // Labels must be native SVG <text>: mermaid's default HTML labels sit
-        // in <foreignObject>, which the SVG sanitizer strips — leaving shapes
-        // with no text at all.
-        htmlLabels: false,
-        flowchart: { htmlLabels: false, useMaxWidth: true },
-        sequence: { useMaxWidth: true },
-        themeVariables: { fontSize: '13px' },
-      });
-      return mod.default;
+/**
+ * A failed load is never cached (DAT-262): in the desktop's embedded console a
+ * chunk request made before the sign-in token exists is redirected to OAuth
+ * and the import rejects. Cached, that one rejection broke every diagram for
+ * the life of a page the desktop keeps mounted for days.
+ */
+const loadMermaid = retryableLazy(() =>
+  import('mermaid').then((mod) => {
+    // No themeVariables: the app's tokens live on [data-theme] containers,
+    // not :root, so they can't be read once at init (and baking literals
+    // breaks light mode). All paint comes from the `.md-diagram` CSS-token
+    // overrides in index.css, which follow the active theme live.
+    mod.default.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'neutral',
+      fontFamily: "'DM Sans', sans-serif",
+      // Labels must be native SVG <text>: mermaid's default HTML labels sit
+      // in <foreignObject>, which the SVG sanitizer strips — leaving shapes
+      // with no text at all.
+      htmlLabels: false,
+      flowchart: { htmlLabels: false, useMaxWidth: true },
+      sequence: { useMaxWidth: true },
+      themeVariables: { fontSize: '13px' },
     });
-  }
-  return mermaidReady;
-}
+    return mod.default;
+  }),
+);
 
 /**
  * Warm the mermaid chunks before any diagram is on screen: the first render
@@ -60,7 +62,9 @@ function MermaidBlock({ code }: { code: string }) {
   const [state, setState] = useState<{ svg: string } | { error: string } | null>(null);
   useEffect(() => {
     let alive = true;
-    loadMermaid()
+    // Loading is retried (a network blip, or the desktop still signing in);
+    // rendering is not — a diagram that does not parse never will.
+    withRetry(loadMermaid, { tries: 3, delayMs: 1500 })
       .then((mermaid) => mermaid.render(`md-mermaid-${++renderSeq}`, code))
       .then(({ svg }) => {
         if (alive) setState({ svg: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }) });
