@@ -11,6 +11,7 @@ const mono = (weight: number, size: number): CSSProperties => ({
 
 const NAV = [
   { id: 'tickets', label: 'Tickets', icon: '▤' },
+  { id: 'workflows', label: 'Workflows', icon: '⑂' },
   { id: 'agents', label: 'Agents', icon: '◆' },
   { id: 'metrics', label: 'Metrics', icon: '≋' },
   { id: 'identity', label: 'Identity', icon: '⛉' },
@@ -99,7 +100,11 @@ function Placeholder({ title, note }: { title: string; note: string }) {
  * the main process — full board/drawer/planning parity with zero duplicated
  * UI, signed in as you without a second login.
  */
-function ConsoleView() {
+/** Console sections the sidebar can open in the one embedded webview. */
+type ConsoleSection = 'tickets' | 'workflows';
+const WORKFLOWS_PATH = '/workflows';
+
+function ConsoleView({ section }: { section: ConsoleSection }) {
   const [cfg, setCfg] = useState<Awaited<ReturnType<DesktopBridge['getConfig']>> | null>(null);
   const [auth, setAuth] = useState<AuthMode | null>(null);
   const [signingIn, setSigningIn] = useState(false);
@@ -119,7 +124,9 @@ function ConsoleView() {
     if (!wv || !cfg) return;
     const save = (e: Event) => {
       const url = (e as unknown as { url?: string }).url;
-      if (typeof url === 'string' && url.startsWith(cfg.consoleUrl)) {
+      // Workflows is its own sidebar entry: a restart reopens Tickets where
+      // you left it, never the workflow builder.
+      if (typeof url === 'string' && url.startsWith(cfg.consoleUrl) && !new URL(url).pathname.startsWith(WORKFLOWS_PATH)) {
         try {
           localStorage.setItem('console-last-url', url);
         } catch {
@@ -134,6 +141,28 @@ function ConsoleView() {
       wv.removeEventListener('did-navigate-in-page', save);
     };
   }, [cfg, auth]);
+
+  // Sidebar → console section (DAT-284). The webview stays mounted, so this
+  // routes inside the running SPA (pushState + popstate, which its router
+  // listens to) instead of reloading it: Tickets keeps its place while you
+  // look at Workflows, and comes back exactly where it was.
+  const ticketsPath = useRef('/projects');
+  const sectionRef = useRef<ConsoleSection>('tickets');
+  useEffect(() => {
+    const wv = viewRef.current as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown>; getURL?: () => string }) | null;
+    if (!wv || !cfg || auth === 'signed-out' || sectionRef.current === section) return;
+    try {
+      const current = wv.getURL ? new URL(wv.getURL()) : null;
+      if (sectionRef.current === 'tickets' && current && !current.pathname.startsWith(WORKFLOWS_PATH)) {
+        ticketsPath.current = current.pathname + current.search;
+      }
+      const to = section === 'workflows' ? WORKFLOWS_PATH : ticketsPath.current;
+      void wv.executeJavaScript?.(`history.pushState({}, '', ${JSON.stringify(to)}); dispatchEvent(new PopStateEvent('popstate'));`);
+      sectionRef.current = section;
+    } catch {
+      // The webview is not ready yet; the next sidebar click tries again.
+    }
+  }, [section, cfg, auth]);
 
   const initialUrl = (() => {
     if (!cfg) return '';
@@ -1775,7 +1804,7 @@ export function App() {
       <DeploysView />
     ) : nav === 'identity' ? (
       <IdentityView />
-    ) : nav === 'tickets' ? null : (
+    ) : nav === 'tickets' || nav === 'workflows' ? null : (
       VIEWS_STATIC[nav]
     );
   return (
@@ -1846,10 +1875,10 @@ export function App() {
               inset: 0,
               display: 'flex',
               flexDirection: 'column',
-              visibility: nav === 'tickets' ? 'visible' : 'hidden',
+              visibility: nav === 'tickets' || nav === 'workflows' ? 'visible' : 'hidden',
             }}
           >
-            <ConsoleView />
+            <ConsoleView section={nav === 'workflows' ? 'workflows' : 'tickets'} />
           </div>
           {overlay && (
             <div style={{ position: 'absolute', inset: 0, overflowY: 'auto', background: 'var(--bg)' }}>

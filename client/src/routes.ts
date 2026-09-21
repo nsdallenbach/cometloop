@@ -8,6 +8,7 @@ export type Screen =
   | { name: 'learn' }
   | { name: 'tickets' }
   | { name: 'agent-map' }
+  | { name: 'workflows' }
   | { name: 'workspace'; engId: string; tab: Tab }
   | { name: 'ticket'; ticketKey: string }
   | { name: 'redirect'; to: string };
@@ -16,6 +17,7 @@ export const paths = {
   portfolio: '/projects',
   tickets: '/tickets',
   agentMap: '/agent-map',
+  workflows: '/workflows',
   setup: '/setup',
   admin: '/admin',
   learn: '/learn',
@@ -43,6 +45,7 @@ export function parsePath(pathname: string): Screen {
     return { name: 'redirect', to: paths.ticket(id) };
   }
   if (head === 'agent-map' && segs.length === 1) return { name: 'agent-map' };
+  if (head === 'workflows' && segs.length === 1) return { name: 'workflows' };
   // The map answered to /agents before it became a first-class nav tab
   // (DAT-267); keep those links — docs and shared URLs still point there.
   if (head === 'agents') return { name: 'redirect', to: paths.agentMap };

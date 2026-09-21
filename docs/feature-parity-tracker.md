@@ -42,8 +42,9 @@ the same PR as the change it describes.
 
 | Feature | Web | Desktop | Class | Last reviewed | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Tickets board (canvas: zones, links, agent traffic), drawer, planning, palette, notifications | ✅ | ✅ | By construction | 2026-09-17 | Desktop Tickets tab is a `<webview>` of the deployed web app with the dev's token injected — full parity with zero duplicated UI. Anything shipped in `client/` is on desktop the moment it deploys. Caveat: it shows the *deployed* bundle, not local builds. |
-| Board card motion (Motion springs to derived canvas positions) | ✅ | ✅ | By construction | 2026-09-17 | Lives entirely in the web app; reaches desktop through the webview. |
+| Tickets board, drawer, planning, palette, notifications | ✅ | ✅ | By construction | 2026-08-26 | Desktop Tickets tab is a `<webview>` of the deployed web app with the dev's token injected — full parity with zero duplicated UI. Anything shipped in `client/` is on desktop the moment it deploys. Caveat: it shows the *deployed* bundle, not local builds. |
+| Workflows builder (placeholder DAG canvas, DAT-284) | ✅ | ✅ | By construction | 2026-09-21 | A web page at `/workflows`; the desktop's Workflows sidebar entry routes the same embedded webview there, so there is no second implementation. The draft is per browser profile, so web and desktop drafts are separate until it gets a server. |
+| Board card motion (Motion layout springs) | ✅ | ✅ | By construction | 2026-08-26 | Lives entirely in the web app; reaches desktop through the webview. |
 | Deploys | ✅ (read-only mirror) | ✅ (executor) | Shared by design (asymmetric) | 2026-08-26 | Intentionally asymmetric: deploys run on the dev's machine with their identity; the web renders a read-only mirror from events. The *asymmetry* is the design — track that both halves stay in step when deploy states/fields change. |
 | Agents management (instances, feeds, run/kill) | ➖ | ✅ | Platform-exclusive | 2026-08-26 | "Native-app exclusive — the web console never gets a path into anyone's laptop." |
 | Interactive terminal (DAT-240) | ➖ | ✅ | Platform-exclusive | 2026-08-26 | Requires local PTY. |

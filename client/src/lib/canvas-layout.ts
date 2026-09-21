@@ -1,8 +1,9 @@
 /**
- * Canvas board geometry (DAT-281), kept pure so it can be unit-tested without
- * the viewport: which zone a ticket belongs to, how a zone lays its cards out
- * in dependency layers, where loose tickets go, and how a link is routed
- * around the cards as an orthogonal line.
+ * Canvas geometry shared by the pan/zoom surfaces, kept pure so it can be
+ * unit-tested without a viewport: dependency layering for a DAG, the world's
+ * extent, and how a link is routed around boxes as an orthogonal line or
+ * drawn as a curve. First written for the ticket canvas (DAT-281); now the
+ * base of the Workflows builder (DAT-284).
  */
 
 export interface Box {
@@ -14,51 +15,9 @@ export interface Box {
 
 export type Point = [number, number];
 
-export const CARD_W = 250;
-export const CARD_H = 136;
-export const CARD_GAP = 12;
-export const ZONE_PAD = 16;
-export const ZONE_HEAD = 30;
-export const MIN_COLS = 1;
-export const MAX_COLS = 4;
-
-export interface ZoneSpec {
-  id: number;
-  tag: string;
-  x: number;
-  y: number;
-  cols: number;
-}
-
 export interface Dependency {
   from: string;
   to: string;
-}
-
-/** Zone box for a column count and the rows its cards need. */
-export function zoneSize(cols: number, rows: number): { w: number; h: number } {
-  const c = Math.max(MIN_COLS, Math.min(MAX_COLS, cols));
-  const r = Math.max(1, rows);
-  return { w: ZONE_PAD * 2 + c * CARD_W + (c - 1) * CARD_GAP, h: ZONE_HEAD + r * CARD_H + (r - 1) * CARD_GAP + ZONE_PAD };
-}
-
-/**
- * The first zone (in zone order) whose tag a ticket carries owns it; a ticket
- * with no zoned tag is loose. Returns zone id → keys plus the loose keys, all
- * in the input order of `tickets`.
- */
-export function assignZones<T extends { key: string; tags: string[] }>(
-  tickets: T[],
-  zones: ZoneSpec[],
-): { byZone: Map<number, string[]>; loose: string[] } {
-  const byZone = new Map<number, string[]>(zones.map((z) => [z.id, []]));
-  const loose: string[] = [];
-  for (const t of tickets) {
-    const zone = zones.find((z) => t.tags.includes(z.tag));
-    if (zone) byZone.get(zone.id)?.push(t.key);
-    else loose.push(t.key);
-  }
-  return { byZone, loose };
 }
 
 /**
@@ -104,56 +63,6 @@ export function layerByDependency(keys: string[], blocks: Dependency[]): string[
     frontier = keys.filter((k) => next.includes(k));
   }
   return layers;
-}
-
-/**
- * Card grid for a zone. One layer: a plain row-major grid. Up to `cols`
- * layers: one column per layer, blockers left. More layers than columns: the
- * layers flatten in order into a row-major grid, so blockers still come
- * first reading left to right, top to bottom.
- */
-export function gridForLayers(layers: string[][], cols: number): { key: string; col: number; row: number }[] {
-  const c = Math.max(MIN_COLS, Math.min(MAX_COLS, cols));
-  const cells: { key: string; col: number; row: number }[] = [];
-  if (layers.length > 1 && layers.length <= c) {
-    layers.forEach((layer, col) => layer.forEach((key, row) => cells.push({ key, col, row })));
-    return cells;
-  }
-  layers.flat().forEach((key, i) => cells.push({ key, col: i % c, row: Math.floor(i / c) }));
-  return cells;
-}
-
-/** A zone's box and the boxes of its cards, in world coordinates. */
-export function layoutZone(zone: ZoneSpec, keys: string[], blocks: Dependency[]): { box: Box; cards: Map<string, Box> } {
-  const cells = gridForLayers(layerByDependency(keys, blocks), zone.cols);
-  const rows = cells.reduce((m, c) => Math.max(m, c.row + 1), 0);
-  const size = zoneSize(zone.cols, rows);
-  const cards = new Map<string, Box>();
-  for (const c of cells) {
-    cards.set(c.key, {
-      x: zone.x + ZONE_PAD + c.col * (CARD_W + CARD_GAP),
-      y: zone.y + ZONE_HEAD + c.row * (CARD_H + CARD_GAP),
-      w: CARD_W,
-      h: CARD_H,
-    });
-  }
-  return { box: { x: zone.x, y: zone.y, w: size.w, h: size.h }, cards };
-}
-
-/** Loose tickets sit in a row-major grid starting at (x, y). */
-export function layoutLoose(keys: string[], x: number, y: number, cols = 4): Map<string, Box> {
-  const cards = new Map<string, Box>();
-  keys.forEach((key, i) => {
-    cards.set(key, { x: x + (i % cols) * (CARD_W + CARD_GAP), y: y + Math.floor(i / cols) * (CARD_H + CARD_GAP), w: CARD_W, h: CARD_H });
-  });
-  return cards;
-}
-
-/** Where a new zone goes: under everything already on the canvas. */
-export function nextZoneOrigin(boxes: Box[], margin = 40): { x: number; y: number } {
-  if (boxes.length === 0) return { x: margin, y: margin };
-  const bottom = boxes.reduce((m, b) => Math.max(m, b.y + b.h), 0);
-  return { x: margin, y: bottom + 24 };
 }
 
 /** The world's extent: everything plus a margin, never smaller than the viewport wants. */

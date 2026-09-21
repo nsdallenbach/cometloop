@@ -68,15 +68,15 @@ proxy and resolves to one of three roles — admin, lead, developer — with
 lead-gated actions funneled through a single `requireLead` helper.
 
 **The client** is a React SPA (Vite) with URL routing for every major
-screen. The Board tab is a canvas (DAT-281): tags are zones on a pan/zoom
-surface (the agent map's `MapViewport`), each zone lays its cards out in
-dependency layers (blockers left of, or above, what they block), ticket
-links draw as orthogonal routed lines and agent coordination traffic as
-flowing curves between the cards the agents are working. Card positions are
-derived, never stored — dragging a card into a zone changes its tags. Cards
-spring to their new place with Motion. All markdown renders through one
-sanitized `Markdown` component. Mutations are optimistic with rollback; the
-board polls every 8s.
+screen. Board cards animate through Motion layout springs; drag-and-drop is
+a custom pointer engine (floating clone, slot-gap insertion preview,
+persisted ordering). All markdown renders through one sanitized `Markdown`
+component. Mutations are optimistic with rollback; the board polls every 8s.
+A **Workflows** page (DAT-284) is a placeholder builder for automation DAGs —
+triggers, agent steps, conditions and actions on a pan/zoom dot-grid canvas
+(the agent map's `MapViewport`, plus the pure geometry in
+`lib/canvas-layout.ts` and the graph rules in `lib/workflow-graph.ts`).
+Nothing executes yet and the draft is kept in the browser.
 
 **The desktop client** (`desktop/`, Electron) runs on each developer's
 machine and is the second shell of the same product. Its Tickets tab embeds
@@ -132,7 +132,6 @@ with a Lakebase credential.
 - `ticket-consolidate.ts` — merge duplicate tickets into a surviving target, nothing human-written lost
 - `ticket-hours.ts` — hour population and validation so estimates are never a data-entry chore
 - `ticket-events / -links / -tags / -order / -attachments / -activity` — the event trail, dependencies, tags, board ordering, file attachments, activity badges
-- `canvas.ts` — the canvas board (DAT-281): `app.canvas_zones` (a tag with a position and column count per engagement), zone CRUD, and the one poll payload — zones, every link on the board plus detected mentions, and recent coordination traffic mapped onto ticket pairs through the agents' active claims
 - `deploys.ts` — the local deployment queue: desktop clients post ticket-keyed deploy events, the web renders a read-only mirror
 - `deploy-gate.ts` — Done means deployed: a move into Done needs a merged PR with a green deploy (or the `no-deploy` tag)
 - `runner-load-balancing.ts` — spread claims across the online fleet
@@ -166,7 +165,7 @@ sequenceDiagram
     participant G as GitHub
     participant CI as Actions CI
 
-    L->>C: queue ticket (◇ QUEUE on the card)
+    L->>C: queue ticket (drag to agent lane)
     R->>C: long-poll /api/agent/work/wait
     C-->>R: work package (ticket + comments + attachments + rendered prompt + repo coords)
     R->>R: claude -p — implement in ./repo
@@ -190,7 +189,7 @@ ride along: a server that needs one names `MCP_AUTH_<SLUG>` and the runner
 supplies it from its own keychain or environment. Runners are expected to
 be chatty (progress notes, sub-2-minute heartbeats, flags instead of silent
 death); a stalled-heartbeat detector and yellow flag badges surface trouble
-on the card without changing its status.
+on the board without moving lanes.
 
 Two different silences get caught. A runner wedged mid-task is STALLED on its
 card (DAT-184). A runner that is simply *gone* is caught by the poll stamp
@@ -255,7 +254,7 @@ never strands a run mid-flight. Stopping a live run is a board cancel.
 
 Ticket keys are the join key for everything: a `DAT-nnn` in a branch name or
 PR title auto-links commits and PRs to the ticket. Automation then drives
-the board: PR opened → Review; PR merged → Deploying, the status between
+the board: PR opened → Review; PR merged → Deploying, the lane between
 sign-off and Done where the ticket waits while Actions runs for the merge SHA
 → Done on green, stays in Deploying with a warning on red. A reviewer can put
 a ticket in Deploying by hand too: the drawer's Review bar approves in one
