@@ -20,6 +20,9 @@ import { NotificationCenter } from './components/NotificationCenter';
 
 export type { Tab } from './routes';
 
+/** True when the console is the desktop app's embedded webview, not a browser tab. */
+const IN_DESKTOP_SHELL = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron/');
+
 export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -265,13 +268,19 @@ export default function App() {
         path: paths.agentMap,
         active: screen.name === 'agent-map',
       },
-      {
-        key: 'workflows',
-        label: 'Workflows',
-        title: 'Workflows — a placeholder builder for automation DAGs',
-        path: paths.workflows,
-        active: screen.name === 'workflows',
-      },
+      // Inside the desktop app the left sidebar is the way into Workflows
+      // (DAT-286), so the embedded console leaves it out of its top bar.
+      ...(IN_DESKTOP_SHELL
+        ? []
+        : [
+            {
+              key: 'workflows',
+              label: 'Workflows',
+              title: 'Workflows — a placeholder builder for automation DAGs',
+              path: paths.workflows,
+              active: screen.name === 'workflows',
+            },
+          ]),
       ...(isAdmin
         ? [
             {
