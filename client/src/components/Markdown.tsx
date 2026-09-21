@@ -57,6 +57,18 @@ export function prefetchMermaid(): void {
 
 let renderSeq = 0;
 
+/**
+ * mermaid renders into a scratch element it appends to <body> (`d<id>`, with
+ * the SVG as `<id>`). When the diagram fails to parse it throws and leaves
+ * that element behind — carrying its red "Syntax error" graphic — which showed
+ * up as a banner pinned to the bottom of the page and an odd extra scroll
+ * (DAT-263). Always sweep it, success or failure.
+ */
+function sweepMermaidScratch(id: string): void {
+  document.getElementById(`d${id}`)?.remove();
+  document.getElementById(id)?.remove();
+}
+
 /** Keyed by diagram code from the parent, so a changed diagram remounts and re-renders cleanly. */
 function MermaidBlock({ code }: { code: string }) {
   const [state, setState] = useState<{ svg: string } | { error: string } | null>(null);
@@ -65,7 +77,17 @@ function MermaidBlock({ code }: { code: string }) {
     // Loading is retried (a network blip, or the desktop still signing in);
     // rendering is not — a diagram that does not parse never will.
     withRetry(loadMermaid, { tries: 3, delayMs: 1500 })
-      .then((mermaid) => mermaid.render(`md-mermaid-${++renderSeq}`, code))
+      .then(async (mermaid) => {
+        const id = `md-mermaid-${++renderSeq}`;
+        try {
+          // parse() rejects bad syntax without touching the DOM, so most
+          // failures never create the scratch element at all.
+          await mermaid.parse(code);
+          return await mermaid.render(id, code);
+        } finally {
+          sweepMermaidScratch(id);
+        }
+      })
       .then(({ svg }) => {
         if (alive) setState({ svg: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }) });
       })
@@ -85,6 +107,7 @@ function MermaidBlock({ code }: { code: string }) {
       <div>
         <div className="md-diagram-note" title={state.error} style={{ marginBottom: 4 }}>
           ⚠ diagram didn’t render — showing its source
+          <span style={{ opacity: 0.75 }}> · {state.error}</span>
         </div>
         <pre>
           <code style={{ ...mono(400, 11) }}>{code}</code>
