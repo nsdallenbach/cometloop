@@ -16,6 +16,7 @@ import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
 import { prefetchMermaid } from './components/Markdown';
 import { Palette, type PaletteItem } from './components/Palette';
+import { Bot, FolderKanban, ShieldCheck, Ticket } from 'lucide-react';
 import { NotificationCenter } from './components/NotificationCenter';
 
 export type { Tab } from './routes';
@@ -250,6 +251,7 @@ export default function App() {
       {
         key: 'projects',
         label: 'Projects',
+        icon: <FolderKanban size={13} strokeWidth={1.75} />,
         title: 'All engagements',
         path: paths.portfolio,
         active: ['portfolio', 'workspace', 'ticket', 'setup'].includes(screen.name),
@@ -257,6 +259,7 @@ export default function App() {
       {
         key: 'tickets',
         label: 'Tickets',
+        icon: <Ticket size={13} strokeWidth={1.75} />,
         title: 'All tickets across projects',
         path: paths.tickets,
         active: screen.name === 'tickets',
@@ -264,7 +267,8 @@ export default function App() {
       {
         key: 'agent-map',
         label: 'Agents',
-        title: 'Agents — every agent by project: configure, scope, secure; plus the architecture map',
+        icon: <Bot size={13} strokeWidth={1.75} />,
+        title: 'Agents — every agent by project, mirrored from the desktops that run them; plus the architecture map',
         path: paths.agentMap,
         active: screen.name === 'agent-map',
       },
@@ -286,6 +290,7 @@ export default function App() {
             {
               key: 'admin',
               label: 'Admin',
+              icon: <ShieldCheck size={13} strokeWidth={1.75} />,
               title: 'Staffing & project lifecycle',
               path: paths.admin,
               active: screen.name === 'admin',
@@ -528,8 +533,12 @@ export default function App() {
                 letterSpacing: '.09em',
                 textTransform: 'uppercase',
                 cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
               }}
             >
+              <span style={{ display: 'inline-flex', color: t.active ? 'var(--acc)' : 'inherit' }}>{t.icon}</span>
               {t.label}
               {t.active && (
                 <motion.span

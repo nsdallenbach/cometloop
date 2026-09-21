@@ -11,7 +11,12 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "react": ["./node_modules/@types/react"],
+      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime"]
+    }
   },
-  "include": ["src", "electron.vite.config.ts", "../shared/api-client"]
+  "include": ["src", "electron.vite.config.ts", "../shared/api-client", "../shared/design"]
 }
