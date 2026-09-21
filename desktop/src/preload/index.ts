@@ -41,6 +41,14 @@ const bridge = {
   // catalog, read as the dev — the desktop decides, the console mirrors.
   consoleRegistry: (projects: string[]) => ipcRenderer.invoke('console:registry', projects),
   consoleModels: () => ipcRenderer.invoke('console:models'),
+  // Agent Tools (DAT-280): the registry itself — read full entries for a
+  // scope, publish / update / remove. The console enforces the lead gate.
+  registryList: (scope: string | null) => ipcRenderer.invoke('registry:list', scope),
+  registrySaveMcp: (id: number | null, payload: unknown) => ipcRenderer.invoke('registry:save-mcp', id, payload),
+  registryDeleteMcp: (id: number) => ipcRenderer.invoke('registry:delete-mcp', id),
+  registrySaveSkill: (id: number | null, payload: unknown) => ipcRenderer.invoke('registry:save-skill', id, payload),
+  registryDeleteSkill: (id: number) => ipcRenderer.invoke('registry:delete-skill', id),
+  consoleMe: () => ipcRenderer.invoke('console:me'),
   agentsStart: (id: string) => ipcRenderer.invoke('agents:start', id),
   agentsStop: (id: string) => ipcRenderer.invoke('agents:stop', id),
   agentsKill: (id: string) => ipcRenderer.invoke('agents:kill', id),

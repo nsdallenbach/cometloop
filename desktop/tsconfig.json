@@ -13,5 +13,5 @@
     "isolatedModules": true,
     "types": ["node"]
   },
-  "include": ["src", "electron.vite.config.ts", "../shared/api-client"]
+  "include": ["src", "electron.vite.config.ts", "../shared/api-client", "../shared/design"]
 }

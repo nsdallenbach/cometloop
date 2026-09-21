@@ -87,6 +87,22 @@ interface DesktopBridge {
   consoleRegistry: (
     projects: string[],
   ) => Promise<{ ok: true; registry: RegistryView } | { ok: false; error: string; signInRequired?: boolean }>;
+  registryList: (
+    scope: string | null,
+  ) => Promise<{ ok: true; registry: RegistryFull } | { ok: false; error: string; signInRequired?: boolean }>;
+  registrySaveMcp: (
+    id: number | null,
+    payload: McpServerPayload,
+  ) => Promise<{ ok: true; entry: RegistryMcpServerRow } | { ok: false; error: string }>;
+  registryDeleteMcp: (id: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  registrySaveSkill: (
+    id: number | null,
+    payload: SkillPayload,
+  ) => Promise<{ ok: true; entry: RegistrySkillRow } | { ok: false; error: string }>;
+  registryDeleteSkill: (id: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  consoleMe: () => Promise<
+    { ok: true; me: { email: string; role: string; leadOf: string[]; memberOf: string[] } } | { ok: false; error: string }
+  >;
   consoleModels: () => Promise<
     | { ok: true; models: { source: string; harnessModels: Record<string, { id: string; label: string; default?: boolean }[]> } }
     | { ok: false; error: string; signInRequired?: boolean }
@@ -208,6 +224,61 @@ interface AgentKindConfig {
 interface AgentsState {
   kinds: Record<AgentKind, AgentKindConfig & { installed: boolean; version: string | null }>;
   instances: InstanceSnapshot[];
+}
+
+/** Full registry rows for the Agent Tools page (DAT-238 / DAT-280). */
+interface RegistryMcpServerRow {
+  id: number;
+  engagementId: string | null;
+  slug: string;
+  name: string;
+  description: string;
+  transport: 'stdio' | 'http';
+  command: string | null;
+  args: string[];
+  url: string | null;
+  env: Record<string, string>;
+  requiresAuth: boolean;
+  authEnv: string | null;
+  status: string;
+  updatedBy?: string;
+}
+interface RegistrySkillRow {
+  id: number;
+  engagementId: string | null;
+  slug: string;
+  name: string;
+  description: string;
+  content: string;
+  harnesses: string[];
+  status: string;
+  updatedBy?: string;
+}
+interface RegistryFull {
+  mcpServers: RegistryMcpServerRow[];
+  skills: RegistrySkillRow[];
+}
+interface McpServerPayload {
+  engagementId: string | null;
+  slug?: string;
+  name: string;
+  description?: string;
+  transport?: 'stdio' | 'http';
+  command?: string | null;
+  args?: string[];
+  url?: string | null;
+  env?: Record<string, string>;
+  requiresAuth?: boolean;
+  status?: 'published' | 'retired';
+}
+interface SkillPayload {
+  engagementId: string | null;
+  slug?: string;
+  name: string;
+  description?: string;
+  content?: string;
+  harnesses?: string[];
+  status?: 'published' | 'retired';
 }
 
 /** Registry entries this machine may attach (DAT-238), deduplicated across the scoped projects. */
