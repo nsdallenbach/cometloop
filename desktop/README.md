@@ -9,6 +9,13 @@ code + PKCE, refresh token encrypted via `safeStorage`, silent renewal,
 My Tickets view proves the loop: it lists engagements from the console API
 authenticated as *you*.
 
+## Workflows
+
+The **Workflows** sidebar entry (DAT-284) opens the web console's
+`/workflows` page in the same embedded webview the Tickets tab uses — a
+placeholder builder for automation DAGs. It is routed inside the running
+console rather than reloaded, so Tickets keeps its place while you look.
+
 ## Run it
 
 ```bash

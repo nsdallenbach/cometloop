@@ -621,6 +621,33 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       ),
     },
     {
+      kicker: 'FLEET HEALTH',
+      title: 'A dead fleet never looks fine.',
+      body: 'Runners identify themselves on every poll, so the console knows the difference between idle and gone. Queued work with nothing online to claim it raises FLEET DOWN on the board; a claim that goes silent is released and requeued for someone else; tickets nobody has touched get a business-day nudge. Token spend streams off the harnesses as the work happens.',
+      points: ['Liveness from the poll stamp, not a config file', 'Silent claims reclaimed after 15 minutes, capped so a bad ticket reaches a human', 'Stale-ticket nudges with a digest and per-project quiet days', 'Live token consumption per task, on the drawer and the agent map'],
+      accent: 'var(--bad)',
+      visual: (
+        <div style={{ ...glass, padding: 16, borderRadius: 12, width: '100%', maxWidth: 400, display: 'grid', gap: 10 }}>
+          <div style={{ border: '1px solid var(--bad)', borderRadius: 6, padding: '9px 11px', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <motion.span animate={{ opacity: [1, 0.35, 1] }} transition={{ duration: 1.6, repeat: Infinity }} style={{ ...mono(600, 10), color: 'var(--bad)', letterSpacing: '.08em' }}>
+              ⚠ FLEET DOWN
+            </motion.span>
+            <span style={{ ...mono(400, 10), color: 'var(--tx3)', marginLeft: 'auto' }}>0 ONLINE · 2 OFFLINE · 3 QUEUED</span>
+          </div>
+          {[
+            { t: 'DAT-262 released from a silent runner — requeued', c: 'var(--warn)' },
+            { t: 'desktop-ns-claude-1 back online — claimed DAT-262', c: 'var(--ok)' },
+            { t: 'DAT-241 idle 3 business days — assignee nudged', c: 'var(--tx2)' },
+          ].map((r, i) => (
+            <motion.div key={r.t} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 + i * 0.15 }} style={{ display: 'flex', gap: 8, alignItems: 'baseline', ...mono(400, 10.5), color: r.c }}>
+              <span>›</span>
+              <span>{r.t}</span>
+            </motion.div>
+          ))}
+        </div>
+      ),
+    },
+    {
       kicker: 'REVIEW ON A CLOCK',
       title: 'A PR nobody reads is a PR nobody ships.',
       body: 'Agents stop at the pull request — humans merge, always. So the console guards the gap: a reviewer agent registered in Agent Bricks reads the diff and comments first, and an SLA watch escalates anything left sitting. Merge conflicts get the same treatment — trivial ones auto-resolve, anything overlapping another ticket’s open PR is escalated to the people who own it.',
@@ -645,6 +672,61 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       visual: (
         <div style={{ display: 'grid', placeItems: 'center', width: '100%' }}>
           <FleetMap />
+        </div>
+      ),
+    },
+    {
+      kicker: 'THE DESKTOP CLIENT',
+      title: 'The console on your machine. Your agents under your desk.',
+      body: 'An Electron app puts the whole console in a window signed in as you, and turns your laptop into a runner: work a lead routes to you is claimed only by your machine, with your identity. Sign in to Databricks in the browser, to GitHub, Azure and ADO by device code, and run as many agent instances as the box can take — with a terminal per task and deploys that report home.',
+      points: ['The deployed console embedded — one UI, zero drift', 'Agents configured where they run: scope, model, MCP servers, skills', 'Local deploys, mirrored read-only on the web', 'Packaged installers with a silent auto-update'],
+      accent: 'var(--acc)',
+      visual: (
+        <div style={{ ...glass, borderRadius: 12, width: '100%', maxWidth: 400, display: 'grid', gridTemplateColumns: '112px 1fr', overflow: 'hidden' }}>
+          <div style={{ borderRight: '1px solid var(--line)', padding: '10px 8px', display: 'grid', gap: 3, alignContent: 'start' }}>
+            {['Tickets', 'Workflows', 'Agents', 'Metrics', 'Identity', 'Deploys'].map((n, i) => (
+              <div key={n} style={{ fontSize: 11.5, fontWeight: i === 2 ? 600 : 500, color: i === 2 ? 'var(--tx)' : 'var(--tx2)', background: i === 2 ? 'var(--bg3)' : 'transparent', borderRadius: 5, padding: '5px 8px' }}>
+                {n}
+              </div>
+            ))}
+          </div>
+          <div style={{ padding: 12, display: 'grid', gap: 7, alignContent: 'start' }}>
+            <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.08em' }}>AGENTS ON THIS MACHINE</div>
+            {[
+              { n: 'claude-1', s: 'WORKING · DAT-280', c: 'var(--agent)' },
+              { n: 'claude-2', s: 'IDLE', c: 'var(--tx3)' },
+              { n: 'codex-1', s: 'WORKING · DAT-262', c: 'var(--agent)' },
+            ].map((a) => (
+              <div key={a.n} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--line)', borderRadius: 5, padding: '6px 8px' }}>
+                <motion.span animate={a.c === 'var(--agent)' ? { opacity: [1, 0.35, 1] } : {}} transition={{ duration: 2.4, repeat: Infinity }} style={{ width: 7, height: 7, borderRadius: '50%', background: a.c }} />
+                <span style={{ ...mono(500, 10.5), color: 'var(--tx)' }}>{a.n}</span>
+                <span style={{ ...mono(400, 9.5), color: a.c, marginLeft: 'auto' }}>{a.s}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      kicker: 'THE REGISTRY',
+      title: 'Give an agent a tool once. Every run gets it.',
+      body: 'MCP servers and SKILL.md skills are published to a registry — shared across the org or scoped to one project, lead-gated either way — and attached to agents by name. At claim time the work package carries the model a lead picked and everything attached, and the runner materialises it in the task workdir through the harness adapter. Secrets never ride along: a server that needs one names the variable the runner injects.',
+      points: ['MCP servers and skills, shared or per project', 'Delivered with the claim — no fleet update to change a toolset', 'Model picked per agent from the workspace catalog', 'No secret is ever stored in the registry'],
+      accent: 'var(--agent)',
+      visual: (
+        <div style={{ ...glass, padding: 16, borderRadius: 12, width: '100%', maxWidth: 400, display: 'grid', gap: 9 }}>
+          <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.08em' }}>ATTACHED TO claude-1 · DELIVERED AT CLAIM</div>
+          {[
+            { k: 'MODEL', v: 'databricks-claude-sonnet-5', c: 'var(--tx)' },
+            { k: 'MCP', v: 'delivery-console · github · lakebase-readonly', c: 'var(--agent)' },
+            { k: 'SKILLS', v: 'parity-check · pr-hygiene · migrations', c: 'var(--ok)' },
+            { k: 'SECRETS', v: 'named, injected by the runner — never stored', c: 'var(--tx3)' },
+          ].map((r, i) => (
+            <motion.div key={r.k} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 + i * 0.12 }} style={{ display: 'grid', gridTemplateColumns: '64px 1fr', gap: 8, alignItems: 'baseline' }}>
+              <span style={{ ...mono(500, 9.5), color: 'var(--tx3)', letterSpacing: '.08em' }}>{r.k}</span>
+              <span style={{ ...mono(400, 10.5), color: r.c }}>{r.v}</span>
+            </motion.div>
+          ))}
         </div>
       ),
     },
@@ -676,12 +758,12 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       kicker: 'OPEN SURFACE',
       title: 'Any AI tool can drive it.',
       body: 'An MCP server exposes the whole console — boards, tickets, comments, the agent lifecycle, git credentials, coordination — to Claude Code and any MCP client. Your devbox VMs run the same loop with zero glue code.',
-      points: ['34 MCP tools', 'Devbox runner reference + systemd unit', 'Local-emulation mode for testing', 'Permissions stay server-side'],
+      points: ['36 MCP tools', 'Devbox runner reference + systemd unit', 'Local-emulation mode for testing', 'Permissions stay server-side'],
       accent: 'var(--agent)',
       visual: (
         <div style={{ ...glass, padding: 18, borderRadius: 12, width: '100%', maxWidth: 400, fontFamily: "'DM Mono', monospace", fontSize: 11.5 }}>
           <div style={{ color: 'var(--tx3)' }}>$ claude mcp add delivery-console</div>
-          <div style={{ color: 'var(--ok)', marginTop: 6 }}>✓ 34 tools registered</div>
+          <div style={{ color: 'var(--ok)', marginTop: 6 }}>✓ 36 tools registered</div>
           <div style={{ color: 'var(--tx2)', marginTop: 8 }}>&gt; claim_agent_work → get_git_credential</div>
           <div style={{ color: 'var(--tx2)' }}>&gt; report_agent_progress → finish_agent_work</div>
           <motion.div animate={{ opacity: [1, 0.2, 1] }} transition={{ duration: 1.1, repeat: Infinity }} style={{ color: 'var(--agent)', marginTop: 8 }}>
@@ -693,7 +775,7 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
   ];
 
   const stats = [
-    { v: 34, s: '', label: 'MCP tools' },
+    { v: 36, s: '', label: 'MCP tools' },
     { v: 2, s: 's', label: 'pickup latency' },
     { v: 0, s: '', label: 'tokens stored' },
     { v: 3, s: '', label: 'coding harnesses' },

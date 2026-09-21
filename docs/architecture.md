@@ -72,6 +72,11 @@ screen. Board cards animate through Motion layout springs; drag-and-drop is
 a custom pointer engine (floating clone, slot-gap insertion preview,
 persisted ordering). All markdown renders through one sanitized `Markdown`
 component. Mutations are optimistic with rollback; the board polls every 8s.
+A **Workflows** page (DAT-284) is a placeholder builder for automation DAGs —
+triggers, agent steps, conditions and actions on a pan/zoom dot-grid canvas
+(the agent map's `MapViewport`, plus the pure geometry in
+`lib/canvas-layout.ts` and the graph rules in `lib/workflow-graph.ts`).
+Nothing executes yet and the draft is kept in the browser.
 
 **The desktop client** (`desktop/`, Electron) runs on each developer's
 machine and is the second shell of the same product. Its Tickets tab embeds

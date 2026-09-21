@@ -11,6 +11,7 @@ import { Landing } from './components/Landing';
 import { Portfolio } from './components/Portfolio';
 import { Setup } from './components/Setup';
 import { Tickets } from './components/Tickets';
+import { Workflows } from './components/Workflows';
 import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
 import { prefetchMermaid } from './components/Markdown';
@@ -19,6 +20,9 @@ import { Bot, FolderKanban, ShieldCheck, Ticket } from 'lucide-react';
 import { NotificationCenter } from './components/NotificationCenter';
 
 export type { Tab } from './routes';
+
+/** True when the console is the desktop app's embedded webview, not a browser tab. */
+const IN_DESKTOP_SHELL = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron/');
 
 export default function App() {
   const location = useLocation();
@@ -268,6 +272,19 @@ export default function App() {
         path: paths.agentMap,
         active: screen.name === 'agent-map',
       },
+      // Inside the desktop app the left sidebar is the way into Workflows
+      // (DAT-286), so the embedded console leaves it out of its top bar.
+      ...(IN_DESKTOP_SHELL
+        ? []
+        : [
+            {
+              key: 'workflows',
+              label: 'Workflows',
+              title: 'Workflows — a placeholder builder for automation DAGs',
+              path: paths.workflows,
+              active: screen.name === 'workflows',
+            },
+          ]),
       ...(isAdmin
         ? [
             {
@@ -390,6 +407,14 @@ export default function App() {
         description: 'Projects and their agents as an architecture diagram',
         keywords: ['agents', 'map', 'runners', 'architecture', 'diagram', 'deploy'],
         run: () => void navigate(paths.agentMap),
+      },
+      {
+        kind: 'NAV',
+        label: 'Go to Workflows — automation builder',
+        hint: '',
+        description: 'Draw an automation as a DAG: triggers, agent steps, conditions, actions',
+        keywords: ['workflows', 'automation', 'dag', 'n8n', 'builder', 'canvas'],
+        run: () => void navigate(paths.workflows),
       },
       ...engagements.slice(0, 4).map((e) => ({
         kind: 'NAV',
@@ -675,6 +700,8 @@ export default function App() {
       {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
 
       {screen.name === 'agent-map' && <AgentsPage canLead={canLead} canPublishShared={isAdmin} toast={showToast} />}
+
+      {screen.name === 'workflows' && <Workflows toast={showToast} />}
 
       {screen.name === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
       {screen.name === 'admin' && !isAdmin && (
