@@ -76,7 +76,8 @@ A **Workflows** page (DAT-284) is a placeholder builder for automation DAGs —
 triggers, agent steps, conditions and actions on a pan/zoom dot-grid canvas
 (the agent map's `MapViewport`, plus the pure geometry in
 `lib/canvas-layout.ts` and the graph rules in `lib/workflow-graph.ts`).
-Nothing executes yet and the draft is kept in the browser.
+Workflows are stored on the server (`workflows.ts`) and autosave, so the web,
+the desktop and every user see the same ones. Nothing executes yet.
 
 **The desktop client** (`desktop/`, Electron) runs on each developer's
 machine and is the second shell of the same product. Its Tickets tab embeds
@@ -132,6 +133,7 @@ with a Lakebase credential.
 - `ticket-consolidate.ts` — merge duplicate tickets into a surviving target, nothing human-written lost
 - `ticket-hours.ts` — hour population and validation so estimates are never a data-entry chore
 - `ticket-events / -links / -tags / -order / -attachments / -activity` — the event trail, dependencies, tags, board ordering, file attachments, activity badges
+- `workflows.ts` — the Workflows builder's storage (DAT-288): `app.workflows` (a name and a graph as JSONB), list / read / create / save / delete, graph rules on the way in (known node kinds, edges between real nodes, no loops), and a stale-save guard that answers 409 instead of overwriting a colleague
 - `deploys.ts` — the local deployment queue: desktop clients post ticket-keyed deploy events, the web renders a read-only mirror
 - `deploy-gate.ts` — Done means deployed: a move into Done needs a merged PR with a green deploy (or the `no-deploy` tag)
 - `runner-load-balancing.ts` — spread claims across the online fleet

@@ -61,6 +61,8 @@ import type {
   VelocityReport,
 } from './types';
 
+import { parseWorkflow, type SavedWorkflow, type Workflow, type WorkflowSummary } from './lib/workflow-graph';
+
 type Row = Record<string, unknown>;
 
 const s = (v: unknown) =>
@@ -292,6 +294,15 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 const json = (body: unknown): RequestInit => ({
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
+});
+
+const savedWorkflow = (r: Row): SavedWorkflow => ({
+  id: n(r.id),
+  name: s(r.name),
+  // The server validates graphs on the way in; this only guards the shape.
+  graph: parseWorkflow(JSON.stringify(r.graph ?? null)) ?? { nodes: [], edges: [] },
+  updatedBy: s(r.updatedBy),
+  updatedAt: s(r.updatedAt),
 });
 
 const idList = (v: unknown): number[] => (Array.isArray(v) ? v.map((x) => n(x)).filter((x) => x > 0) : []);
@@ -703,6 +714,30 @@ export const api = {
       ...json({}),
     });
     return d.escalation;
+  },
+
+  // ---- workflows (DAT-288) ----
+
+  async workflows(): Promise<WorkflowSummary[]> {
+    const rows = await http<Row[]>('/api/workflows');
+    return rows.map((r) => ({ id: n(r.id), name: s(r.name), nodes: n(r.nodes), updatedBy: s(r.updatedBy), updatedAt: s(r.updatedAt) }));
+  },
+
+  async workflow(id: number): Promise<SavedWorkflow> {
+    return savedWorkflow(await http<Row>(`/api/workflows/${id}`));
+  },
+
+  async createWorkflow(name: string, graph: Workflow): Promise<SavedWorkflow> {
+    return savedWorkflow(await http<Row>('/api/workflows', { method: 'POST', ...json({ name, graph }) }));
+  },
+
+  /** Refused with a 409 `ApiError` when someone else saved since `baseUpdatedAt`. */
+  async saveWorkflow(id: number, patch: { name?: string; graph?: Workflow; baseUpdatedAt?: string }): Promise<SavedWorkflow> {
+    return savedWorkflow(await http<Row>(`/api/workflows/${id}`, { method: 'PUT', ...json(patch) }));
+  },
+
+  deleteWorkflow(id: number) {
+    return http(`/api/workflows/${id}`, { method: 'DELETE' });
   },
 
   // ---- linked tickets ----
