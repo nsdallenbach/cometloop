@@ -731,6 +731,47 @@ export function Landing({ theme, onEnter }: { theme: 'dark' | 'light'; onEnter: 
       ),
     },
     {
+      kicker: 'WORKFLOWS · PREVIEW',
+      title: 'Draw the automation. Hand the steps to agents.',
+      body: 'Workflows is a canvas for automations drawn as a graph: a trigger starts it, agent steps do the thinking, conditions branch on what came back, and actions change something in the console or outside it. Today it is a builder preview — lay a flow out, connect it, let it arrange itself — on the same pan-and-zoom surface as the agent map. Running the flows is what comes next.',
+      points: ['Triggers, agent steps, conditions and actions', 'Flows run one way — a connection that would loop is refused', 'One click lays the graph out by what feeds what', 'Preview: drafts stay in your browser and nothing executes yet'],
+      accent: 'var(--warn)',
+      visual: (
+        <div style={{ ...glass, padding: 16, borderRadius: 12, width: '100%', maxWidth: 400 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 18px 1fr 18px 1fr', alignItems: 'center', rowGap: 10 }}>
+            {[
+              { k: '◉ TRIGGER', t: 'PR opened', c: 'var(--acc)' },
+              { k: '◆ AGENT', t: 'Review the diff', c: 'var(--agent)' },
+              { k: '◇ CONDITION', t: 'Verdict?', c: 'var(--warn)' },
+            ].map((n, i) => (
+              <div key={n.k} style={{ display: 'contents' }}>
+                <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 + i * 0.18 }} style={{ border: `1px solid ${n.c}`, borderRadius: 6, padding: '7px 8px', background: 'var(--bg2)' }}>
+                  <div style={{ ...mono(500, 8.5), color: n.c, letterSpacing: '.08em', marginBottom: 3 }}>{n.k}</div>
+                  <div style={{ fontSize: 11.5, fontWeight: 500, color: 'var(--tx)' }}>{n.t}</div>
+                </motion.div>
+                {i < 2 && <div style={{ ...mono(400, 12), color: 'var(--tx3)', textAlign: 'center' }}>→</div>}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+            {[
+              { b: 'APPROVE', t: 'Move to Deploying' },
+              { b: 'CHANGES', t: 'Requeue for the agent' },
+            ].map((n, i) => (
+              <motion.div key={n.b} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.75 + i * 0.15 }} style={{ border: '1px solid var(--ok)', borderRadius: 6, padding: '7px 8px', background: 'var(--bg2)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                  <span style={{ ...mono(500, 8.5), color: 'var(--ok)', letterSpacing: '.08em' }}>▸ ACTION</span>
+                  <span style={{ ...mono(500, 8), color: 'var(--tx2)', border: '1px solid var(--line2)', borderRadius: 2, padding: '0 4px', marginLeft: 'auto' }}>{n.b}</span>
+                </div>
+                <div style={{ fontSize: 11.5, fontWeight: 500, color: 'var(--tx)' }}>{n.t}</div>
+              </motion.div>
+            ))}
+          </div>
+          <div style={{ ...mono(400, 9.5), color: 'var(--warn)', letterSpacing: '.06em', marginTop: 12 }}>PREVIEW — BUILDER ONLY, NOTHING RUNS YET</div>
+        </div>
+      ),
+    },
+    {
       kicker: 'MEASURED DELIVERY',
       title: 'Velocity, in hours you can defend.',
       body: 'Analytics leads with org velocity: idea → done, cycle time, how long work waits in review, and the human dev time the agents gave back. Underneath sit the delivered chart, backlog trajectory, and a commit-activity graph over the last 26 weeks — all built from the event trail, not from anyone’s memory.',
