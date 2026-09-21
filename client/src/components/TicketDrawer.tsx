@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { motion } from 'motion/react';
+import { motion, useReducedMotion } from 'motion/react';
 import { api } from '../api';
 import { canonicalTag, suggestedTags } from '../lib/ticket-tags';
 import type {
@@ -71,6 +71,65 @@ const DEPLOY_NOTE: Record<string, string> = {
   failed: 'Pipeline failed — the ticket stays in Deploying until a passing run.',
   none: 'No deploy pipeline detected — the ticket moved straight to Done.',
 };
+
+/** How long a decision stays stamped on the drawer before the queue advances. */
+const STAMP_MS = 450;
+
+/**
+ * The confirmation that covers the drawer after an approve or reject lands
+ * (DAT-265). Approve and reject differ in colour, mark and motion — the mark
+ * settles in for an approve and shakes off for a reject — so the two are not
+ * mistaken at a glance. With reduced motion it is a still card.
+ */
+function DecisionStamp({ decision, ticketKey, nextKey, still }: { decision: 'approve' | 'reject'; ticketKey: string; nextKey: string | null; still: boolean }) {
+  const approve = decision === 'approve';
+  const color = approve ? 'var(--ok)' : 'var(--bad)';
+  return (
+    <motion.div
+      role="status"
+      aria-live="polite"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: still ? 0 : 0.1 }}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        zIndex: 5,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 10,
+        background: 'color-mix(in srgb, var(--bg2) 88%, transparent)',
+        backdropFilter: 'blur(2px)',
+      }}
+    >
+      <motion.div
+        initial={still ? false : approve ? { scale: 0.6, opacity: 0 } : { scale: 1, opacity: 0, x: 0 }}
+        animate={still ? undefined : approve ? { scale: 1, opacity: 1 } : { scale: 1, opacity: 1, x: [0, -7, 7, -4, 0] }}
+        transition={approve ? { type: 'spring', visualDuration: 0.25, bounce: 0.35 } : { duration: 0.3, ease: 'easeOut' }}
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: '50%',
+          border: `2px solid ${color}`,
+          color,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 30,
+          lineHeight: 1,
+        }}
+      >
+        {approve ? '✓' : '✕'}
+      </motion.div>
+      <div style={{ ...mono(500, 12), letterSpacing: '.12em', color }}>
+        {ticketKey} {approve ? 'APPROVED' : 'REJECTED'}
+      </div>
+      <div style={{ ...mono(400, 10), letterSpacing: '.08em', color: 'var(--tx3)' }}>{nextKey ? `NEXT · ${nextKey}` : 'REVIEW QUEUE CLEAR'}</div>
+    </motion.div>
+  );
+}
 
 export function TicketDrawer({
   theme,
@@ -594,8 +653,21 @@ export function TicketDrawer({
   const noteText = noteDraft && noteDraft.key === ticket.key ? noteDraft.text : null;
   const decideErrorMsg = decideError && decideError.key === ticket.key ? decideError.msg : '';
 
+  // DAT-265: a decision that landed stamps the drawer for a beat before the
+  // queue advances, so the reviewer sees it registered and sees what is next.
+  // Only set on success — a failed call shows its error and no stamp.
+  const [stamp, setStamp] = useState<{ decision: 'approve' | 'reject'; key: string; nextKey: string | null } | null>(null);
+  const stampTimer = useRef<number | null>(null);
+  const reducedMotion = useReducedMotion();
+  useEffect(
+    () => () => {
+      if (stampTimer.current !== null) window.clearTimeout(stampTimer.current);
+    },
+    [],
+  );
+
   const decide = (decision: 'approve' | 'reject', note?: string) => {
-    if (deciding !== null) return;
+    if (deciding !== null || stamp !== null) return;
     // Resolved before the call: `allTickets` still holds this ticket in Review,
     // which is exactly the queue the reviewer is looking at.
     const next = nextInQueue(allTickets, ticket.key);
@@ -611,8 +683,16 @@ export function TicketDrawer({
             : `${ticket.key} rejected — back to Backlog with your note`,
         );
         refreshDetail();
-        if (next) onOpenTicket(next.key);
-        else onClose();
+        setStamp({ decision, key: ticket.key, nextKey: next ? next.key : null });
+        stampTimer.current = window.setTimeout(
+          () => {
+            stampTimer.current = null;
+            setStamp(null);
+            if (next) onOpenTicket(next.key);
+            else onClose();
+          },
+          reducedMotion ? 250 : STAMP_MS,
+        );
       })
       .catch((e: Error) => setDecideError({ key: ticket.key, msg: e.message }))
       .finally(() => setDeciding(null));
@@ -2162,6 +2242,7 @@ export function TicketDrawer({
             ◆ AWAITING ENGAGEMENT LEAD REVIEW
           </div>
         )}
+        {stamp && <DecisionStamp decision={stamp.decision} ticketKey={stamp.key} nextKey={stamp.nextKey} still={Boolean(reducedMotion)} />}
       </div>
     </>
   );
