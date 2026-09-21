@@ -2124,6 +2124,10 @@ export function Workspace({
  * from the content. Creation runs in the parent so the modal closes
  * immediately. Two ways out: "Create ticket" lands it in Backlog, and
  * (for leads) "Create & deploy" queues it straight to an agent in one click.
+ *
+ * Shortcuts are the ones people already know (DAT-259): Ctrl/⌘+Enter creates,
+ * adding Shift creates and deploys, Escape cancels. Each is shown as a chip on
+ * its own button rather than explained in a sentence.
  */
 function NewTicketModal({
   lead,
@@ -2141,8 +2145,9 @@ function NewTicketModal({
   // takes the pair or neither, filling one asks for the other.
   const [estHours, setEstHours] = useState('');
   const [humanEstHours, setHumanEstHours] = useState('');
-  const createButtonRef = useRef<HTMLButtonElement>(null);
-  const deployButtonRef = useRef<HTMLButtonElement>(null);
+  // The estimate override is rare, so it stays folded until asked for.
+  const [showEstimates, setShowEstimates] = useState(false);
+  const modKey = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
 
   const parseHours = (v: string, max: number): number | null => {
     const n = Number(v);
@@ -2197,22 +2202,14 @@ function NewTicketModal({
         animate={{ opacity: 1, transform: 'translate(-50%,-50%) scale(1) translateY(0px)' }}
         exit={{ opacity: 0, transform: 'translate(-50%,-50%) scale(0.98) translateY(4px)' }}
         transition={{ type: 'spring', visualDuration: 0.25, bounce: 0.15 }}
+        role="dialog"
+        aria-modal="true"
+        aria-label="New ticket"
         onKeyDown={(e) => {
           // Escape is handled by the app-level layering (palette > modal > drawer).
-          if (e.key === 'Control') {
-            createButtonRef.current?.focus();
-            return;
-          }
-
-          const actionButtons = [createButtonRef.current, deployButtonRef.current].filter(
-            (button): button is HTMLButtonElement => button != null && !button.disabled,
-          );
-          const focusedIndex = actionButtons.indexOf(document.activeElement as HTMLButtonElement);
-          if (focusedIndex < 0 || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
-
+          if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey)) return;
           e.preventDefault();
-          const offset = e.key === 'ArrowRight' ? 1 : -1;
-          actionButtons[(focusedIndex + offset + actionButtons.length) % actionButtons.length]?.focus();
+          create(e.shiftKey && lead);
         }}
         style={{
           position: 'fixed',
@@ -2232,6 +2229,8 @@ function NewTicketModal({
           <button
             className="hv-tx"
             onClick={onClose}
+            aria-label="Close"
+            title="Close (Esc)"
             style={{ marginLeft: 'auto', border: 'none', background: 'none', color: 'var(--tx3)', fontSize: 16, cursor: 'pointer', padding: '2px 6px' }}
           >
             ×
@@ -2240,10 +2239,11 @@ function NewTicketModal({
         <div style={{ padding: 18 }}>
           <textarea
             autoFocus
+            aria-label="Describe the work"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={6}
-            placeholder="Describe the work — context, scope, links… The title is derived for you."
+            placeholder="Describe the work. The title is written for you."
             style={{
               boxSizing: 'border-box',
               width: '100%',
@@ -2258,11 +2258,22 @@ function NewTicketModal({
               resize: 'vertical',
             }}
           />
+          {!showEstimates && (
+            <button
+              className="hv-tx"
+              onClick={() => setShowEstimates(true)}
+              title="The ticket agent estimates the work unless you set both numbers"
+              style={{ marginTop: 10, border: 'none', background: 'none', color: 'var(--tx3)', ...mono(400, 10), letterSpacing: '.06em', cursor: 'pointer', padding: 0 }}
+            >
+              + SET ESTIMATES · AUTO BY DEFAULT
+            </button>
+          )}
+          {showEstimates && (
           <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             {(
               [
-                { id: 'agent' as const, label: '◆ AGENT EST (HOURS)', value: estHours, set: setEstHours, ok: estVal != null, other: humanTyped, max: 400, hint: 'Leave blank — the ticket agent estimates it' },
-                { id: 'human' as const, label: 'HUMAN DEV EST (HOURS)', value: humanEstHours, set: setHumanEstHours, ok: humanVal != null, other: estTyped, max: 999, hint: 'Leave blank — the ticket agent estimates it' },
+                { id: 'agent' as const, label: '◆ AGENT HOURS', value: estHours, set: setEstHours, ok: estVal != null, other: humanTyped, max: 400 },
+                { id: 'human' as const, label: 'HUMAN HOURS', value: humanEstHours, set: setHumanEstHours, ok: humanVal != null, other: estTyped, max: 999 },
               ]
             ).map((f) => {
               const typed = f.value.trim() !== '';
@@ -2271,17 +2282,16 @@ function NewTicketModal({
               const showError = typed ? !f.ok : f.other;
               return (
                 <div key={f.id} style={{ flex: 1 }}>
-                  <div style={{ ...mono(400, 9), color: f.id === 'agent' ? 'var(--agent)' : 'var(--tx3)', letterSpacing: '.08em', marginBottom: 5 }}>
-                    {f.label} <span style={{ color: 'var(--tx3)' }}>(OPTIONAL)</span>
-                  </div>
+                  <div style={{ ...mono(400, 9), color: f.id === 'agent' ? 'var(--agent)' : 'var(--tx3)', letterSpacing: '.08em', marginBottom: 5 }}>{f.label}</div>
                   <input
                     type="number"
+                    aria-label={f.id === 'agent' ? 'Agent hours estimate' : 'Human developer hours estimate'}
                     min={0.1}
                     step={0.1}
                     value={f.value}
                     onChange={(e) => f.set(e.target.value)}
-                    placeholder={f.hint}
-                    title={f.hint}
+                    placeholder="auto"
+                    title="Leave both blank and the ticket agent estimates the work"
                     style={{
                       boxSizing: 'border-box',
                       width: '100%',
@@ -2296,34 +2306,16 @@ function NewTicketModal({
                   />
                   {showError && (
                     <div style={{ ...mono(400, 9.5), color: 'var(--bad)', marginTop: 4 }}>
-                      {typed ? `Enter hours between 0 and ${f.max}` : 'Set both estimates, or clear both and let the agent estimate'}
+                      {typed ? `Between 0 and ${f.max}` : 'Set both, or clear both'}
                     </div>
                   )}
                 </div>
               );
             })}
           </div>
-          <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', marginTop: 9, lineHeight: 1.5 }}>
-            LEAVE BOTH BLANK AND THE TICKET AGENT ESTIMATES THE WORK — ANYTHING IT CAN&apos;T ESTIMATE IS TAGGED
-            NEEDS-ESTIMATE-REVIEW
-          </div>
+          )}
         </div>
         <div style={{ padding: '11px 18px 13px', borderTop: '1px solid var(--line)' }}>
-          <div
-            style={{
-              ...mono(400, 10),
-              color: 'var(--tx3)',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              marginBottom: 10,
-              transition: 'color .12s ease',
-            }}
-          >
-            {lead
-              ? 'PRESS CTRL TO FOCUS ACTIONS · USE ←/→ TO CHOOSE · ENTER TO ACTIVATE'
-              : 'PRESS CTRL TO FOCUS CREATE · ENTER TO ACTIVATE'}
-          </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <div style={{ flex: 1 }} />
             <button
@@ -2333,10 +2325,9 @@ function NewTicketModal({
               Cancel
             </button>
             <button
-              ref={createButtonRef}
               onClick={() => create(false)}
               disabled={!valid}
-              title="Create in Backlog (Control, then Enter)"
+              title={`Create in Backlog (${modKey}+Enter)`}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -2357,14 +2348,13 @@ function NewTicketModal({
             >
               <Plus size={13} strokeWidth={2.5} />
               Create ticket
-              <span style={kbd(false)}>Ctrl</span>
+              <span style={kbd(valid)}>{modKey} ↵</span>
             </button>
             {lead && (
               <button
-                ref={deployButtonRef}
                 onClick={() => create(true)}
                 disabled={!valid}
-                title="Create and deploy straight to the agent queue (Control, Right Arrow, then Enter)"
+                title={`Create and deploy straight to the agent queue (${modKey}+Shift+Enter)`}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -2384,7 +2374,7 @@ function NewTicketModal({
               >
                 <Rocket size={13} strokeWidth={2.25} />
                 Create &amp; deploy
-                <span style={kbd(false)}>Ctrl+→</span>
+                <span style={kbd(valid)}>{modKey} ⇧ ↵</span>
               </button>
             )}
           </div>
