@@ -725,44 +725,6 @@ export interface TicketLinks {
   branches: LinkedBranch[];
 }
 
-/** A tag with a place on the canvas board (DAT-281); its size follows its cards. */
-export interface CanvasZone {
-  id: number;
-  tag: string;
-  x: number;
-  y: number;
-  /** Card columns, 1–4. */
-  cols: number;
-}
-
-/** A line between two cards: a stored link, or a mention detected in text (id null). */
-export interface CanvasLink {
-  id: number | null;
-  from: string;
-  to: string;
-  type: 'blocks' | 'relates' | 'mention';
-}
-
-/** A recent coordination message mapped onto the cards its agents are working. */
-export interface CanvasTraffic {
-  id: number;
-  /** The sender's active ticket, when it is on this board. */
-  from: string | null;
-  /** The message's ticket, else the recipient's active ticket, when on this board. */
-  to: string | null;
-  sender: string;
-  recipient: string | null;
-  type: string;
-  body: string;
-  createdAt: string;
-}
-
-export interface CanvasData {
-  zones: CanvasZone[];
-  links: CanvasLink[];
-  traffic: CanvasTraffic[];
-}
-
 /** One ticket's place in the local-deploy mirror (DAT-236) — computed
  *  server-side purely from client-reported deploy events. */
 export interface DeployMirrorEntry {
