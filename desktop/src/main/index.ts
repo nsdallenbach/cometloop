@@ -442,8 +442,12 @@ void app.whenReady().then(async () => {
   // and the webview shows the proxy's response instead of hanging.
   const consoleSession = session.fromPartition('persist:console');
   consoleSession.webRequest.onBeforeSendHeaders({ urls: [`${cfg.consoleUrl}/*`] }, (details, callback) => {
+    // One retry before giving up (DAT-262): a request sent without the header
+    // is redirected to OAuth, which a lazy chunk import cannot follow — and a
+    // token mint that fails at startup usually succeeds a moment later.
     void creds
       .getToken()
+      .catch(() => new Promise<void>((resolve) => setTimeout(resolve, 750)).then(() => creds.getToken()))
       .then((token) => {
         callback({ requestHeaders: { ...details.requestHeaders, Authorization: `Bearer ${token}` } });
       })
