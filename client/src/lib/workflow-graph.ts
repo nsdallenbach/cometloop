@@ -29,6 +29,24 @@ export interface Workflow {
   edges: WfEdge[];
 }
 
+/** A stored workflow as the picker lists it (DAT-288). */
+export interface WorkflowSummary {
+  id: number;
+  name: string;
+  nodes: number;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+/** A stored workflow with its graph; `updatedAt` is what the next save is based on. */
+export interface SavedWorkflow {
+  id: number;
+  name: string;
+  graph: Workflow;
+  updatedBy: string;
+  updatedAt: string;
+}
+
 export const NODE_W = 230;
 export const NODE_H = 86;
 const COL_GAP = 90;

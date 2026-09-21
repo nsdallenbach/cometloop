@@ -38,6 +38,7 @@ import { invokeModel, setupLlmHealthRoutes } from './llm-health';
 import { normalizeTags } from './ticket-tags';
 import { REPO_CONNECTED_JOIN, doneBlockedReason, gateInputFromRow, loadDeployGates } from './deploy-gate';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
+import { WORKFLOWS_SCHEMA_SQL, setupWorkflowRoutes } from './workflows';
 import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes } from './ticket-consolidate';
 import { commentStyleBrief } from './comment-style';
 import { setupMcpRoutes } from './mcp';
@@ -228,6 +229,7 @@ async function initSchema(appkit: AppKitServices) {
     ...TICKET_EVENTS_SCHEMA_SQL,
     ...TICKET_ACTIVITY_SCHEMA_SQL,
     ...LINKS_SCHEMA_SQL,
+    ...WORKFLOWS_SCHEMA_SQL,
     ...ESTIMATE_SCHEMA_SQL,
     ...ATTACHMENT_SCHEMA_SQL,
     ...FILE_LIBRARY_SCHEMA_SQL,
@@ -2168,6 +2170,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupRepoRoutes(app, q, requireLead);
     setupNotificationRoutes(app, q);
     setupTicketLinkRoutes(app, q);
+    setupWorkflowRoutes(app, q);
     setupTicketConsolidateRoutes(app, q, requireLead);
     setupMcpRoutes(app, q);
     setupTicketOrderRoutes(app, q);
