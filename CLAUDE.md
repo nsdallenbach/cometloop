@@ -23,7 +23,7 @@ Read [docs/development-standards.md](./docs/development-standards.md) before
 making changes — it is the working agreement for this repo: git/PR flow and
 the CI deploy gate, validation commands, database migration ownership rules,
 server/client/LLM conventions, and agent-runner discipline. The same document
-is mirrored into the app's Standards tab for the Execution Console engagement
+is mirrored into the app's Standards tab for the Cometloop engagement
 (`node scripts/sync-standards.mjs` pushes the repo copy; never edit it in the
 tab).
 

@@ -76,7 +76,7 @@ export function ToolsView() {
       {error && <div style={{ fontSize: 12, color: 'var(--bad)' }}>{error}</div>}
 
       <Shelf title="MCP servers" icon={<Plug size={14} strokeWidth={1.75} />} count={reg?.mcpServers.length ?? 0}>
-        <ToolCard locked icon={serviceBrand('databricks')?.mark(24)} title="Delivery Console" sub="tickets · progress · flags · git credentials" tags={['always on']} />
+        <ToolCard locked icon={serviceBrand('databricks')?.mark(24)} title="Cometloop" sub="tickets · progress · flags · git credentials" tags={['always on']} />
         {(reg?.mcpServers ?? []).map((m) => (
           <ToolCard
             key={m.id}

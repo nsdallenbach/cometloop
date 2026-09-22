@@ -66,7 +66,7 @@ export async function handleMcpMessage(q: Query, msg: JsonRpcRequest, author: st
         capabilities: { tools: {} },
         serverInfo: { name: 'delivery-console', version: '1.0.0' },
         instructions:
-          'Delivery Console board tools: search_tickets and get_ticket to read a board, link_tickets to record relationships, consolidate_tickets to merge duplicates. Review gate: submit_pr_review publishes a PR review verdict (never merges) using the review_run_id from a review prompt. Engagement ids come from search_tickets calls; ticket keys look like DAT-42.',
+          'Cometloop board tools: search_tickets and get_ticket to read a board, link_tickets to record relationships, consolidate_tickets to merge duplicates. Review gate: submit_pr_review publishes a PR review verdict (never merges) using the review_run_id from a review prompt. Engagement ids come from search_tickets calls; ticket keys look like CL-42.',
       });
     }
     case 'ping':

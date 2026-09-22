@@ -5,6 +5,7 @@ import { IdentityView } from './IdentityView';
 import { ToolsView } from './ToolsView';
 import { AgentWizard } from './AgentWizard';
 import { harnessBrand, providerBrand } from '../../../../shared/design/AgentLogos';
+import { Wordmark } from '../../../../shared/design/Brand';
 
 // Console client conventions: inline styles + theme tokens + mono() — see
 // docs/development-standards.md "Client code". mono() mirrors client/src/util.ts.
@@ -52,10 +53,7 @@ function TitleBar() {
         flex: 'none',
       }}
     >
-      <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--acc)' }} />
-      <span style={{ ...mono(500, 11), color: 'var(--tx2)', letterSpacing: '.08em' }}>
-        DELIVERY CONSOLE
-      </span>
+      <Wordmark size={18} color="var(--tx2)" />
       <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>desktop</span>
       <div style={{ flex: 1 }} />
       <button style={btn} onClick={() => window.desktopBridge.windowControl('minimize')}>

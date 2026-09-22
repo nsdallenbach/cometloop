@@ -7,7 +7,7 @@ import { parsePath, paths, type Tab } from './routes';
 import { mono, STATUS_LABEL } from './util';
 import { Admin } from './components/Admin';
 import { AgentsPage } from './components/AgentsPage';
-import { Landing } from './components/Landing';
+import { Wordmark } from './components/Brand';
 import { Portfolio } from './components/Portfolio';
 import { Setup } from './components/Setup';
 import { Tickets } from './components/Tickets';
@@ -23,6 +23,17 @@ export type { Tab } from './routes';
 
 /** True when the console is the desktop app's embedded webview, not a browser tab. */
 const IN_DESKTOP_SHELL = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron/');
+
+/** The public site owns the product story; the in-app landing page is gone. */
+const SITE_URL = 'https://cometloop.ai';
+
+/** Leaves the app for an external URL (the router's Navigate only knows in-app paths). */
+function ExternalRedirect({ to }: { to: string }) {
+  useEffect(() => {
+    window.location.replace(to);
+  }, [to]);
+  return null;
+}
 
 export default function App() {
   const location = useLocation();
@@ -485,6 +496,7 @@ export default function App() {
   }, [engagements, curDetail, engId, eng, screen, inWorkspace, goPortfolio, openEngagement, openTicket, navigate, canCreate, isAdmin]);
 
   if (screen.name === 'redirect') return <Navigate to={screen.to} replace />;
+  if (screen.name === 'external') return <ExternalRedirect to={screen.to} />;
 
   // Minimal signed-out state. Sign-in itself arrives with the Better Auth
   // client in a later phase; until then this only says what happened.
@@ -504,7 +516,7 @@ export default function App() {
         }}
       >
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, textAlign: 'center', maxWidth: 360 }}>
-          <div style={{ ...mono(500, 11), color: 'var(--tx3)', letterSpacing: '.08em' }}>DELIVERY CONSOLE</div>
+          <div style={{ ...mono(500, 11), color: 'var(--tx3)', letterSpacing: '.08em' }}>COMETLOOP</div>
           <div style={{ fontSize: 18, fontWeight: 600 }}>Sign in required</div>
           <div style={{ fontSize: 13, color: 'var(--tx2)', lineHeight: 1.5 }}>
             The console could not tell who you are. Open it through your workspace, then try again.
@@ -559,12 +571,8 @@ export default function App() {
           background: 'var(--bg2)',
         }}
       >
-        <div onClick={goPortfolio} style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}>
-          <div style={{ width: 20, height: 20, background: 'var(--acc)', display: 'grid', placeItems: 'center', borderRadius: 2 }}>
-            <span style={{ ...mono(700, 11), color: '#fff' }}>D</span>
-          </div>
-          <span style={{ ...mono(500, 12), letterSpacing: '.12em' }}>DATAVAIL</span>
-          <span style={{ ...mono(400, 11), color: 'var(--tx3)', letterSpacing: '.1em' }}>[ DELIVERY CONSOLE ]</span>
+        <div onClick={goPortfolio} style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+          <Wordmark size={20} />
         </div>
         <nav aria-label="Primary" style={{ display: 'flex', alignSelf: 'stretch', gap: 2, marginLeft: 2 }}>
           {navTabs.map((t) => (
@@ -658,12 +666,12 @@ export default function App() {
         )}
         <button
           className="hv-lift"
-          onClick={() => void navigate(paths.learn)}
-          title="What the Delivery Console does"
+          onClick={() => window.open(SITE_URL, '_blank', 'noopener')}
+          title="What Cometloop does"
           style={{
             ...mono(500, 10),
-            background: screen.name === 'learn' ? 'var(--accsoft)' : 'none',
-            border: `1px solid ${screen.name === 'learn' ? 'var(--acc)' : 'var(--acc)'}`,
+            background: 'none',
+            border: '1px solid var(--acc)',
             color: 'var(--acc)',
             borderRadius: 3,
             padding: '3px 9px',
@@ -745,8 +753,6 @@ export default function App() {
           canManage={canLead}
         />
       )}
-
-      {screen.name === 'learn' && <Landing theme={theme} onEnter={goPortfolio} />}
 
       {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
 

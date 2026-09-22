@@ -258,7 +258,7 @@ function McpKeys() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
         <span style={{ ...mono(600, 10.5), letterSpacing: '.1em' }}>MCP SERVER KEYS</span>
-        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>one per registry server that needs auth · the Delivery Console server needs none</span>
+        <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>one per registry server that needs auth · the Cometloop server needs none</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
         {rows.map((r) => (

@@ -1,5 +1,5 @@
 {
-  "name": "delivery-console",
+  "name": "cometloop",
   "version": "1.0.0",
   "main": "dist/server.js",
   "type": "module",
@@ -32,7 +32,7 @@
   "keywords": [],
   "author": "",
   "license": "Unlicensed",
-  "description": "Delivery Console - Datavail delivery execution: portfolio, board, roadmap, sources, team, status feed",
+  "description": "Cometloop - delivery execution console: portfolio, board, roadmap, sources, team, status feed",
   "dependencies": {
     "@databricks/appkit": "0.38.1",
     "@databricks/appkit-ui": "0.38.1",

@@ -797,7 +797,7 @@ export function AgentDrawer({
           >
             {endpointBacked && (
               <CopyField
-                label="DELIVERY CONSOLE MCP SERVER (ATTACH THIS TO THE AGENT)"
+                label="COMETLOOP MCP SERVER (ATTACH THIS TO THE AGENT)"
                 value={mcpUrl()}
                 toast={toast}
               />
@@ -807,7 +807,7 @@ export function AgentDrawer({
               <AttachRow
                 checked
                 locked
-                title="delivery-console"
+                title="Cometloop"
                 sub="built in · tickets, progress, flags, git credentials"
                 tag="ALWAYS"
               />

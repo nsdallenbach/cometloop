@@ -69,6 +69,9 @@ function createWindow(): BrowserWindow {
     minHeight: 600,
     frame: false,
     backgroundColor: '#0a0d10',
+    // Packaged builds take the icon from electron-builder (resources/icon.png);
+    // this covers the dev window and Linux, where BrowserWindow sets it.
+    icon: path.join(__dirname, '../../resources/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,

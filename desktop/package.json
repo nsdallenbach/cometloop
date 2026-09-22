@@ -1,8 +1,8 @@
 {
-  "name": "delivery-console-desktop",
+  "name": "cometloop-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Delivery Console desktop client — local runner host with the console's look and feel",
+  "description": "Cometloop desktop client — local runner host with the console's look and feel",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

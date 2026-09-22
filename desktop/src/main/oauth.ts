@@ -20,7 +20,7 @@ export interface TokenSet {
 
 const b64url = (buf: Buffer): string => buf.toString('base64url');
 
-const DONE_PAGE = `<!doctype html><html><body style="font-family:system-ui,sans-serif;background:#0a0d10;color:#e7ebef;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><div style="font-size:34px;margin-bottom:12px">✓</div>Signed in — you can close this tab and return to the Delivery Console.</div></body></html>`;
+const DONE_PAGE = `<!doctype html><html><body style="font-family:system-ui,sans-serif;background:#0a0d10;color:#e7ebef;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><div style="font-size:34px;margin-bottom:12px">✓</div>Signed in — you can close this tab and return to Cometloop.</div></body></html>`;
 
 /**
  * Open the system browser on the workspace sign-in page and wait for the
