@@ -597,6 +597,23 @@ export interface TicketComment {
 }
 
 /** One review rejection cycle (DAT-217); a ticket accumulates these, oldest first. */
+/** Token counts for one slice of usage (DAT-266 / DAT-260). */
+export interface UsageTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreate: number;
+  costUsd: number | null;
+}
+
+/** A ticket's token usage across every agent run, per model (DAT-260). */
+export interface TicketUsage {
+  runs: number;
+  total: UsageTotals;
+  /** Largest first; model is '' for usage recorded before models were tracked. */
+  models: (UsageTotals & { model: string; runs: number })[];
+}
+
 export interface TicketRejection {
   id: number;
   reason: string;

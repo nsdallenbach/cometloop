@@ -12,6 +12,10 @@ export interface UsageSample {
   costUsd?: number;
   /** True = authoritative run totals; replace any accumulated sum. */
   final?: boolean;
+  /** The model that spent these tokens, when the harness says (DAT-260). */
+  model?: string;
+  /** On a final sample: the same totals split by model. */
+  byModel?: { model: string; input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number }[];
 }
 
 export interface HarnessEmit {

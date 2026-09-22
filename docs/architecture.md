@@ -137,7 +137,7 @@ with a Lakebase credential.
 - `deploys.ts` — the local deployment queue: desktop clients post ticket-keyed deploy events, the web renders a read-only mirror
 - `deploy-gate.ts` — Done means deployed: a move into Done needs a merged PR with a green deploy (or the `no-deploy` tag)
 - `runner-load-balancing.ts` — spread claims across the online fleet
-- `token-usage.ts` — live token consumption from harness event streams, per task, on the drawer and the agent map
+- `token-usage.ts` — live token consumption from harness event streams, per task, on the drawer and the agent map; samples may name their `model` and a final sample may split `byModel`, and `GET /api/tickets/:key/usage` folds every run on a ticket into totals per model for the drawer's Token usage panel (DAT-260)
 - `notifications.ts` — the notification centre (mentions, escalations, nudges)
 - `stale-nudges.ts` — business-day sweep that nudges assignees of idle tickets, with digest and config
 - `velocity.ts` — organizational velocity KPIs replayed from the ticket event trail for the Analytics tab

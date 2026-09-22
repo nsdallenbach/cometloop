@@ -56,6 +56,7 @@ import type {
   TicketLinks,
   TicketRejection,
   TicketStatus,
+  TicketUsage,
   TicketWithEngagement,
   ToolCall,
   VelocityReport,
@@ -521,6 +522,11 @@ export const api = {
    */
   decideTicket(key: string, decision: 'approve' | 'reject', note?: string): Promise<{ ok: boolean; status: TicketStatus }> {
     return http(`/api/tickets/${encodeURIComponent(key)}/decision`, { method: 'POST', ...json({ decision, note }) });
+  },
+
+  /** What the ticket has cost across every agent run, per model (DAT-260). */
+  ticketUsage(key: string): Promise<TicketUsage> {
+    return http<TicketUsage>(`/api/tickets/${encodeURIComponent(key)}/usage`);
   },
 
   saveRoadmapSettings(engId: string, settings: RoadmapSettings): Promise<RoadmapSettings> {
