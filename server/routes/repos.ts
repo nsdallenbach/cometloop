@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import express from 'express';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 import { githubAppConfigured, installationToken, verifyWebhookSignature, WEBHOOK_SECRET } from './github-app';
 import { setTicketStatus } from './ticket-events';
 import { createNotification } from './notifications';
@@ -838,7 +838,7 @@ const AppConnectBody = z.object({
 export function setupRepoRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>
 ) {
   app.post('/api/engagements/:id/repo', async (req, res) => {
     // Two connect modes: GitHub App (installation pick, no stored secret) or

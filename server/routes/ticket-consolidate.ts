@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
+import { requestAuthor } from '../identity';
 import { recordTicketEvent } from './ticket-events';
 
 /**
@@ -170,12 +171,6 @@ const ConsolidateBody = z.object({
 });
 
 type RequireLead = (req: express.Request, res: express.Response, engagementId: string | null) => Promise<unknown>;
-
-function requestAuthor(req: express.Request): string {
-  const h = req.headers['x-forwarded-preferred-username'] ?? req.headers['x-forwarded-email'];
-  const v = Array.isArray(h) ? h[0] : h;
-  return v && v.trim() ? v.trim() : 'You';
-}
 
 export function setupTicketConsolidateRoutes(app: express.Application, q: Query, requireLead: RequireLead) {
   // Merge one or more source tickets into :key (lead only — it dismisses the

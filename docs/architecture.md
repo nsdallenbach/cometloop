@@ -72,6 +72,25 @@ loaded. `Dockerfile` / `docker-compose.yml` package it; see
 `docs/local-dev.md`. Identity arrives as `x-forwarded-email` headers from the
 proxy and resolves to one of three roles — admin, lead, developer — with
 lead-gated actions funneled through a single `requireLead` helper.
+`/api/*` route. **Identity** is resolved once per request by
+`server/identity.ts`, which tries three verifiers in order and fails closed:
+the Databricks Apps proxy headers (`x-forwarded-preferred-username` /
+`x-forwarded-email`, plus the forwarded access token), a Better Auth / Neon
+Auth JWT (bearer header or session cookie, checked against the JWKS at
+`NEON_AUTH_JWKS_URL` — inactive until that is set), and a local-development
+stand-in that exists only when `DEV_IDENTITY_EMAIL` is set. A `requireSignIn`
+middleware mounted ahead of every route module answers 401 `Sign in required`
+to any `/api/*` request with no identity, except the sign-in-exempt paths
+listed in the same file: `/api/agent/*`, the runner and desktop machinery
+that arrives with its own workspace credentials through the proxy (its
+routes keep using the resolved identity for attribution and assignee
+scoping, and treat a missing one as anonymous). AppKit's `/health` is outside
+`/api`. `roles.ts` turns an identity into one of three roles — admin, lead,
+developer — from workspace group membership when a forwarded token is present
+(developer otherwise; the dev stand-in is admin), with lead-gated actions
+funneled through a single `requireLead` helper. `requestAuthor(req)` from the
+identity module is the one attribution helper for comments, links, decisions
+and workflows.
 
 **The client** is a React SPA (Vite) with URL routing for every major
 screen. Board cards animate through Motion layout springs; drag-and-drop is
@@ -156,7 +175,9 @@ with a Lakebase credential.
 - `mcp.ts` — the board-tools MCP endpoint over Streamable HTTP at `POST /api/mcp`, for model-serving agents
 - `utf8-body.ts` — strict UTF-8 ingestion with legacy-codepage recovery (the mojibake fix)
 - `github-app.ts` — GitHub App JWTs, cached installation tokens, webhook HMAC
-- `context-files.ts`, `extract-text.ts`, `roles.ts`, `seed-data.ts` — support
+- `../identity.ts` — the identity seam: `resolveIdentity` over the databricks / better-auth / dev verifiers, `requestAuthor`, and the fail-closed `requireSignIn` gate with its exemption list
+- `roles.ts` — role of a resolved identity (`resolveCaller` / `callerOf`, workspace-group lookup with a 5-minute cache)
+- `context-files.ts`, `extract-text.ts`, `seed-data.ts` — support
 
 Every LLM call goes through `serving('default')` — no other model paths, no
 keys in code. Prompts live server-side and version with the app; every

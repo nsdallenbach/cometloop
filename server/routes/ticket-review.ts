@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 import { recordTicketEvent } from './ticket-events';
 
 /**
@@ -213,7 +213,7 @@ export async function rejectTicketReview(
 export function setupTicketReviewRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
 ) {
   /** Rejection history for the drawer — oldest first, same order as the prompt. */
   app.get('/api/tickets/:key/rejections', async (req, res) => {

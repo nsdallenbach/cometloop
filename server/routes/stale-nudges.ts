@@ -1,7 +1,7 @@
 import type express from 'express';
 import { z } from 'zod';
 import { createNotification } from './notifications';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 
 /**
  * Stale-ticket nudges (DAT-107): a ticket sitting in `progress` or `review`
@@ -267,7 +267,7 @@ function settingsPayload(row: Record<string, unknown> | undefined): SettingsPayl
 export function setupStaleNudgeRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
 ): void {
   app.get('/api/engagements/:id/nudge-settings', async (req, res) => {
     try {

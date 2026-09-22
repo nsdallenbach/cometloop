@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import express from 'express';
+import { requestAuthor } from '../identity';
 
 /**
  * Linked tickets: first-class dependencies between tickets of an engagement.
@@ -69,12 +70,6 @@ const AddLinkBody = z.object({
   key: z.string().min(1).max(40),
   type: z.enum(['blocks', 'blocked_by', 'relates']),
 });
-
-function requestAuthor(req: express.Request): string {
-  const h = req.headers['x-forwarded-preferred-username'] ?? req.headers['x-forwarded-email'];
-  const v = Array.isArray(h) ? h[0] : h;
-  return v && v.trim() ? v.trim() : 'You';
-}
 
 export type AddLinkResult = { ok: true; id: number; engagementId: string; described: string } | { ok: false; status: number; error: string };
 

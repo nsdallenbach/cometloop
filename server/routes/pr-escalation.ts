@@ -1,5 +1,5 @@
 import type express from 'express';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 import { adoApi, adoHeaders, githubHeaders, githubPath, jsonFetch, loadConnection, connectionToken, type Connection } from './repos';
 import { postPrComment } from './pr-conflicts';
 
@@ -441,7 +441,7 @@ export async function dismissEscalation(q: Query, ticketKey: string, by: string)
 export function setupPrEscalationRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
 ): void {
   /** Current escalation for a ticket (null once cleared) — drawer banner. */
   app.get('/api/tickets/:key/escalation', async (req, res) => {

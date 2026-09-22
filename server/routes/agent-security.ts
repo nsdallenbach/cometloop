@@ -1,6 +1,6 @@
 import type express from 'express';
 import { z } from 'zod';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 
 /**
  * Per-agent security controls (DAT-212). Every agent on the map carries a
@@ -347,7 +347,7 @@ export function describeChange(before: AgentSecuritySettings, after: AgentSecuri
 export function setupAgentSecurityRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
 ) {
   /**
    * The catalog behind the security panel — actions, labels and preset scopes —

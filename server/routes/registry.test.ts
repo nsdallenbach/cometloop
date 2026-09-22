@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 import type express from 'express';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 import {
   REGISTRY_SCHEMA_SQL,
   authEnvFor,
@@ -52,7 +52,7 @@ beforeEach(async () => {
 type Handler = (req: express.Request, res: express.Response) => Promise<void> | void;
 
 function captureRoutes(
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>
 ) {
   const routes = new Map<string, Handler>();
   const app = {
@@ -102,12 +102,12 @@ const leadOfA = (
   _req: express.Request,
   res: express.Response,
   engagementId: string | null
-): Promise<Identity | null> => {
+): Promise<Caller | null> => {
   if (engagementId === 'eng-a') return Promise.resolve({ email: 'lead@datavail.com', role: 'lead' });
   res.status(403).json({ error: 'Engagement lead access required for this project' });
   return Promise.resolve(null);
 };
-const admin = (): Promise<Identity | null> => Promise.resolve({ email: 'admin@datavail.com', role: 'admin' });
+const admin = (): Promise<Caller | null> => Promise.resolve({ email: 'admin@datavail.com', role: 'admin' });
 
 describe('slugs', () => {
   it('derives a stable slug and the auth env stem from a name', () => {

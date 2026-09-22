@@ -18,7 +18,7 @@ import {
   type AgentSecuritySettings,
 } from './agent-security';
 import { PROJECT_AGENTS_SCHEMA_SQL } from './agents';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 
 /**
  * Per-agent security controls (DAT-212) against pg-mem — same in-memory
@@ -263,7 +263,7 @@ describe('describeChange', () => {
 type Handler = (req: express.Request, res: express.Response) => Promise<void> | void;
 
 /** Captures the handlers setupAgentSecurityRoutes registers, no express needed. */
-function captureRoutes(requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>) {
+function captureRoutes(requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>) {
   const routes = new Map<string, Handler>();
   const app = {
     get: (path: string, h: Handler) => routes.set(`GET ${path}`, h),
@@ -289,9 +289,9 @@ function fakeRes() {
   return res;
 }
 
-const leadGuard = (): Promise<Identity | null> => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' });
+const leadGuard = (): Promise<Caller | null> => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' });
 /** Stands in for requireLead's own 403 path (developer, or a lead on another project). */
-const denyGuard = (_req: express.Request, res: express.Response): Promise<Identity | null> => {
+const denyGuard = (_req: express.Request, res: express.Response): Promise<Caller | null> => {
   res.status(403).json({ error: 'Engagement lead access required for this project' });
   return Promise.resolve(null);
 };

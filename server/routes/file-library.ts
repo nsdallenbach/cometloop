@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import express from 'express';
 import { z } from 'zod';
-import { resolveIdentity, type Identity } from './roles';
+import { callerOf, type Caller } from './roles';
 import type { FilesVolume } from './context-files';
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -194,7 +194,7 @@ export function setupFileLibraryRoutes(
   app: express.Application,
   q: Query,
   files: FilesVolume,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
   refineTicket?: (key: string, feedback: string) => Promise<void>
 ) {
   const exists = async (id: string) => (await q('SELECT 1 FROM app.engagements WHERE id=$1', [id])).rows.length > 0;
@@ -292,7 +292,7 @@ export function setupFileLibraryRoutes(
       const id = randomUUID();
       const path = `files/${req.params.id}/${folderId}/${id}-${filename}`;
       await files.upload(path, body, { overwrite: false });
-      const who = await resolveIdentity(req);
+      const who = await callerOf(req);
       await q(
         `INSERT INTO app.file_entries(id,engagement_id,folder_id,filename,size,content_type,sha256,uploader,storage_path) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [

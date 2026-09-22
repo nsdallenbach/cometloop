@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { Navigate, useLocation, useNavigate } from 'react-router';
-import { api } from './api';
+import { api, ApiError } from './api';
 import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
 import { parsePath, paths, type Tab } from './routes';
 import { mono, STATUS_LABEL } from './util';
@@ -45,6 +45,8 @@ export default function App() {
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [meError, setMeError] = useState(false);
+  // The server answered 401: nobody is signed in (see server/identity.ts).
+  const [signedOut, setSignedOut] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -81,8 +83,13 @@ export default function App() {
       .then((m) => {
         setMe(m);
         setMeError(false);
+        setSignedOut(false);
       })
-      .catch(() => {
+      .catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 401) {
+          setSignedOut(true);
+          return;
+        }
         // Least privilege until the lookup succeeds; the top bar surfaces a retry.
         setMe({ email: 'unknown', role: 'developer', leadOf: [], memberOf: [] });
         setMeError(true);
@@ -478,6 +485,50 @@ export default function App() {
   }, [engagements, curDetail, engId, eng, screen, inWorkspace, goPortfolio, openEngagement, openTicket, navigate, canCreate, isAdmin]);
 
   if (screen.name === 'redirect') return <Navigate to={screen.to} replace />;
+
+  // Minimal signed-out state. Sign-in itself arrives with the Better Auth
+  // client in a later phase; until then this only says what happened.
+  if (signedOut) {
+    return (
+      <div
+        className="eec"
+        data-theme={theme}
+        style={{
+          height: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'var(--bg)',
+          color: 'var(--tx)',
+          fontFamily: "'DM Sans', sans-serif",
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, textAlign: 'center', maxWidth: 360 }}>
+          <div style={{ ...mono(500, 11), color: 'var(--tx3)', letterSpacing: '.08em' }}>DELIVERY CONSOLE</div>
+          <div style={{ fontSize: 18, fontWeight: 600 }}>Sign in required</div>
+          <div style={{ fontSize: 13, color: 'var(--tx2)', lineHeight: 1.5 }}>
+            The console could not tell who you are. Open it through your workspace, then try again.
+          </div>
+          <button
+            onClick={loadMe}
+            style={{
+              ...mono(500, 10),
+              marginTop: 6,
+              background: 'none',
+              border: '1px solid var(--line2)',
+              color: 'var(--tx)',
+              borderRadius: 3,
+              padding: '5px 12px',
+              cursor: 'pointer',
+              letterSpacing: '.06em',
+            }}
+          >
+            RETRY
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <MotionConfig reducedMotion="user">

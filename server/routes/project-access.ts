@@ -1,5 +1,5 @@
 import type express from 'express';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
 
@@ -10,7 +10,7 @@ type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string
  * Keeping this decision in one helper leaves a single place for future
  * per-runner exceptions without weakening the project boundary today.
  */
-export async function canAccessProject(q: Query, identity: Identity, engagementId: string): Promise<boolean> {
+export async function canAccessProject(q: Query, identity: Caller, engagementId: string): Promise<boolean> {
   if (identity.role === 'admin') return true;
   const result = await q(
     `SELECT 1
@@ -27,7 +27,7 @@ export async function canAccessProject(q: Query, identity: Identity, engagementI
   return result.rows.length > 0;
 }
 
-export async function accessibleProjectIds(q: Query, identity: Identity): Promise<string[] | null> {
+export async function accessibleProjectIds(q: Query, identity: Caller): Promise<string[] | null> {
   if (identity.role === 'admin') return null;
   const result = await q(
     `SELECT engagement_id FROM app.engagement_leads WHERE LOWER(email) = LOWER($1)
@@ -40,8 +40,8 @@ export async function accessibleProjectIds(q: Query, identity: Identity): Promis
   return result.rows.flatMap((row) => (typeof row.engagement_id === 'string' ? [row.engagement_id] : []));
 }
 
-export function projectAccessGuard(q: Query, resolve: (req: express.Request) => Promise<Identity>) {
-  return async (req: express.Request, res: express.Response, engagementId: string | null): Promise<Identity | null> => {
+export function projectAccessGuard(q: Query, resolve: (req: express.Request) => Promise<Caller>) {
+  return async (req: express.Request, res: express.Response, engagementId: string | null): Promise<Caller | null> => {
     const identity = await resolve(req);
     if (engagementId && (await canAccessProject(q, identity, engagementId))) return identity;
     res.status(403).json({ error: 'You must be assigned to this project to use its runners' });

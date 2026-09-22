@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
-import { resolveIdentity, type Identity } from './roles';
+import { resolveCaller, type Caller } from './roles';
 import { createNotification } from './notifications';
 import { listContextFiles, type FilesVolume } from './context-files';
 import { listTicketAttachments } from './ticket-attachments';
@@ -331,7 +331,7 @@ export function setupAgentRoutes(
   app: express.Application,
   q: Query,
   files: FilesVolume,
-  requireProjectAccess: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireProjectAccess: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
   telemetry: FilesVolume | null = null,
 ) {
   /** Fire-and-forget: archive a finished run's tool-call log to the telemetry volume. */
@@ -561,13 +561,13 @@ export function setupAgentRoutes(
       const agent = typeof req.query.agent === 'string' ? req.query.agent : null;
       if (agent) await recordRunnerPoll(q, agent, scope[0] ?? null, 'poll');
       else warnAnonymousPoll();
-      const identity = await resolveIdentity(req);
+      const caller = await resolveCaller(req);
       const deadline = Date.now() + 55_000;
       for (;;) {
         const params: unknown[] = [];
         let where = `state = 'queued'`;
         where += scopeFilter(params, scope);
-        where += ` AND ${assigneeScope(params, identity.email)}`;
+        where += ` AND ${assigneeScope(params, caller?.email)}`;
         const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
         if (queued.length > 0) {
           console.log(`[agent] wait poll answered with ${queued.length} queued task(s)${scope.length ? ` (engagements ${scope.join(', ')})` : ''}`);
@@ -591,11 +591,11 @@ export function setupAgentRoutes(
       const scope = engagementScope(req.query as Record<string, unknown>);
       const agent = typeof req.query.agent === 'string' ? req.query.agent : null;
       if (agent) await recordRunnerPoll(q, agent, scope[0] ?? null, 'poll');
-      const identity = await resolveIdentity(req);
+      const caller = await resolveCaller(req);
       const params: unknown[] = [];
       let where = `state = 'queued'`;
       where += scopeFilter(params, scope);
-      where += ` AND ${assigneeScope(params, identity.email)}`;
+      where += ` AND ${assigneeScope(params, caller?.email)}`;
       const queued = (await q(`SELECT * FROM app.agent_tasks WHERE ${where} ORDER BY priority DESC, id`, params)).rows;
       const active = agent ? (await q(`SELECT * FROM app.agent_tasks WHERE agent = $1 AND state IN ('claimed','working') ORDER BY id`, [agent])).rows : [];
       res.json({ queued, active });
@@ -615,7 +615,7 @@ export function setupAgentRoutes(
       const { agent, ticket } = parsed.data;
       const scope = engagementScope({}, parsed.data);
       await recordRunnerPoll(q, agent, scope[0] ?? null, 'claim');
-      const identity = await resolveIdentity(req);
+      const caller = await resolveCaller(req);
       const filters: string[] = [`state = 'queued'`];
       const params: unknown[] = [];
       const scoped = scopeFilter(params, scope);
@@ -624,7 +624,7 @@ export function setupAgentRoutes(
         params.push(ticket);
         filters.push(`ticket_key = $${params.length}`);
       }
-      filters.push(assigneeScope(params, identity.email));
+      filters.push(assigneeScope(params, caller?.email));
       const candidates = (await q(`SELECT id, engagement_id FROM app.agent_tasks WHERE ${filters.join(' AND ')} ORDER BY priority DESC, id`, params)).rows;
       let claimed: Record<string, unknown> | undefined;
       const eligibility = new Map<string, boolean>();
@@ -637,7 +637,7 @@ export function setupAgentRoutes(
             `UPDATE app.agent_tasks SET state = 'claimed', agent = $1, agent_identity = $2,
                claimed_at = NOW(), last_heartbeat = NOW(), updated_at = NOW()
              WHERE id = $3 AND state = 'queued' RETURNING *`,
-            [agent, identity.email, candidate.id],
+            [agent, caller?.email ?? null, candidate.id],
           )
         ).rows[0];
         if (claimed) break;

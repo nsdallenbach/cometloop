@@ -1,5 +1,5 @@
 import type express from 'express';
-import { resolveIdentity } from './roles';
+import { callerOf } from './roles';
 
 export type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
 
@@ -96,7 +96,7 @@ export function renderEmailDigest(rows: Record<string, unknown>[], windowLabel: 
 export function setupNotificationRoutes(app: express.Application, q: Query): void {
   app.get('/api/notifications', async (req, res) => {
     try {
-      const identity = await resolveIdentity(req);
+      const identity = await callerOf(req);
       const [{ rows }, count] = await Promise.all([
         q(
           `SELECT * FROM app.notifications WHERE LOWER(recipient_email) = LOWER($1)
@@ -117,7 +117,7 @@ export function setupNotificationRoutes(app: express.Application, q: Query): voi
 
   app.patch('/api/notifications/:id/read', async (req, res) => {
     try {
-      const identity = await resolveIdentity(req);
+      const identity = await callerOf(req);
       const { rows } = await q(
         `UPDATE app.notifications SET read = true
          WHERE id = $1 AND LOWER(recipient_email) = LOWER($2) RETURNING id`,
@@ -133,7 +133,7 @@ export function setupNotificationRoutes(app: express.Application, q: Query): voi
 
   app.post('/api/notifications/read-all', async (req, res) => {
     try {
-      const identity = await resolveIdentity(req);
+      const identity = await callerOf(req);
       await q(`UPDATE app.notifications SET read = true WHERE LOWER(recipient_email) = LOWER($1) AND read = false`, [
         identity.email,
       ]);
@@ -152,7 +152,7 @@ export function setupNotificationRoutes(app: express.Application, q: Query): voi
    */
   app.get('/api/notifications/digest', async (req, res) => {
     try {
-      const identity = await resolveIdentity(req);
+      const identity = await callerOf(req);
       const hoursRaw = Number(req.query.hours ?? 24);
       const hours = Number.isFinite(hoursRaw) ? Math.min(168, Math.max(1, Math.round(hoursRaw))) : 24;
       const since = new Date(Date.now() - hours * 3_600_000).toISOString();
@@ -171,7 +171,7 @@ export function setupNotificationRoutes(app: express.Application, q: Query): voi
   });
 
   app.get('/api/notifications/stream', async (req, res) => {
-    const identity = await resolveIdentity(req);
+    const identity = await callerOf(req);
     const email = normalize(identity.email);
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
