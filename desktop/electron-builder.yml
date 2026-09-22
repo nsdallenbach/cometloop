@@ -30,8 +30,12 @@ linux:
 # .github/workflows/desktop-release.yml — no change needed here.
 publish:
   provider: github
-  owner: datavail-solutions
-  repo: engagement-console
+  # Releases and the electron-updater feed now come from nsdallenbach/cometloop
+  # (switched 2026-09-22). Builds shipped before that date keep polling the old
+  # repo and will not see newer versions; testers reinstall once from the new
+  # releases page.
+  owner: nsdallenbach
+  repo: cometloop
   # Publish as a real release, not a draft: electron-updater only sees
   # published releases, and the workflow already gates on an explicit tag push.
   releaseType: release
