@@ -15,3 +15,5 @@ shared/appkit-types/serving.d.ts
 
 # Nested worktrees from `claude --worktree` / agent runs
 .claude/worktrees/
+.neon
+.env.local
