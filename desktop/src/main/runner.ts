@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ConsoleApiError, type ConsoleClient } from '../../../shared/api-client';
-import { getHarness, missingAuthEnv, toolLabel, type AgentRunConfig, type Harness } from '../../../shared/harnesses';
+import { getHarness, missingAuthEnv, toolLabel, type AgentRunConfig, type Harness, type UsageSample } from '../../../shared/harnesses';
 import type { DesktopConfig } from './config';
 import type { IdentityBroker } from './identity';
 
@@ -100,6 +100,8 @@ export class RunnerHost {
   private runUsage: UsageTotals = emptyUsage();
   private sessionUsage: UsageTotals = emptyUsage();
   private usageStream: UsageStream | null = null;
+  /** The model this run was launched with, when one is configured (DAT-260). */
+  private runModel: string | null = null;
 
   snapshot(): RunnerSnapshot {
     return {
@@ -387,6 +389,7 @@ export class RunnerHost {
     this.toolStream = new ToolCallStream(this.agentName, id, this.client, (t) => this.emit(t));
     this.runUsage = emptyUsage();
     this.usageStream = new UsageStream(this.agentName, id, this.client, (t) => this.emit(t));
+    this.runModel = agentConfig?.model ?? null;
     // NOTE: project provisioning (runnerConfig installs) is not ported yet —
     // desktop runs use the machine as-is. Deliberate phase-A gap.
     // Env carries: the vended token (work repos), the dev's git credential via
@@ -547,10 +550,13 @@ export class RunnerHost {
       },
       // Token usage (DAT-266): fold into totals, surface in the live feed,
       // batch home. Adapters call this optionally (emit.usage?.).
-      usage: (sample: { input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean }) => {
+      usage: (sample: UsageSample) => {
         this.recordUsage(sample);
-        this.emit({ kind: 'usage', ...sample, ticketKey: this.current?.ticketKey ?? '', ts: now() });
-        this.usageStream?.push(sample);
+        const { model, byModel, ...counts } = sample;
+        this.emit({ kind: 'usage', ...counts, ticketKey: this.current?.ticketKey ?? '', ts: now() });
+        // Harnesses that don't name the model per turn (codex) still ran the
+        // one this agent is configured with — better than "unknown" (DAT-260).
+        this.usageStream?.push({ ...counts, model: model ?? this.runModel ?? undefined, ...(byModel?.length ? { byModel } : {}) });
       },
     };
   }
@@ -701,7 +707,7 @@ class ToolCallStream {
  *  discipline as ToolCallStream: telemetry, dropped batches logged never
  *  retried; a final sample flushes immediately (it replaces server rollups). */
 class UsageStream {
-  private pending: { input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean }[] = [];
+  private pending: UsageSample[] = [];
   private timer: NodeJS.Timeout | null = null;
   private inflight: Promise<void> | null = null;
 
@@ -712,7 +718,7 @@ class UsageStream {
     private readonly note: (ev: RunnerEvent) => void,
   ) {}
 
-  push(sample: { input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean }): void {
+  push(sample: UsageSample): void {
     this.pending.push(sample);
     if (sample.final || this.pending.length >= 50) void this.flush();
     else this.timer ??= setTimeout(() => void this.flush(), 4000);

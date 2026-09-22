@@ -19,6 +19,7 @@ import { STATUS_LABEL, fmtDuration, initials, mono } from '../util';
 import { nextInQueue, queuePosition, reviewQueue } from '../lib/review-queue';
 import { runnerBrand } from './RunnerLogo';
 import { Markdown } from './Markdown';
+import { TicketUsagePanel } from './TicketUsagePanel';
 import { CoordCommentBody, parseCoordComment } from './AgentComment';
 import {
   PLANNING_AGENT_AUTHOR,
@@ -1524,6 +1525,7 @@ export function TicketDrawer({
               </div>
             </>
           )}
+          {!proposed && <TicketUsagePanel key={ticket.key} ticketKey={ticket.key} live={agentActive} />}
           <div style={{ ...mono(400, 10), color: 'var(--tx3)', letterSpacing: '.08em', marginBottom: 6 }}>
             LINKED WORK{linksData && linksData.links.length > 0 ? ` · ${linksData.links.length}` : ''}
           </div>

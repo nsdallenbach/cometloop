@@ -12,6 +12,11 @@ import type express from 'express';
  * a final sample REPLACES them (it is the harness's own cumulative count, so
  * dropped batches can never leave the rollup short). Usage is telemetry —
  * losing a batch costs accuracy until the final sample, never a run.
+ *
+ * Models (DAT-260): a sample may name the model that spent the tokens, and a
+ * final sample may split its totals `byModel`. Rows keep the model so a ticket
+ * can show what it cost across every run, per model. Rows written before this
+ * have no model and read back as "unknown".
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -38,15 +43,26 @@ export const TOKEN_USAGE_SCHEMA_SQL = [
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS tokens_out BIGINT NOT NULL DEFAULT 0`,
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS tokens_cache_read BIGINT NOT NULL DEFAULT 0`,
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION`,
+  // DAT-260 — the app SP created run_token_usage, so the boot ALTER works.
+  `ALTER TABLE app.run_token_usage ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT ''`,
+  `CREATE INDEX IF NOT EXISTS run_token_usage_ticket ON app.run_token_usage (ticket_key)`,
 ];
 
-const Sample = z.object({
+const Counts = {
   input: z.number().int().min(0).max(1_000_000_000),
   output: z.number().int().min(0).max(1_000_000_000),
   cacheRead: z.number().int().min(0).max(1_000_000_000).default(0),
   cacheCreate: z.number().int().min(0).max(1_000_000_000).default(0),
   costUsd: z.number().min(0).max(100_000).optional(),
+};
+const ModelName = z.string().trim().max(120);
+
+const Sample = z.object({
+  ...Counts,
+  model: ModelName.optional(),
   final: z.boolean().optional(),
+  /** On a final sample: the same totals split by model (claude's modelUsage). */
+  byModel: z.array(z.object({ ...Counts, model: ModelName })).max(20).optional(),
 });
 
 const UsageBody = z.object({
@@ -78,13 +94,18 @@ export async function recordUsageBatch(
   const partials = samples.filter((s) => !s.final);
 
   if (partials.length > 0) {
-    const sum = (k: 'input' | 'output' | 'cacheRead' | 'cacheCreate') => partials.reduce((a, s) => a + s[k], 0);
-    const row = { input: sum('input'), output: sum('output'), cacheRead: sum('cacheRead'), cacheCreate: sum('cacheCreate') };
-    await q(
-      `INSERT INTO app.run_token_usage (task_id, ticket_key, engagement_id, agent, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [task.id, task.ticketKey, task.engagementId, agent, row.input, row.output, row.cacheRead, row.cacheCreate],
-    );
+    const sum = (of: typeof partials, k: 'input' | 'output' | 'cacheRead' | 'cacheCreate') => of.reduce((a, s) => a + s[k], 0);
+    const row = { input: sum(partials, 'input'), output: sum(partials, 'output'), cacheRead: sum(partials, 'cacheRead'), cacheCreate: sum(partials, 'cacheCreate') };
+    // One row per model in the batch — usually exactly one.
+    const models = [...new Set(partials.map((s) => s.model ?? ''))];
+    for (const model of models) {
+      const of = partials.filter((s) => (s.model ?? '') === model);
+      await q(
+        `INSERT INTO app.run_token_usage (task_id, ticket_key, engagement_id, agent, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [task.id, task.ticketKey, task.engagementId, agent, sum(of, 'input'), sum(of, 'output'), sum(of, 'cacheRead'), sum(of, 'cacheCreate'), model],
+      );
+    }
     await q(
       `UPDATE app.agent_tasks SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3,
          tokens_cache_read = tokens_cache_read + $4, updated_at = NOW() WHERE id = $1`,
@@ -95,11 +116,15 @@ export async function recordUsageBatch(
   // Final totals replace the accumulation — the harness counted the whole run.
   const final = finals[finals.length - 1];
   if (final) {
-    await q(
-      `INSERT INTO app.run_token_usage (task_id, ticket_key, engagement_id, agent, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, cost_usd, final)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)`,
-      [task.id, task.ticketKey, task.engagementId, agent, final.input, final.output, final.cacheRead, final.cacheCreate, final.costUsd ?? null],
-    );
+    // Split by model when the harness said how; otherwise one row for the run.
+    const parts = final.byModel?.length ? final.byModel : [{ ...final, model: final.model ?? '' }];
+    for (const part of parts) {
+      await q(
+        `INSERT INTO app.run_token_usage (task_id, ticket_key, engagement_id, agent, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, cost_usd, final, model)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10)`,
+        [task.id, task.ticketKey, task.engagementId, agent, part.input, part.output, part.cacheRead, part.cacheCreate, part.costUsd ?? null, part.model],
+      );
+    }
     await q(
       `UPDATE app.agent_tasks SET tokens_in = $2, tokens_out = $3, tokens_cache_read = $4, cost_usd = $5, updated_at = NOW() WHERE id = $1`,
       [task.id, final.input, final.output, final.cacheRead, final.costUsd ?? null],
@@ -134,7 +159,94 @@ export async function usageByAgent(q: Query, hours: number): Promise<Map<string,
   return out;
 }
 
+const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+
+export interface TicketUsage {
+  /** Agent runs that reported any usage. */
+  runs: number;
+  total: UsageTotals;
+  /** Largest first; model is '' for usage recorded before models were tracked. */
+  models: (UsageTotals & { model: string; runs: number })[];
+}
+
+interface UsageRow {
+  taskId: number;
+  model: string;
+  final: boolean;
+  totals: UsageTotals;
+}
+
+const emptyTotals = (): UsageTotals => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0, costUsd: null });
+function addTotals(into: UsageTotals, t: UsageTotals): void {
+  into.input += t.input;
+  into.output += t.output;
+  into.cacheRead += t.cacheRead;
+  into.cacheCreate += t.cacheCreate;
+  if (t.costUsd != null) into.costUsd = (into.costUsd ?? 0) + t.costUsd;
+}
+const tokenSum = (t: UsageTotals): number => t.input + t.output + t.cacheRead + t.cacheCreate;
+
+/**
+ * Fold a ticket's usage rows into totals per model (DAT-260). A run that
+ * finished has final rows — the harness's own count — and those stand alone;
+ * a run that never finished (crashed, cancelled, still going) only has its
+ * per-turn rows, so those are what count for it. Never both for one run.
+ */
+export function foldTicketUsage(rows: UsageRow[]): TicketUsage {
+  const finished = new Set(rows.filter((r) => r.final).map((r) => r.taskId));
+  const counted = rows.filter((r) => r.final === finished.has(r.taskId));
+  const total = emptyTotals();
+  const byModel = new Map<string, { totals: UsageTotals; tasks: Set<number> }>();
+  for (const r of counted) {
+    addTotals(total, r.totals);
+    const m = byModel.get(r.model) ?? { totals: emptyTotals(), tasks: new Set<number>() };
+    addTotals(m.totals, r.totals);
+    m.tasks.add(r.taskId);
+    byModel.set(r.model, m);
+  }
+  const models = [...byModel.entries()]
+    .map(([model, m]) => ({ model, runs: m.tasks.size, ...m.totals }))
+    .sort((a, b) => tokenSum(b) - tokenSum(a));
+  return { runs: new Set(counted.map((r) => r.taskId)).size, total, models };
+}
+
+export async function usageByTicket(q: Query, ticketKey: string): Promise<TicketUsage> {
+  const { rows } = await q(
+    `SELECT task_id, model, final,
+            SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+            SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_create_tokens) AS cache_create_tokens,
+            SUM(cost_usd) AS cost_usd
+     FROM app.run_token_usage WHERE ticket_key = $1
+     GROUP BY task_id, model, final`,
+    [ticketKey],
+  );
+  return foldTicketUsage(
+    rows.map((r) => ({
+      taskId: Number(r.task_id),
+      model: str(r.model),
+      final: r.final === true,
+      totals: {
+        input: Number(r.input_tokens ?? 0),
+        output: Number(r.output_tokens ?? 0),
+        cacheRead: Number(r.cache_read_tokens ?? 0),
+        cacheCreate: Number(r.cache_create_tokens ?? 0),
+        costUsd: r.cost_usd == null ? null : Number(r.cost_usd),
+      },
+    })),
+  );
+}
+
 export function setupTokenUsageRoutes(app: express.Application, q: Query): void {
+  // What a ticket has cost so far, across every agent run, per model (DAT-260).
+  app.get('/api/tickets/:key/usage', async (req, res) => {
+    try {
+      res.json(await usageByTicket(q, String(req.params.key)));
+    } catch (err) {
+      console.error('ticket usage failed:', err);
+      res.status(500).json({ error: 'Failed to load token usage' });
+    }
+  });
+
   app.post('/api/agent/work/:id/usage', async (req, res) => {
     const parsed = UsageBody.safeParse(req.body);
     if (!parsed.success) {

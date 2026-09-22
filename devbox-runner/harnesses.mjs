@@ -148,6 +148,7 @@ function claudeHarness(env) {
             output: Number(u.output_tokens ?? 0),
             cacheRead: Number(u.cache_read_input_tokens ?? 0),
             cacheCreate: Number(u.cache_creation_input_tokens ?? 0),
+            model: typeof evt.message?.model === 'string' ? evt.message.model : undefined,
           });
         }
         for (const block of evt.message?.content ?? []) {
@@ -166,6 +167,16 @@ function claudeHarness(env) {
             cacheCreate: Number(u.cache_creation_input_tokens ?? 0),
             costUsd: typeof evt.total_cost_usd === 'number' ? evt.total_cost_usd : undefined,
             final: true,
+            // The same totals split by model (DAT-260) — a run often spends
+            // on more than one (the main model plus a small one for chores).
+            byModel: Object.entries(evt.modelUsage ?? {}).map(([model, m]) => ({
+              model,
+              input: Number(m?.inputTokens ?? 0),
+              output: Number(m?.outputTokens ?? 0),
+              cacheRead: Number(m?.cacheReadInputTokens ?? 0),
+              cacheCreate: Number(m?.cacheCreationInputTokens ?? 0),
+              costUsd: typeof m?.costUSD === 'number' ? m.costUSD : undefined,
+            })),
           });
         }
         emit.print(JSON.stringify(evt, null, 2));
