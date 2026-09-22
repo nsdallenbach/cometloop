@@ -325,7 +325,7 @@ export function AgentWizard({
                     <div style={{ display: 'grid', gap: 8 }}>
                       <Tile selected locked>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontSize: 13, fontWeight: 700 }}>Delivery Console</span>
+                          <span style={{ fontSize: 13, fontWeight: 700 }}>Cometloop</span>
                           <Pill tone="ok">ALWAYS</Pill>
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 3 }}>tickets · progress · flags</div>
@@ -384,7 +384,7 @@ export function AgentWizard({
                       </div>
                     </div>
                     <Row label="PROJECTS">{projects.length ? projects.map((p) => engagements.find((e) => e.id === p)?.client ?? p).join(' · ') : 'Any'}</Row>
-                    <Row label="MCP">{mcpServers.length ? `Delivery Console + ${mcpServers.length}` : 'Delivery Console'}</Row>
+                    <Row label="MCP">{mcpServers.length ? `Cometloop + ${mcpServers.length}` : 'Cometloop'}</Row>
                     <Row label="SKILLS">{skills.length ? String(skills.length) : 'None'}</Row>
                   </div>
                   <div style={{ display: 'grid', gap: 14 }}>

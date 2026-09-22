@@ -20,7 +20,7 @@ async function firstEngagement(request: { get: (url: string) => Promise<{ json: 
 test('smoke test - portfolio loads', async ({ page }) => {
   await page.goto('/');
 
-  await expect(page.getByText('DATAVAIL', { exact: true })).toBeVisible();
+  await expect(page.getByText('COMETLOOP', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Portfolio' })).toBeVisible();
   await expect(page.getByText('ACTIVE ·', { exact: false })).toBeVisible();
 });

@@ -1,6 +1,6 @@
-# Delivery Console
+# Cometloop
 
-Datavail's delivery execution console: portfolio, board, roadmap, planning
+Cometloop is a delivery execution console: portfolio, board, roadmap, planning
 agent, agent runners and the delivery automation that closes the loop from
 ticket → branch → PR → deploy → Done. One product in two shells:
 

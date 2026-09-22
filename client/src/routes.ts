@@ -5,13 +5,13 @@ export type Screen =
   | { name: 'portfolio' }
   | { name: 'setup' }
   | { name: 'admin' }
-  | { name: 'learn' }
   | { name: 'tickets' }
   | { name: 'agent-map' }
   | { name: 'workflows' }
   | { name: 'workspace'; engId: string; tab: Tab }
   | { name: 'ticket'; ticketKey: string }
-  | { name: 'redirect'; to: string };
+  | { name: 'redirect'; to: string }
+  | { name: 'external'; to: string };
 
 export const paths = {
   portfolio: '/projects',
@@ -20,7 +20,6 @@ export const paths = {
   workflows: '/workflows',
   setup: '/setup',
   admin: '/admin',
-  learn: '/learn',
   // The board is the workspace's canonical URL; other tabs get a segment.
   project: (id: string, tab: Tab = 'board') =>
     tab === 'board' ? `/projects/${encodeURIComponent(id)}` : `/projects/${encodeURIComponent(id)}/${tab}`,
@@ -51,6 +50,7 @@ export function parsePath(pathname: string): Screen {
   if (head === 'agents') return { name: 'redirect', to: paths.agentMap };
   if (head === 'setup' && segs.length === 1) return { name: 'setup' };
   if (head === 'admin' && segs.length === 1) return { name: 'admin' };
-  if (head === 'learn' && segs.length === 1) return { name: 'learn' };
+  // The in-app landing page moved to the public site; old /learn links follow it.
+  if (head === 'learn') return { name: 'external', to: 'https://cometloop.ai' };
   return { name: 'redirect', to: paths.portfolio };
 }

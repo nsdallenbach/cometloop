@@ -58,7 +58,7 @@ describe('email digest', () => {
       'last 24 hours'
     );
     expect(digest).not.toBeNull();
-    expect(digest?.subject).toBe('Delivery Console digest — 3 updates, 1 stale ticket');
+    expect(digest?.subject).toBe('Cometloop digest — 3 updates, 1 stale ticket');
     expect(digest?.count).toBe(3);
     const text = digest?.text ?? '';
     expect(text).toContain('## Stale tickets — needs a move (1)');

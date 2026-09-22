@@ -1,5 +1,5 @@
 /* ============================================================
-   Delivery Console design tokens — shared between the web client
+   Cometloop design tokens — shared between the web client
    and the desktop app so both shells read as one product.
 
    NOTE (DAT-226): client/src/index.css still holds its own copy of

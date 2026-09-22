@@ -87,8 +87,8 @@ export function renderEmailDigest(rows: Record<string, unknown>[], windowLabel: 
   if (rest.length > 0) sections.push(`## Updates (${rest.length})\n\n${rest.map(line).join('\n')}`);
   const nudges = rows.filter((r) => txt(r.type) === 'stale_nudge').length;
   return {
-    subject: `Delivery Console digest — ${rows.length} update${rows.length === 1 ? '' : 's'}${nudges > 0 ? `, ${nudges} stale ticket${nudges === 1 ? '' : 's'}` : ''}`,
-    text: `Your Delivery Console updates from the ${windowLabel}.\n\n${sections.join('\n\n')}\n`,
+    subject: `Cometloop digest — ${rows.length} update${rows.length === 1 ? '' : 's'}${nudges > 0 ? `, ${nudges} stale ticket${nudges === 1 ? '' : 's'}` : ''}`,
+    text: `Your Cometloop updates from the ${windowLabel}.\n\n${sections.join('\n\n')}\n`,
     count: rows.length,
   };
 }

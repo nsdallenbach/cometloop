@@ -1,7 +1,7 @@
 {
   "name": "delivery-console-mcp",
   "version": "1.0.0",
-  "description": "MCP server exposing the Delivery Console (tickets, board, agent queue, context files) to AI tooling",
+  "description": "MCP server exposing Cometloop (tickets, board, agent queue, context files) to AI tooling",
   "private": true,
   "type": "module",
   "bin": {

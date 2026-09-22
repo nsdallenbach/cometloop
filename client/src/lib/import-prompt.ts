@@ -22,7 +22,7 @@ export const BRIEF_MAX_CHARS = 20000;
 export function buildImportPrompt(client?: string, name?: string): string {
   const c = client?.trim() || CLIENT_PLACEHOLDER;
   const n = name?.trim() || NAME_PLACEHOLDER;
-  return `You are importing an existing project into the Datavail Delivery Console for client "${c}" as engagement "${n}". The console has no automated importer: it ingests projects through the New engagement flow, where a written project brief is parsed by a planning agent into phases, milestones and draft tickets. Your job is to gather the existing project's context and distill it into that brief, so the derived plan matches reality instead of being invented.
+  return `You are importing an existing project into Cometloop for client "${c}" as engagement "${n}". The console has no automated importer: it ingests projects through the New engagement flow, where a written project brief is parsed by a planning agent into phases, milestones and draft tickets. Your job is to gather the existing project's context and distill it into that brief, so the derived plan matches reality instead of being invented.
 
 STEP 1 — GATHER THE EXISTING PROJECT'S CONTEXT
 Collect, from wherever the project lives today (repo, wiki, tracker, drive, email):
@@ -43,7 +43,7 @@ Compose one plain-text brief between ${BRIEF_MIN_CHARS} and ${String(BRIEF_MAX_C
 Quote source documents where useful ("per SOW section 2.3") — the parser cites its sources, and real references keep the derived tickets traceable.
 
 STEP 3 — CREATE THE ENGAGEMENT
-In the Delivery Console: Portfolio -> New engagement. Enter "${c}" as the client and "${n}" as the engagement name, then choose "Describe the project" and paste the brief from Step 2 (if you have the signed SOW as a file, "Upload SOW" is the alternative path). Generate the plan, then review it against your Step 1 notes: dismiss proposals that duplicate finished work, and accept the rest before creating the engagement.
+In Cometloop: Portfolio -> New engagement. Enter "${c}" as the client and "${n}" as the engagement name, then choose "Describe the project" and paste the brief from Step 2 (if you have the signed SOW as a file, "Upload SOW" is the alternative path). Generate the plan, then review it against your Step 1 notes: dismiss proposals that duplicate finished work, and accept the rest before creating the engagement.
 
 STEP 4 — ATTACH THE REMAINING CONTEXT
 After the engagement exists, from its workspace:

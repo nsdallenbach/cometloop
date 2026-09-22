@@ -484,7 +484,7 @@ export function setupPrConflictRoutes(app: express.Application, q: Query) {
         '',
         `Please resolve the conflict manually (or coordinate with the owners above) — the agent has left the branch untouched.`,
         '',
-        `<sub>Posted automatically by delivery agent \`${agent}\` via the Delivery Console.</sub>`,
+        `<sub>Posted automatically by delivery agent \`${agent}\` via Cometloop.</sub>`,
       ].join('\n');
       await ops.comment(live, number, commentBody);
 

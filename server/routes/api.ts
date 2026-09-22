@@ -1813,7 +1813,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const today = new Date().toISOString().slice(0, 10);
         const sourceKind = path ? 'a signed SOW / SOP document' : 'a written project brief from the engagement lead';
         const prompt = [
-          `You are the delivery-planning agent for the consulting firm Datavail. ${path ? 'A signed SOW / SOP was uploaded' : 'The engagement lead described the project'} to set up a new engagement, and you must derive the high-level delivery plan from ${sourceKind}.`,
+          `You are the delivery-planning agent for a consulting delivery team. ${path ? 'A signed SOW / SOP was uploaded' : 'The engagement lead described the project'} to set up a new engagement, and you must derive the high-level delivery plan from ${sourceKind}.`,
           `Client: ${client}. Engagement: ${name}. Today's date: ${today}.`,
           docText
             ? `${path ? 'Full extracted SOW text (may be truncated)' : 'Project brief'}:\n---\n${docText}\n---`

@@ -217,13 +217,13 @@ export function escalationSummaryComment(args: {
     '',
     `This PR implements **${args.ticketKey} — ${args.ticketTitle}** and has been open without a review for **${args.hoursUnreviewed}h**.`,
     '',
-    `- 24h: ${args.pingedAtIso ? `the engagement lead was pinged in the Delivery Console (${args.pingedAtIso})` : 'the engagement lead was pinged in the Delivery Console'}`,
+    `- 24h: ${args.pingedAtIso ? `the engagement lead was pinged in Cometloop (${args.pingedAtIso})` : 'the engagement lead was pinged in Cometloop'}`,
     `- 48h: this comment, and **${args.ticketKey} is flagged on the board**`,
     args.leads.length > 0 ? `- Waiting on: ${args.leads.join(', ')}` : '- Waiting on: the engagement lead (none recorded for this engagement)',
     '',
-    'Review or merge the PR to stop the escalation. A lead can also dismiss it from the ticket in the Delivery Console — that resets both timers and clears the flag, and the cycle restarts if the PR is still unreviewed 24h later.',
+    'Review or merge the PR to stop the escalation. A lead can also dismiss it from the ticket in Cometloop — that resets both timers and clears the flag, and the cycle restarts if the PR is still unreviewed 24h later.',
     '',
-    '<sub>Posted automatically by the Delivery Console review-SLA watch.</sub>',
+    '<sub>Posted automatically by the Cometloop review-SLA watch.</sub>',
   ].join('\n');
 }
 

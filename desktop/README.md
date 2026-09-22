@@ -1,4 +1,4 @@
-# Delivery Console — desktop client
+# Cometloop — desktop client
 
 Phase 1 scaffold of the local client
 ([docs/local-client-architecture.md](../docs/local-client-architecture.md)):
@@ -30,7 +30,7 @@ catches the redirect, and you stay signed in across restarts. (No Databricks
 CLI needed; if one is installed and logged in it is used silently as a
 fallback.)
 
-Config lives at `%APPDATA%/delivery-console-desktop/config.json` (written on
+Config lives at `%APPDATA%/cometloop-desktop/config.json` (written on
 first run) and can be overridden per-run with env vars: `APP_URL`,
 `DATABRICKS_HOST`, `DATABRICKS_PROFILE`, `DATABRICKS_CLI`, `AGENT_NAME`,
 `HARNESS`, `WORK_ROOT`, `MAX_RUN_MINUTES`, `MCP_SERVER`, `DEPLOY_COMMAND`,

@@ -120,7 +120,7 @@ const MERGE_LABEL: Record<MergeState, string> = {
  */
 export function renderReviewPrompt(c: ReviewCase): string {
   const lines = [
-    `You are the PR reviewer agent for the Delivery Console. Review pull request #${c.prNumber} ("${c.prTitle}") on ${c.repoName}, opened by ${c.prAuthor} for ticket ${c.ticketKey} — "${c.ticketTitle}".`,
+    `You are the PR reviewer agent for Cometloop. Review pull request #${c.prNumber} ("${c.prTitle}") on ${c.repoName}, opened by ${c.prAuthor} for ticket ${c.ticketKey} — "${c.ticketTitle}".`,
     '',
     'You are the first-pass review gate. A human owns the merge decision; your job is to make that decision take a minute instead of an hour.',
     '',
@@ -168,7 +168,7 @@ export function renderReviewPrompt(c: ReviewCase): string {
     '',
     'When a finding is real but you are unsure it blocks, state it and choose the softer verdict. When you are unsure a finding is real, drop it. Never approve to be agreeable; never manufacture findings to look thorough.',
     '',
-    '## Delivery Console MCP tools',
+    '## Cometloop MCP tools',
     `If the delivery-console MCP server is attached, you can read more context with get_ticket (${c.ticketKey}) and search_tickets, and you may post the review yourself with submit_pr_review (review_run_id ${c.reviewRunId}). If you use submit_pr_review, the console will not post your returned JSON a second time.`,
     '',
     '## Output',
