@@ -16,7 +16,7 @@ Two tags carry the beta:
 ## 1. Install
 
 Download the latest release from
-<https://github.com/datavail-solutions/engagement-console/releases>:
+<https://github.com/nsdallenbach/cometloop/releases>:
 
 - **Windows** — the NSIS installer (primary) or the portable exe.
 - **macOS** — the dmg.
