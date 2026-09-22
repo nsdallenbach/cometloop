@@ -1,0 +1,62 @@
+# Local stack for the portable runtime (docs/platform-architecture.md, phase 0):
+# vanilla Postgres 17 plus the api built from ./Dockerfile. No Databricks.
+#
+#   docker compose up --build        # http://localhost:8000
+#   docker compose run --rm worker   # the worker command (a stub until phase 4)
+#
+# EEC_SEED_DEMO=1 seeds the demo portfolio into an empty database; leave it
+# unset to start from a blank board. See docs/local-dev.md.
+
+name: cometloop
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: cometloop
+      POSTGRES_PASSWORD: cometloop
+      POSTGRES_DB: cometloop
+    ports:
+      - '5433:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U cometloop -d cometloop']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The compose Postgres has no TLS; every other deployment keeps SSL on.
+      DATABASE_URL: postgres://cometloop:cometloop@postgres:5432/cometloop?sslmode=disable
+      PORT: '8000'
+      FILES_DIR: /data/files
+      EEC_SEED_DEMO: ${EEC_SEED_DEMO:-0}
+      # Optional: GitHub App for repo sync / PR linking.
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+    ports:
+      - '8000:8000'
+    volumes:
+      - files:/data/files
+
+  # Same image, second command. Exits immediately until phase 4 moves the
+  # background loops out of the api process.
+  worker:
+    build: .
+    profiles: ['worker']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://cometloop:cometloop@postgres:5432/cometloop?sslmode=disable
+    command: ['node', 'dist/worker.js']
+
+volumes:
+  pgdata:
+  files:

@@ -24,3 +24,6 @@ infra/**/.terraform/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+
+# Portable runtime: local-disk files volume (FILES_DIR default)
+data/

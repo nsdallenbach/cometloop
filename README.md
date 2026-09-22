@@ -41,6 +41,10 @@ app.yaml          App runtime: start command and resource-injected env
 
 ## Local development — web console
 
+To run **without Databricks** — plain Postgres (Neon, docker compose) via
+`DATABASE_URL` — see [docs/local-dev.md](docs/local-dev.md). The rest of this
+section is the Databricks App path.
+
 ```bash
 npm install
 cp .env.example .env     # then fill it in, see below
@@ -140,6 +144,7 @@ coordinates, context files), post progress and complete with `done` or
 | Doc | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | System overview, runtime components, server modules, the agent platform, delivery automation |
+| [docs/local-dev.md](docs/local-dev.md) | Running on plain Postgres: `DATABASE_URL` against Neon, docker compose, which env vars matter |
 | [docs/development-standards.md](docs/development-standards.md) | The working agreement (also mirrored into the app's Standards tab) |
 | [docs/cross-platform-parity.md](docs/cross-platform-parity.md) · [docs/feature-parity-tracker.md](docs/feature-parity-tracker.md) | Keeping web and desktop in step: parity classes, PR flow, tracker |
 | [docs/delivery-tool-plan.md](docs/delivery-tool-plan.md) · [docs/local-client-architecture.md](docs/local-client-architecture.md) | Why runners moved to developers' machines, and the desktop build plan with status |

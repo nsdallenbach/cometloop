@@ -46,6 +46,19 @@ const FLOW_LABELS: Record<LlmFlow, string> = {
 
 export type FailureCategory = 'auth' | 'rate-limit' | 'server' | 'payload' | 'network';
 
+/**
+ * Thrown by a `serving` implementation that has no model behind it (the
+ * portable runtime without a provider). Not an outage: `invokeModel` neither
+ * retries nor posts the ⚠ feed item — it rethrows at once so the caller's
+ * deterministic fallback applies, and `/api/llm/health` reports it plainly.
+ */
+export class ModelNotConfiguredError extends Error {
+  constructor(reason: string) {
+    super(`no model configured — ${reason}`);
+    this.name = 'ModelNotConfiguredError';
+  }
+}
+
 export interface FlowStatus {
   calls: number;
   failures: number;
@@ -220,6 +233,11 @@ export async function invokeModel(
       lastError = error;
       if (!isTransientStatus(error.status)) break; // auth/payload — retrying can't help
     } catch (err) {
+      if (err instanceof ModelNotConfiguredError) {
+        // Configuration, not an incident: no retry, no feed item, no counters.
+        s.calls--;
+        throw new Error(`planning model call skipped (${FLOW_LABELS[flow]}): ${err.message} — deterministic fallback applies`);
+      }
       lastError = { message: (err as Error).message || 'model invocation threw' };
     }
   }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   FeedThrottle,
+  ModelNotConfiguredError,
   categorizeFailure,
   invokeError,
   invokeModel,
@@ -168,5 +169,24 @@ describe('invokeModel', () => {
     expect(s.failures).toBe(1);
     expect(s.consecutiveFailures).toBe(0);
     expect(s.lastSuccessAt).not.toBeNull();
+  });
+
+  it('an unconfigured model is not an outage: no retry, no feed item, no failure counted', async () => {
+    let attempts = 0;
+    let inserts = 0;
+    const q = () => {
+      inserts++;
+      return Promise.resolve({ rows: [] });
+    };
+    const serving = servingOf(() => {
+      attempts++;
+      return Promise.reject(new ModelNotConfiguredError('no provider set'));
+    });
+    await expect(
+      invokeModel(serving, q, 'ticket-refine', {}, { engagementId: 'exec', ticketKey: 'DAT-1' }, 0),
+    ).rejects.toThrow(/skipped.*no model configured.*fallback applies/);
+    expect(attempts).toBe(1);
+    expect(inserts).toBe(0);
+    expect(llmFlowStatuses()['ticket-refine']).toMatchObject({ calls: 0, failures: 0, consecutiveFailures: 0 });
   });
 });

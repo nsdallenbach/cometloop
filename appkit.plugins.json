@@ -102,8 +102,7 @@
             "Before init, verify your Unity Catalog volume exists and you have WRITE_VOLUME permission"
           ]
         }
-      },
-      "requiredByTemplate": true
+      }
     },
     "genie": {
       "name": "genie",
@@ -272,8 +271,7 @@
             "After init, verify Lakebase connectivity with 'psql $PGHOST -c \"select 1\"'"
           ]
         }
-      },
-      "requiredByTemplate": true
+      }
     },
     "server": {
       "name": "server",
@@ -283,8 +281,7 @@
       "resources": {
         "required": [],
         "optional": []
-      },
-      "requiredByTemplate": true
+      }
     },
     "serving": {
       "name": "serving",
@@ -309,8 +306,7 @@
           }
         ],
         "optional": []
-      },
-      "requiredByTemplate": true
+      }
     }
   },
   "scaffolding": {
