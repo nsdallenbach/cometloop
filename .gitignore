@@ -17,3 +17,10 @@ shared/appkit-types/serving.d.ts
 .claude/worktrees/
 .neon
 .env.local
+
+# Terraform (infra/): providers and state never belong in the repo; lock files do
+infra/**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

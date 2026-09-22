@@ -1,0 +1,136 @@
+name: Deploy
+
+# Ships main to Azure Container Apps: build the image from the root
+# Dockerfile, push it to ACR as <sha> and latest, then point the api and
+# worker apps at the <sha> tag. Runs after CI succeeds on main (workflow_run)
+# or by hand (workflow_dispatch from main - the OIDC trust in
+# infra/azure/github-oidc.tf only covers runs on that branch).
+#
+# The whole job is gated on the DEPLOY_ENABLED repository variable so merges
+# to main are harmless until the Azure stack exists:
+#   gh variable set DEPLOY_ENABLED --body true
+# Order of operations and the secrets it needs: infra/README.md.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC token for azure/login; no Azure password anywhere
+
+# One deploy at a time, never cancelled midway: a half-updated api/worker
+# pair is worse than a queued run.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  # Mirrors infra/azure/locals.tf `names`. Change both together.
+  AZURE_RESOURCE_GROUP: cometloop-prod-rg
+  ACR_NAME: cometloopprodacr
+  IMAGE_REPOSITORY: cometloop
+  API_APP_NAME: cometloop-prod-api
+  WORKER_APP_NAME: cometloop-prod-worker
+
+jobs:
+  deploy:
+    # workflow_run fires on failure too; only deploy a green main.
+    if: >-
+      ${{ vars.DEPLOY_ENABLED == 'true' &&
+          (github.event_name == 'workflow_dispatch' ||
+           github.event.workflow_run.conclusion == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve commit
+        id: rev
+        # workflow_run checks out the default branch head by default, which
+        # can already be ahead of the commit CI validated; pin to that one.
+        run: |
+          sha="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploying $sha"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.rev.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Registry login
+        id: acr
+        run: |
+          server="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
+          az acr login --name "$ACR_NAME"
+          echo "server=$server" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.rev.outputs.sha }}
+            ${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false # keeps the manifest a plain image, which ACA Basic pulls without surprises
+
+      - name: Update api
+        env:
+          IMAGE: ${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.rev.outputs.sha }}
+        # No --command: the image's default CMD runs the api on $PORT.
+        run: |
+          az containerapp update \
+            --name "$API_APP_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --image "$IMAGE" \
+            --output none
+
+      - name: Update worker
+        env:
+          IMAGE: ${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.rev.outputs.sha }}
+        # Same image, worker entrypoint. Set here rather than in terraform
+        # because the apps are created with a placeholder image that has no
+        # such entrypoint (infra/azure/container-apps.tf explains the split).
+        run: |
+          az containerapp update \
+            --name "$WORKER_APP_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --image "$IMAGE" \
+            --command node dist/server/worker.js \
+            --output none
+
+      - name: Verify
+        run: |
+          for app in "$API_APP_NAME" "$WORKER_APP_NAME"; do
+            state="$(az containerapp show --name "$app" --resource-group "$AZURE_RESOURCE_GROUP" \
+              --query 'properties.provisioningState' -o tsv)"
+            rev="$(az containerapp show --name "$app" --resource-group "$AZURE_RESOURCE_GROUP" \
+              --query 'properties.latestRevisionName' -o tsv)"
+            health="$(az containerapp revision show --name "$app" --resource-group "$AZURE_RESOURCE_GROUP" \
+              --revision "$rev" --query 'properties.healthState' -o tsv)"
+            echo "$app: provisioning=$state revision=$rev health=$health"
+            if [ "$state" != "Succeeded" ] || [ "$health" = "Unhealthy" ]; then
+              echo "::error::$app did not come up cleanly"
+              exit 1
+            fi
+          done
+          fqdn="$(az containerapp show --name "$API_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query 'properties.configuration.ingress.fqdn' -o tsv)"
+          {
+            echo "### Deployed \`${{ steps.rev.outputs.sha }}\`"
+            echo "- api: https://$fqdn"
+            echo "- image: \`${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.rev.outputs.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
