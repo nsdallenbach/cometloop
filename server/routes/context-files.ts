@@ -1,5 +1,5 @@
 import express from 'express';
-import { resolveIdentity, type Identity } from './roles';
+import { callerOf, type Caller } from './roles';
 
 /**
  * Per-engagement context files, stored in the app's UC volume under
@@ -53,7 +53,7 @@ export function setupContextFileRoutes(
   app: express.Application,
   q: Query,
   files: FilesVolume,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
 ) {
   const engagementExists = async (id: string): Promise<boolean> =>
     (await q('SELECT 1 FROM app.engagements WHERE id = $1', [id])).rows.length > 0;
@@ -91,7 +91,7 @@ export function setupContextFileRoutes(
       }
       const filename = safeFilename(rawName);
       await files.upload(`${dirFor(engagementId)}/${filename}`, body, { overwrite: true });
-      const who = await resolveIdentity(req);
+      const who = await callerOf(req);
       await q(
         `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
          VALUES ($1, 'YOU', $2, 'JUST NOW', $3, false)`,

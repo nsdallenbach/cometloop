@@ -1,6 +1,6 @@
 import type express from 'express';
 import { z } from 'zod';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 import { inferHarness } from './agents';
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -79,7 +79,7 @@ async function availableRunners(q: Query, engagementId: string, modelType: strin
 export function setupRunnerLoadBalancingRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>
 ) {
   app.get('/api/projects/:id/runner-load-balancing/:modelType', async (req, res) => {
     const modelType = normalizeModelType(req.params.modelType);

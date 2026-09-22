@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
+import { requestAuthor } from '../identity';
 import { recordTicketEvent } from './ticket-events';
 
 /**
@@ -47,12 +48,6 @@ const DecisionBody = z.object({
 
 function txt(v: unknown): string {
   return typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '';
-}
-
-function requestAuthor(req: express.Request): string {
-  const h = req.headers['x-forwarded-preferred-username'] ?? req.headers['x-forwarded-email'];
-  const v = Array.isArray(h) ? h[0] : h;
-  return v && v.trim() ? v.trim() : 'You';
 }
 
 export type DecisionResult =

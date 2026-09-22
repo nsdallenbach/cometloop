@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import express, { Application } from 'express';
 import { extractSowText } from './extract-text';
-import { resolveIdentity, type Identity } from './roles';
+import { callerOf, resolveCaller, type Caller } from './roles';
+import { requestAuthor, requireSignIn } from '../identity';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
@@ -750,12 +751,6 @@ function fallbackTitle(description: string): string {
   return `${clipText(cut, Math.max(cut.lastIndexOf(' '), 40))}…`;
 }
 
-function requestAuthor(req: express.Request): string {
-  const h = req.headers['x-forwarded-preferred-username'] ?? req.headers['x-forwarded-email'];
-  const v = Array.isArray(h) ? h[0] : h;
-  return v && v.trim() ? v.trim() : 'You';
-}
-
 export async function setupApiRoutes(appkit: AppKitServices) {
   try {
     await initSchema(appkit);
@@ -767,8 +762,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   const q = appkit.lakebase.query.bind(appkit.lakebase);
 
   /** Sends 403 and returns null unless the caller is an admin. */
-  const requireAdmin = async (req: express.Request, res: express.Response): Promise<Identity | null> => {
-    const id = await resolveIdentity(req);
+  const requireAdmin = async (req: express.Request, res: express.Response): Promise<Caller | null> => {
+    const id = await callerOf(req);
     if (id.role !== 'admin') {
       res.status(403).json({ error: 'Admin access required' });
       return null;
@@ -781,8 +776,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     req: express.Request,
     res: express.Response,
     engagementId: string | null
-  ): Promise<Identity | null> => {
-    const id = await resolveIdentity(req);
+  ): Promise<Caller | null> => {
+    const id = await callerOf(req);
     if (id.role === 'admin') return id;
     if (id.role === 'lead' && engagementId) {
       const { rows } = await q(
@@ -796,13 +791,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   };
 
   /** Any lead or admin (for actions not tied to an existing engagement, e.g. creating one). */
-  const requireAnyLead = async (req: express.Request, res: express.Response): Promise<Identity | null> => {
-    const id = await resolveIdentity(req);
+  const requireAnyLead = async (req: express.Request, res: express.Response): Promise<Caller | null> => {
+    const id = await callerOf(req);
     if (id.role === 'admin' || id.role === 'lead') return id;
     res.status(403).json({ error: 'Engagement lead access required' });
     return null;
   };
-  const requireProjectAccess = projectAccessGuard(q, resolveIdentity);
+  const requireProjectAccess = projectAccessGuard(q, callerOf);
 
   const ticketEngagement = async (key: string): Promise<string | null> => {
     const { rows } = await q('SELECT engagement_id FROM app.tickets WHERE key = $1', [key]);
@@ -827,9 +822,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
     });
 
+    // Fail closed: every /api route below needs a signed-in caller, except the
+    // sign-in-exempt paths listed in server/identity.ts (runner machinery).
+    app.use('/api', requireSignIn());
+
     app.get('/api/me', async (req, res) => {
       try {
-        const id = await resolveIdentity(req);
+        const id = await callerOf(req);
         const leadOf = (await q('SELECT engagement_id FROM app.engagement_leads WHERE LOWER(email) = LOWER($1)', [id.email])).rows.map(
           (r) => String(r.engagement_id),
         );
@@ -2191,7 +2190,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupVelocityRoutes(app, q);
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireProjectAccess, telemetry);
-    setupProjectAgentRoutes(app, q, requireLead, resolveIdentity);
+    setupProjectAgentRoutes(app, q, requireLead, resolveCaller);
     setupAgentModelRoutes(app);
     setupRegistryRoutes(app, q, requireLead);
     setupRunnerLoadBalancingRoutes(app, q, requireLead);
@@ -2230,7 +2229,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           res.status(404).json({ error: 'Ticket not found' });
           return;
         }
-        const identity = await resolveIdentity(req);
+        const identity = await callerOf(req);
         const author = identity.email || requestAuthor(req);
         const ticket = exists.rows[0];
         const body = parsed.data.body.trim();

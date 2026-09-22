@@ -5,7 +5,7 @@ import { checkAgentAction } from './agent-security';
 import { prMergeInfo } from './pr-conflicts';
 import { handleReviewedPr, verdictText, type MergeState } from './pr-requeue';
 import { connectionToken, githubHeaders, githubPath, jsonFetch, loadConnection, onPrOpened, type Connection } from './repos';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 import type { ScopingToolDef } from './scoping-tools';
 
 /**
@@ -758,7 +758,7 @@ const ReviewBody = z.object({ ticketKey: z.string().trim().min(1).optional() });
 export function setupPrReviewRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
 ): void {
   // PR opened → review, in the background. Never awaited by the sync pass.
   onPrOpened((engagementId, ticketKey, prNumber) => {

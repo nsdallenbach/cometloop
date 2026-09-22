@@ -1,6 +1,6 @@
 import type express from 'express';
 import { z } from 'zod';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 import { loadRunnerPolls, runnerStatus } from './fleet';
 import { AGENT_SECURITY_SCHEMA_SQL, type AgentSecuritySettings, baselineSecurity, parseSecuritySettings } from './agent-security';
 import { accessibleProjectIds } from './project-access';
@@ -681,8 +681,8 @@ export async function loadAgentsOverview(q: Query): Promise<{ projects: Overview
 export function setupProjectAgentRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
-  resolveIdentity: (req: express.Request) => Promise<Identity>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
+  resolveCaller: (req: express.Request) => Promise<Caller | null>,
 ) {
   app.get('/api/agents/overview', async (req, res) => {
     try {
@@ -700,7 +700,12 @@ export function setupProjectAgentRoutes(
           const totals = usage.get(agent.name);
           return totals ? { ...agent, tokens24h: totals } : agent;
         });
-      const allowed = await accessibleProjectIds(q, await resolveIdentity(req));
+      const caller = await resolveCaller(req);
+      if (!caller) {
+        res.status(401).json({ error: 'Sign in required' });
+        return;
+      }
+      const allowed = await accessibleProjectIds(q, caller);
       if (allowed === null) {
         res.json({ ...overview, agents: withTokens(overview.agents) });
         return;
@@ -949,7 +954,7 @@ export function setupProjectAgentRoutes(
       return;
     }
     try {
-      const who = await resolveIdentity(req);
+      const who = await resolveCaller(req);
       const b = parsed.data;
       const harness = KIND_TO_HARNESS[b.harness.toLowerCase()] ?? b.harness.toLowerCase();
       const all = (await q('SELECT id FROM app.engagements')).rows.map((r) => txt(r.id));
@@ -965,7 +970,7 @@ export function setupProjectAgentRoutes(
           managedBy: 'desktop',
           host: b.host ?? null,
           projects: b.projects,
-          reportedBy: who.email,
+          reportedBy: who?.email ?? null,
           reportedAt: reported,
         });
         await q(

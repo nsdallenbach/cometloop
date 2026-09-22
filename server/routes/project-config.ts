@@ -1,6 +1,6 @@
 import express from 'express';
 import { z } from 'zod';
-import { resolveIdentity, type Identity } from './roles';
+import { callerOf, type Caller } from './roles';
 
 /**
  * Per-project (engagement) runner configuration: which base image an agent
@@ -320,7 +320,7 @@ const SaveBody = z.object({
 export function setupProjectConfigRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
 ) {
   const engagementExists = async (id: string): Promise<boolean> =>
     (await q('SELECT 1 FROM app.engagements WHERE id = $1', [id])).rows.length > 0;
@@ -369,7 +369,7 @@ export function setupProjectConfigRoutes(
         res.status(422).json({ error: 'Runner configuration is invalid', issues: result.issues });
         return;
       }
-      const who = await resolveIdentity(req);
+      const who = await callerOf(req);
       const saved = await q(
         `INSERT INTO app.project_runner_configs (engagement_id, base_image, libraries, updated_by, updated_at)
          VALUES ($1, $2, $3, $4, NOW())

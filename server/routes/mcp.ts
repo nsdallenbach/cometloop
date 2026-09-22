@@ -1,4 +1,5 @@
 import type express from 'express';
+import { requestAuthor } from '../identity';
 import { executeReviewTool, reviewToolDefs } from './pr-review';
 import { executeScopingTool, scopingToolDefs } from './scoping-tools';
 
@@ -45,12 +46,6 @@ const REVIEW_TOOLS = new Set(reviewToolDefs().map((d) => d.name));
 
 const rpcResult = (id: unknown, result: unknown) => ({ jsonrpc: '2.0', id: id ?? null, result });
 const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
-
-function requestAuthor(req: express.Request): string {
-  const h = req.headers['x-forwarded-preferred-username'] ?? req.headers['x-forwarded-email'];
-  const v = Array.isArray(h) ? h[0] : h;
-  return v && v.trim() ? v.trim() : 'MCP client';
-}
 
 /**
  * Handle one JSON-RPC message. Returns the response object, or null for
@@ -100,7 +95,7 @@ export function setupMcpRoutes(app: express.Application, q: Query) {
   app.post('/api/mcp', async (req, res) => {
     try {
       const body: unknown = req.body;
-      const author = requestAuthor(req);
+      const author = requestAuthor(req, 'MCP client');
       if (Array.isArray(body)) {
         const responses = (await Promise.all(body.map((m: JsonRpcRequest) => handleMcpMessage(q, m ?? {}, author)))).filter(
           (r): r is Record<string, unknown> => r !== null,

@@ -3,7 +3,7 @@ import { newDb } from 'pg-mem';
 import type express from 'express';
 import { PROJECT_AGENTS_SCHEMA_SQL, agentConfigForWorkPackage, inferHarness, loadAgentsOverview, setupProjectAgentRoutes } from './agents';
 import { baselineSecurity, parseSecuritySettings } from './agent-security';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 import { REGISTRY_SCHEMA_SQL } from './registry';
 import { FLEET_SCHEMA_SQL } from './fleet';
 
@@ -109,7 +109,7 @@ describe('loadAgentsOverview', () => {
 type Handler = (req: express.Request, res: express.Response) => Promise<void> | void;
 
 /** Captures the handlers setupProjectAgentRoutes registers, no express needed. */
-function captureRoutes(requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>) {
+function captureRoutes(requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>) {
   const routes = new Map<string, Handler>();
   const app = {
     get: (path: string, h: Handler) => routes.set(`GET ${path}`, h),
@@ -138,7 +138,7 @@ function fakeRes() {
   return res;
 }
 
-const leadGuard = (): Promise<Identity | null> => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' });
+const leadGuard = (): Promise<Caller | null> => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' });
 
 const patch = async (routes: Map<string, Handler>, params: Record<string, string>, body: unknown) => {
   const res = fakeRes();

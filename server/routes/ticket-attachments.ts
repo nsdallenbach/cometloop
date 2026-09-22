@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import express from 'express';
-import { resolveIdentity, type Identity } from './roles';
+import { callerOf, type Caller } from './roles';
 import type { FilesVolume } from './context-files';
 import { runFileRules } from './file-library';
 
@@ -131,7 +131,7 @@ export function setupTicketAttachmentRoutes(
   app: express.Application,
   q: Query,
   files: FilesVolume,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>,
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
   refineTicket?: (key: string, feedback: string) => Promise<void>
 ) {
   const ticketRow = async (key: string): Promise<{ engagement_id: string } | null> => {
@@ -203,7 +203,7 @@ export function setupTicketAttachmentRoutes(
           ? `files/${ticket.engagement_id}/${folderId}/${id}-${filename}`
           : `attachments/${key}/${id}-${filename}`;
         await files.upload(storagePath, body, { overwrite: false });
-        const who = await resolveIdentity(req);
+        const who = await callerOf(req);
         const inserted = await q(
           `INSERT INTO app.ticket_attachments (id, ticket_key, filename, size, content_type, sha256, uploader, storage_path, folder_id)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,

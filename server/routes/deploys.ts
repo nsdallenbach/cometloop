@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
-import { resolveIdentity } from './roles';
+import { callerOf, resolveCaller } from './roles';
 import { setTicketStatus } from './ticket-events';
 import { createNotification } from './notifications';
 
@@ -304,10 +304,10 @@ export function setupDeployRoutes(app: express.Application, q: Query): void {
         res.status(404).json({ error: 'Ticket not found' });
         return;
       }
-      const identity = await resolveIdentity(req);
+      const caller = await resolveCaller(req);
       const recorded = await recordDeployEvent(q, {
         agent: parsed.data.agent,
-        actor: identity.email,
+        actor: caller?.email ?? '',
         event: parsed.data.event,
         prNumber: parsed.data.prNumber ?? null,
         detail: parsed.data.detail ?? '',
@@ -329,7 +329,7 @@ export function setupDeployRoutes(app: express.Application, q: Query): void {
   // The dev's local queue (desktop polls this as the signed-in dev).
   app.get('/api/deploys/queue', async (req, res) => {
     try {
-      const identity = await resolveIdentity(req);
+      const identity = await callerOf(req);
       const items = await listLocalDeployQueue(q, identity.email);
       res.json({ items });
     } catch (err) {

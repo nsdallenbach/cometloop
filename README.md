@@ -66,8 +66,13 @@ app uses. Every value is derivable:
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | optional — the App id is in `app.yaml`, the PEM in secret scope `delivery-console`. Without them repo sync, PR linking and git-credential vending are off locally; everything else works. |
 
 Authentication is the CLI's: AppKit mints workspace and Lakebase credentials
-from your `DEFAULT` profile. Without the Apps proxy in front, the local
-process treats you as **admin** (`server/routes/roles.ts`).
+from your `DEFAULT` profile. Without the Apps proxy in front there are no
+identity headers, and the API **fails closed** — every `/api/*` call answers
+401 and the console shows "Sign in required". For local development only,
+set `DEV_IDENTITY_EMAIL=you@datavail.com` in `.env` to be treated as that
+user with the **admin** role (`server/identity.ts`); never set it on a
+deployed app. `NEON_AUTH_JWKS_URL` (optional) switches on Better Auth JWT
+verification for the sign-in flow that lands in a later phase.
 
 Boot logs one expected line: `schema statement failed … must be owner of
 table` — developer-owned tables cannot take the app's boot `ALTER`s

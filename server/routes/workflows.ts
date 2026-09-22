@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import express from 'express';
+import { requestAuthor } from '../identity';
 
 /**
  * Workflows (DAT-288): the builder's drafts, stored centrally so the web, the
@@ -113,12 +114,6 @@ function graphFromRow(v: unknown): WorkflowGraph {
 
 function workflowFromRow(r: Record<string, unknown>) {
   return { id: num(r.id), name: str(r.name), graph: graphFromRow(r.graph), updatedBy: str(r.updated_by), updatedAt: iso(r.updated_at), createdAt: iso(r.created_at) };
-}
-
-function requestAuthor(req: express.Request): string {
-  const h = req.headers['x-forwarded-preferred-username'] ?? req.headers['x-forwarded-email'];
-  const v = Array.isArray(h) ? h[0] : h;
-  return v && v.trim() ? v.trim() : 'You';
 }
 
 const idOf = (req: express.Request): number | null => {

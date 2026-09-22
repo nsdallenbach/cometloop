@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
-import { resolveIdentity } from './roles';
+import { resolveCaller } from './roles';
 import { activeEngagementFor, enforceAgentAction } from './agent-security';
 
 /**
@@ -289,7 +289,8 @@ const BranchBody = z.object({
 export function setupCoordinationRoutes(app: express.Application, q: Query) {
   /** True while the caller's workspace identity owns an active claim as `agent`. */
   async function callerOwnsAgent(req: express.Request, agent: string): Promise<boolean> {
-    const who = await resolveIdentity(req);
+    const who = await resolveCaller(req);
+    if (!who) return false;
     const rows = (
       await q(
         `SELECT 1 FROM app.agent_tasks WHERE agent = $1 AND agent_identity = $2 AND state IN ('claimed','working') LIMIT 1`,

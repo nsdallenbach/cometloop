@@ -42,7 +42,13 @@ by a lead from the console.
 ## Authentication
 
 Every request goes through the Databricks Apps OAuth proxy, so the runner
-needs a workspace identity with **Can Use** permission on the app.
+needs a workspace identity with **Can Use** permission on the app. Inside the
+app, `/api/agent/*` is exempt from the console's sign-in gate
+(`server/identity.ts`): the proxy is the runner's authentication, and the
+identity the proxy forwards is what scopes assignee-routed work and
+attributes claims. Anything the runner fetches outside `/api/agent/*`
+(context files, standards files, attachments) needs that forwarded identity
+like any other caller.
 
 On a devbox VM with the Databricks CLI authenticated (user or service
 principal), mint a token per request batch:

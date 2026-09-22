@@ -1,6 +1,6 @@
 import type express from 'express';
 import { z } from 'zod';
-import type { Identity } from './roles';
+import type { Caller } from './roles';
 
 /**
  * The MCP / skills registry (DAT-238): the work-defining config that is not
@@ -304,7 +304,7 @@ const feed = async (q: Query, engagementId: string | null, text: string) => {
 export function setupRegistryRoutes(
   app: express.Application,
   q: Query,
-  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Identity | null>
+  requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>
 ) {
   /**
    * Publishing is lead-gated: a project's leads publish for that project, only
