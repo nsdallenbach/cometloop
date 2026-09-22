@@ -1,0 +1,4 @@
+# Docker parses line continuations badly with CRLF; keep these LF on every checkout.
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+docker-compose.yml text eol=lf

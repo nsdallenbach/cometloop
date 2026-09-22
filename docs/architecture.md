@@ -63,7 +63,13 @@ flowchart LR
 AppKit with four plugins: `server()` (Express behind the workspace OAuth
 proxy), `lakebase()` (Postgres), `files()` (two UC volumes), and `serving()`
 (the model endpoint). It serves both the static client bundle and every
-`/api/*` route. Identity arrives as `x-forwarded-email` headers from the
+`/api/*` route. With `DATABASE_URL` set the same process boots the
+**portable runtime** instead (`server/main.ts`, platform-architecture phase
+0): plain Express + `pg`, files on local disk (`server/portable/`), a
+model-serving stub whose calls take the deterministic fallbacks, and
+`GET /healthz` (DB ping) for container health checks; AppKit is never
+loaded. `Dockerfile` / `docker-compose.yml` package it; see
+`docs/local-dev.md`. Identity arrives as `x-forwarded-email` headers from the
 proxy and resolves to one of three roles — admin, lead, developer — with
 lead-gated actions funneled through a single `requireLead` helper.
 

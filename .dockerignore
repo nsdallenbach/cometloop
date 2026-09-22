@@ -1,0 +1,34 @@
+# Build context for the Dockerfile: sources only. Everything the build stage
+# needs is package*.json, the TS/Vite configs and client/ server/ shared/.
+node_modules
+**/node_modules
+dist
+client/dist
+build
+.smoke-test
+test-results
+playwright-report
+coverage
+
+# Never bake secrets or local state into the image.
+.env
+.env.*
+.neon
+.databricks
+.claude
+.github
+.git
+.gitignore
+.mcp.json
+
+# Other packages and docs that are not part of the web console image.
+desktop
+devbox-runner
+mcp
+scripts
+tests
+docs
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore

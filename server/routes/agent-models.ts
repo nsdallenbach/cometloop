@@ -1,5 +1,4 @@
 import type express from 'express';
-import { getWorkspaceClient } from '@databricks/appkit';
 
 /**
  * Model catalog for the Agents page (DAT-278): what the model picker offers.
@@ -112,11 +111,22 @@ const shortModel = (entity: string | null | undefined): string | null => {
 
 let cache: { at: number; endpoints: ServingEndpointOption[] } | null = null;
 const CACHE_MS = 5 * 60_000;
+let loggedNoWorkspace = false;
 
 /** Chat/agent endpoints from the workspace, or null when the list cannot be read. */
 export async function listAgentEndpoints(): Promise<ServingEndpointOption[] | null> {
   if (cache && Date.now() - cache.at < CACHE_MS) return cache.endpoints;
+  // No workspace, no SDK: outside Databricks the AppKit client is never
+  // loaded and the picker runs on the static catalog.
+  if (!process.env.DATABRICKS_HOST) {
+    if (!loggedNoWorkspace) {
+      loggedNoWorkspace = true;
+      console.log('[agents] DATABRICKS_HOST not set — serving endpoint list off, using the static model catalog');
+    }
+    return null;
+  }
   try {
+    const { getWorkspaceClient } = await import('@databricks/appkit');
     const w = getWorkspaceClient({});
     const out: ServingEndpointOption[] = [];
     for await (const ep of w.servingEndpoints.list()) {

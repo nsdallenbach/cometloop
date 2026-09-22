@@ -254,6 +254,18 @@ function workspaceBase(): string | null {
   return host.startsWith('http') ? host.replace(/\/+$/, '') : `https://${host.replace(/\/+$/, '')}`;
 }
 
+/** Host + service-principal pair present — the only way this process can call the workspace. */
+export function workspaceCredentialsConfigured(): boolean {
+  return Boolean(workspaceBase() && process.env.DATABRICKS_CLIENT_ID && process.env.DATABRICKS_CLIENT_SECRET);
+}
+
+let loggedNoWorkspace = false;
+function noteNoWorkspace(): void {
+  if (loggedNoWorkspace) return;
+  loggedNoWorkspace = true;
+  console.log('[agents] DATABRICKS_HOST / DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET not set — serving endpoint state and endpoint agents are off');
+}
+
 /** M2M token for the app's service principal (Databricks Apps inject the OAuth pair). */
 export async function workspaceToken(): Promise<string | null> {
   const base = workspaceBase();
@@ -284,6 +296,13 @@ export async function fetchEndpointState(endpoint: string): Promise<ServingState
   if (!endpoint) return null;
   const hit = servingCache.get(endpoint);
   if (hit && Date.now() - hit.at < SERVING_CACHE_MS) return hit.state;
+  if (!workspaceCredentialsConfigured()) {
+    // Outside Databricks (or a local dev shell without the SP pair) there is
+    // nothing to ask; say so once instead of a warning per endpoint per minute.
+    noteNoWorkspace();
+    servingCache.set(endpoint, { at: Date.now(), state: null });
+    return null;
+  }
   try {
     const base = workspaceBase();
     const token = await workspaceToken();

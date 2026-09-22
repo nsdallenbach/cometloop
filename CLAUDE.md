@@ -80,6 +80,10 @@ Rules that follow from that split:
   `databricks postgres get-endpoint …`; see README), `databricks auth login`,
   then `npm run dev` → http://localhost:8000. Without `GITHUB_APP_PRIVATE_KEY`
   the repo-sync features are off; everything else works.
+- Web without Databricks: set `DATABASE_URL` (a `.env.local` with the Neon URL,
+  `npm run dev:local`; or `docker compose up`) and the server boots on plain
+  Postgres with every Databricks feature off — model calls take their
+  deterministic fallbacks. Details: [docs/local-dev.md](./docs/local-dev.md).
 - Desktop against the local server: `cd desktop && APP_URL=http://localhost:8000 npm run dev`.
 - The primary checkout is shared by several Claude sessions and the
   emulation runner lives in its own worktree (`~/delivery-runner`, pinned to

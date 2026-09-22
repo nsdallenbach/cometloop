@@ -24,6 +24,8 @@ export default tseslint.config(
       // Standalone subpackages — plain JS outside the TS project service.
       'mcp/**',
       'devbox-runner/**',
+      // Neon CLI project config (`@neon/config`), not part of any tsconfig.
+      'neon.ts',
       // Desktop app + shared modules — own package/tooling (desktop/: npm run typecheck).
       'desktop/**',
       'shared/**',

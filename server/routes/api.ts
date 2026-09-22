@@ -814,6 +814,19 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     // the stock JSON parser — legacy-codepage clients must not write mojibake.
     installUtf8BodyRecovery(app);
 
+    // Liveness + DB ping for container health checks and rollout probes. Cheap
+    // on purpose: the model probe lives on /api/llm/health so a bad model key
+    // can never block a deploy.
+    app.get('/healthz', async (_req, res) => {
+      const started = Date.now();
+      try {
+        await q('SELECT 1');
+        res.json({ ok: true, db: { ok: true, latencyMs: Date.now() - started } });
+      } catch (err) {
+        res.status(503).json({ ok: false, db: { ok: false, latencyMs: Date.now() - started, error: (err as Error).message } });
+      }
+    });
+
     app.get('/api/me', async (req, res) => {
       try {
         const id = await resolveIdentity(req);
