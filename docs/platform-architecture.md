@@ -132,7 +132,7 @@ what was deliberately left for later.
 
 Every tenant-scoped table in the `app` schema carries
 `tenant_id TEXT NOT NULL`. The list is `TENANT_TABLES` in
-`server/db/tenancy.ts` — 45 tables, one per `CREATE TABLE IF NOT EXISTS` in
+`server/db/tenancy.ts` — 46 tables, one per `CREATE TABLE IF NOT EXISTS` in
 the module `*_SCHEMA_SQL` arrays — and `tenancy.test.ts` fails the build if a
 new array creates a table that is in neither `TENANT_TABLES` nor
 `GLOBAL_TABLES`. The global allowlist is exactly the tenant directory:
@@ -216,7 +216,7 @@ CREATE POLICY tenant_isolation ON app.tickets
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 ```
 
-…for all 45 tables, none on the directory. **Read this before touching the
+…for all 46 tables, none on the directory. **Read this before touching the
 role logic:** on Neon the role in `DATABASE_URL` (`neondb_owner`) owns every
 table *and* carries `BYPASSRLS`. `FORCE` makes an owner subject to its
 policies, but a `BYPASSRLS` role skips them regardless — on Neon, FORCE alone
@@ -528,6 +528,8 @@ CREATE TABLE app.model_providers (
 );                            -- + tenant_id and RLS from the phase-2 migration
 CREATE TABLE app.model_roles (role TEXT, provider_id INT REFERENCES app.model_providers(id) ON DELETE CASCADE, model TEXT, updated_at);
                               -- primary key (tenant_id, role)
+CREATE TABLE app.model_prices (model TEXT, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m DOUBLE PRECISION, updated_by TEXT, updated_at);
+                              -- primary key (tenant_id, model); USD per 1M tokens, over the pricing.ts defaults
 ```
 
 Roles are the capability contract (`ROLE_CONTRACTS`), with the site's names:
@@ -612,6 +614,27 @@ passed. `usageByTicket` folds both sources (`bySource`, `controlPlaneCalls`,
 per-model rows carry `provider`) and the ticket drawer shows the split;
 `usageByAgent` keeps to harness rows so the agent map never shows the
 control plane as a runner.
+
+Token consumption is **input + output**; cache reads and writes are
+recorded and shown beside it but never counted. Cost: a row carries a
+recorded `cost_usd` only when the harness computed one (Claude Code's own
+figure on a final sample); every other row — per-turn samples, codex
+finals, every control-plane call — is **estimated** as `input × in +
+output × out + cache read × cr + cache write × cw` at the workspace's
+rates for the row's model (`server/llm/pricing.ts`). The rates are
+`DEFAULT_MODEL_PRICES` — USD per 1M tokens quoted from the providers' own
+pricing pages, each row stamped with its source URL and the date it was
+read — with the tenant-scoped `app.model_prices` overrides on top
+(`GET/PUT/DELETE /api/settings/model-prices`, the Admin page's Model prices
+table under Model providers). `matchModel` maps dated and hosted ids to a
+row by prefix (`claude-sonnet-5-20260401`, `databricks-claude-sonnet-5` →
+`claude-sonnet-5`; a Databricks-hosted Claude is therefore rated at
+Anthropic's list price, not the DBU rate, until the workspace overrides
+it). One rule, `sliceCost`, serves the drawer, the Metrics page and its
+top-tickets table: a recorded cost stays recorded, the rest is rated and
+flagged `costEstimated` (shown as "est."), and a model nothing prices
+contributes nothing and is named in `unpricedModels` rather than counted as
+$0.
 
 ### The PR reviewer as a skill
 

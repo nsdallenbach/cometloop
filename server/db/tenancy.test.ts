@@ -39,9 +39,9 @@ describe('tenant table lists', () => {
     expect(tablesCreatedBy(TENANT_DIRECTORY_SQL).sort()).toEqual([...GLOBAL_TABLES].sort());
   });
 
-  it('is 45 tenant tables, as the architecture doc counts them', () => {
-    expect(TENANT_TABLES.length).toBe(45);
-    expect(new Set(TENANT_TABLES).size).toBe(45);
+  it('is 46 tenant tables, as the architecture doc counts them', () => {
+    expect(TENANT_TABLES.length).toBe(46);
+    expect(new Set(TENANT_TABLES).size).toBe(46);
   });
 });
 

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 import { TOKEN_USAGE_SCHEMA_SQL, foldTicketUsage, recordControlPlaneUsage, recordUsageBatch, usageByAgent, usageByTicket } from './token-usage';
+import { mergePrices, ratesOf } from '../llm/pricing';
 
 /**
  * Token-usage rollups (DAT-266) against pg-mem: partial samples accumulate
@@ -93,7 +94,7 @@ describe('usageByTicket (DAT-260)', () => {
   it('a ticket with no usage reads as zero, not an error', async () => {
     const u = await usageByTicket(q, 'DAT-999');
     const zero = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, costUsd: null };
-    expect(u).toEqual({ runs: 0, controlPlaneCalls: 0, total: zero, models: [], bySource: { harness: zero, controlPlane: zero } });
+    expect(u).toEqual({ runs: 0, controlPlaneCalls: 0, total: zero, costEstimated: false, unpricedModels: [], models: [], bySource: { harness: zero, controlPlane: zero } });
   });
 
   it('splits a finished run by model and ignores its per-turn rows', async () => {
@@ -110,8 +111,10 @@ describe('usageByTicket (DAT-260)', () => {
     const u = await usageByTicket(q, 'DAT-266');
     expect(u.runs).toBe(1);
     expect(u.total.input).toBe(400);
+    // Both parts carried Claude Code's own cost, so nothing is estimated.
     expect(u.total.costUsd).toBeCloseTo(1.5);
-    expect(u.models.map((m) => [m.model, m.input])).toEqual([['claude-opus-5', 350], ['claude-haiku-4-5', 50]]);
+    expect(u.costEstimated).toBe(false);
+    expect(u.models.map((m) => [m.model, m.input, m.costEstimated])).toEqual([['claude-opus-5', 350, false], ['claude-haiku-4-5', 50, false]]);
   });
 
   it('adds runs together, counting per-turn rows for a run that never finished', async () => {
@@ -130,10 +133,43 @@ describe('usageByTicket (DAT-260)', () => {
 
   it('usage recorded without a model lands under the empty model', () => {
     const u = foldTicketUsage([
-      { taskId: 1, model: '', provider: '', source: 'harness', final: true, calls: 1, totals: { input: 10, output: 1, cacheRead: 0, cacheCreate: 0, costUsd: null } },
+      { taskId: 1, model: '', provider: '', source: 'harness', final: true, calls: 1, totals: { input: 10, output: 1, cacheRead: 0, cacheCreate: 0, costUsd: null }, unpriced: { input: 10, output: 1, cacheRead: 0, cacheCreate: 0 } },
     ]);
     expect(u.models[0].model).toBe('');
     expect(u.total.costUsd).toBeNull();
+    expect(u.unpricedModels).toEqual(['unknown model']);
+    expect(u.models[0].unpriced).toBe(true);
+  });
+
+  it('estimates cost at the rate table it is given and names what nothing prices', async () => {
+    // A codex-style run: per-turn rows, no cost, on a serving endpoint nothing prices…
+    await recordUsageBatch(q, TASK, 'a', [{ input: 1_000_000, output: 100_000, cacheRead: 0, cacheCreate: 0, model: 'my-endpoint' }]);
+    // …and one control-plane call on a priced model (claude-sonnet-5: $2 in, $10 out, $0.20 cache read per 1M).
+    await recordControlPlaneUsage(q, {
+      role: 'estimate', flow: 'estimate', provider: 'anthropic', model: 'claude-sonnet-5-20260401', ticketKey: 'DAT-266', engagementId: 'exec',
+      usage: { input: 1_000_000, output: 100_000, cacheRead: 500_000, cacheCreate: 0 },
+    });
+    const defaults = await usageByTicket(q, 'DAT-266');
+    expect(defaults.costEstimated).toBe(true);
+    expect(defaults.unpricedModels).toEqual(['my-endpoint']);
+    expect(defaults.total.costUsd).toBeCloseTo(2 + 1 + 0.1, 9);
+    expect(defaults.models.find((m) => m.model === 'my-endpoint')).toMatchObject({ costUsd: null, costEstimated: false, unpriced: true });
+    expect(defaults.models.find((m) => m.model === 'claude-sonnet-5-20260401')).toMatchObject({ costUsd: 3.1, costEstimated: true, unpriced: false });
+    // Tokens are input + output; the cache read is reported, not counted, so the endpoint's 1.1M leads.
+    expect(defaults.models.map((m) => m.model)).toEqual(['my-endpoint', 'claude-sonnet-5-20260401']);
+
+    // A workspace override prices the endpoint (and halves sonnet's input).
+    const rates = ratesOf(
+      mergePrices([
+        { model: 'my-endpoint', inputPerM: 1, outputPerM: 4, cacheReadPerM: 0, cacheWritePerM: 0, updatedBy: 'admin', updatedAt: null },
+        { model: 'claude-sonnet-5', inputPerM: 1, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5, updatedBy: 'admin', updatedAt: null },
+      ]),
+    );
+    const priced = await usageByTicket(q, 'DAT-266', rates);
+    expect(priced.unpricedModels).toEqual([]);
+    expect(priced.total.costUsd).toBeCloseTo(1 + 0.4 + (1 + 1 + 0.1), 9);
+    expect(priced.bySource.harness.costUsd).toBeCloseTo(1.4, 9);
+    expect(priced.bySource.controlPlane.costUsd).toBeCloseTo(2.1, 9);
   });
 
   it('counts control-plane calls for the ticket alongside the harness runs (phase 3)', async () => {
@@ -157,6 +193,12 @@ describe('usageByTicket (DAT-260)', () => {
       ['anthropic', 'claude-haiku-4-5-20251001', 0],
       ['', 'claude-opus-5', 1],
     ]);
+    // No row carried a recorded cost, so every one is estimated at the defaults:
+    // sonnet-5 1000×$2 + 300×$10 + 50×$0.20; haiku-4-5 400×$1 + 60×$5; opus-5 200×$5 + 40×$25 (per 1M).
+    expect(u.costEstimated).toBe(true);
+    expect(u.unpricedModels).toEqual([]);
+    expect(u.total.costUsd).toBeCloseTo(0.00501 + 0.0007 + 0.002, 9);
+    expect(u.models.find((m) => m.model === 'claude-haiku-4-5-20251001')?.costUsd).toBeCloseTo(0.0007, 9);
     // The agent map's per-agent window never shows the control plane as a runner.
     expect((await usageByAgent(q, 24)).has('control-plane')).toBe(false);
   });

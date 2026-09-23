@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb, DataType } from 'pg-mem';
 import { cycleTimes, flowSeries, loadMetrics, parseRange, percentile, rangeSince, weekStart } from './metrics';
+import { mergePrices, ratesOf } from '../llm/pricing';
 
 /**
  * The Metrics aggregation SQL against pg-mem on a small seeded board, plus
@@ -164,22 +165,38 @@ describe('loadMetrics (pg-mem)', () => {
     expect(r.velocity.flow[r.velocity.flow.length - 1]).toEqual({ date: '2026-09-23', open: 2, done: 0 });
     expect(r.velocity.flow[0].date).toBe('2026-08-24');
 
-    // Tokens: task 1 counts its two final rows only; task 2 its two per-turn
-    // rows; task 3 is out of range; both control-plane calls count once each.
+    // Tokens (= input + output): task 1 counts its two final rows only; task 2
+    // its two per-turn rows; task 3 is out of range; both control-plane calls
+    // count once each. Cost: task 1's finals carry Claude Code's own figure;
+    // the gpt-5 calls are estimated at the default rates ($1.25 in / $10 out
+    // per 1M); 'sonnet' / 'haiku' match no default row, so task 2's per-turn
+    // rows are unpriced — named, never $0.
+    const gpt5 = (input: number, output: number) => (input * 1.25 + output * 10) / 1_000_000;
     expect(r.tokens.perDay).toEqual([
-      { date: '2026-09-12', source: 'harness', provider: 'anthropic', model: 'sonnet', tokens: 1000, input: 200, output: 100, cacheRead: 700, cacheCreate: 0, cost: null, runs: 1, calls: 0 },
-      { date: '2026-09-13', source: 'harness', provider: 'anthropic', model: 'sonnet', tokens: 500, input: 100, output: 100, cacheRead: 300, cacheCreate: 0, cost: null, runs: 1, calls: 0 },
-      { date: '2026-09-19', source: 'control-plane', provider: 'openai', model: 'gpt-5', tokens: 100, input: 70, output: 30, cacheRead: 0, cacheCreate: 0, cost: null, runs: 0, calls: 2 },
-      { date: '2026-09-19', source: 'harness', provider: 'anthropic', model: 'haiku', tokens: 100, input: 50, output: 50, cacheRead: 0, cacheCreate: 0, cost: 0.5, runs: 1, calls: 0 },
-      { date: '2026-09-19', source: 'harness', provider: 'anthropic', model: 'sonnet', tokens: 3700, input: 100, output: 400, cacheRead: 3000, cacheCreate: 200, cost: 2.5, runs: 1, calls: 0 },
+      { date: '2026-09-12', source: 'harness', provider: 'anthropic', model: 'sonnet', tokens: 300, input: 200, output: 100, cacheRead: 700, cacheCreate: 0, cost: null, costEstimated: false, runs: 1, calls: 0 },
+      { date: '2026-09-13', source: 'harness', provider: 'anthropic', model: 'sonnet', tokens: 200, input: 100, output: 100, cacheRead: 300, cacheCreate: 0, cost: null, costEstimated: false, runs: 1, calls: 0 },
+      { date: '2026-09-19', source: 'control-plane', provider: 'openai', model: 'gpt-5', tokens: 100, input: 70, output: 30, cacheRead: 0, cacheCreate: 0, cost: expect.closeTo(gpt5(70, 30), 9) as number, costEstimated: true, runs: 0, calls: 2 },
+      { date: '2026-09-19', source: 'harness', provider: 'anthropic', model: 'haiku', tokens: 100, input: 50, output: 50, cacheRead: 0, cacheCreate: 0, cost: 0.5, costEstimated: false, runs: 1, calls: 0 },
+      { date: '2026-09-19', source: 'harness', provider: 'anthropic', model: 'sonnet', tokens: 500, input: 100, output: 400, cacheRead: 3000, cacheCreate: 200, cost: 2.5, costEstimated: false, runs: 1, calls: 0 },
     ]);
-    expect(r.tokens.totals).toEqual({ input: 520, output: 680, cacheRead: 4000, cacheCreate: 200, tokens: 5400, cost: 3, runs: 2, controlPlaneCalls: 2 });
-    expect(r.tokens.bySource).toEqual({ harness: 5300, controlPlane: 100 });
+    expect(r.tokens.totals).toEqual({
+      input: 520,
+      output: 680,
+      cacheRead: 4000,
+      cacheCreate: 200,
+      tokens: 1200,
+      cost: expect.closeTo(3 + gpt5(70, 30), 9) as number,
+      costEstimated: true,
+      unpricedModels: ['sonnet'],
+      runs: 2,
+      controlPlaneCalls: 2,
+    });
+    expect(r.tokens.bySource).toEqual({ harness: 1100, controlPlane: 100 });
     expect(r.tokens.cacheHitRatio).toBeCloseTo(4000 / 4520, 3);
     expect(r.tokens.topTickets).toEqual([
-      { key: 'A-1', title: 'Login', engagementId: 'eng-a', tokens: 3850, cost: 3, runs: 1 },
-      { key: 'A-2', title: 'Billing', engagementId: 'eng-a', tokens: 1500, cost: null, runs: 1 },
-      { key: 'A-4', title: 'Open', engagementId: 'eng-a', tokens: 50, cost: null, runs: 0 },
+      { key: 'A-1', title: 'Login', engagementId: 'eng-a', tokens: 650, cost: expect.closeTo(3 + gpt5(40, 10), 9) as number, costEstimated: true, unpriced: false, runs: 1 },
+      { key: 'A-2', title: 'Billing', engagementId: 'eng-a', tokens: 500, cost: null, costEstimated: false, unpriced: true, runs: 1 },
+      { key: 'A-4', title: 'Open', engagementId: 'eng-a', tokens: 50, cost: expect.closeTo(gpt5(30, 20), 9) as number, costEstimated: true, unpriced: false, runs: 0 },
     ]);
 
     // Efficiency: agent-delivered done tickets in the window — A-1 (actual 1.5h vs 8h) and A-2 (no actual → est 1h vs 4h); A-5 was human work.
@@ -199,6 +216,17 @@ describe('loadMetrics (pg-mem)', () => {
     expect(r.efficiency.perWeek).toEqual([]);
   });
 
+  it('prices with the rate table it is given — a workspace override makes an unpriced model estimable', async () => {
+    const rates = ratesOf(mergePrices([{ model: 'sonnet', inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5, updatedBy: 'admin', updatedAt: null }]));
+    const r = await loadMetrics(q, '30d', null, NOW, rates);
+    // Task 2's per-turn rows: 300 in, 200 out, 1000 cache read — now rated.
+    expect(r.tokens.topTickets.find((t) => t.key === 'A-2')).toMatchObject({ cost: expect.closeTo((300 * 2 + 200 * 10 + 1000 * 0.2) / 1_000_000, 9) as number, costEstimated: true, unpriced: false });
+    expect(r.tokens.totals.unpricedModels).toEqual([]);
+    expect(r.tokens.totals.costEstimated).toBe(true);
+    // Recorded costs stay recorded: the same day's final rows are not re-rated.
+    expect(r.tokens.perDay.find((d) => d.date === '2026-09-19' && d.model === 'haiku')).toMatchObject({ cost: 0.5, costEstimated: false });
+  });
+
   it('`all` includes the old work and a range never touches current status counts', async () => {
     const r = await loadMetrics(q, 'all', null, NOW);
     expect(r.since).toBeNull();
@@ -206,7 +234,7 @@ describe('loadMetrics (pg-mem)', () => {
       { week: '2026-06-29', done: 1 },
       { week: '2026-09-14', done: 3 },
     ]);
-    expect(r.tokens.totals.cost).toBe(12);
+    expect(r.tokens.totals.cost).toBeCloseTo(12 + (70 * 1.25 + 30 * 10) / 1_000_000, 9);
     expect(r.tokens.totals.runs).toBe(3);
     expect(r.efficiency.totals).toEqual({ tickets: 3, agentHrs: 4.5, humanHrs: 24, withActual: 2 });
     const week = await loadMetrics(q, '7d', null, NOW);
@@ -228,7 +256,7 @@ describe('loadMetrics (pg-mem)', () => {
     expect(r.tokens).toEqual({
       perDay: [],
       topTickets: [],
-      totals: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, tokens: 0, cost: null, runs: 0, controlPlaneCalls: 0 },
+      totals: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, tokens: 0, cost: null, costEstimated: false, unpricedModels: [], runs: 0, controlPlaneCalls: 0 },
       bySource: { harness: 0, controlPlane: 0 },
       cacheHitRatio: null,
     });

@@ -47,8 +47,11 @@ export interface ModelSeries {
   label: string;
   /** Who served it ('' when the row predates provider tracking; mixed for "other"). */
   provider: string;
+  /** input + output over the window */
   tokens: number;
   cost: number | null;
+  /** Some of `cost` was estimated from model rates rather than recorded. */
+  costEstimated: boolean;
   runs: number;
   share: number;
 }
@@ -75,12 +78,13 @@ const modelId = (r: { provider: string; model: string }): string => `${r.provide
  * on the page.
  */
 export function pivotByModel(perDay: MetricsReport['tokens']['perDay'], maxSlots = MAX_MODEL_SLOTS): ModelPivot {
-  const byModel = new Map<string, { provider: string; model: string; tokens: number; cost: number | null; runs: number }>();
+  const byModel = new Map<string, { provider: string; model: string; tokens: number; cost: number | null; costEstimated: boolean; runs: number }>();
   for (const r of perDay) {
     const id = modelId(r);
-    const m = byModel.get(id) ?? { provider: r.provider, model: r.model, tokens: 0, cost: null, runs: 0 };
+    const m = byModel.get(id) ?? { provider: r.provider, model: r.model, tokens: 0, cost: null, costEstimated: false, runs: 0 };
     m.tokens += r.tokens;
     if (r.cost != null) m.cost = (m.cost ?? 0) + r.cost;
+    if (r.costEstimated) m.costEstimated = true;
     m.runs += r.runs;
     byModel.set(id, m);
   }
@@ -95,16 +99,17 @@ export function pivotByModel(perDay: MetricsReport['tokens']['perDay'], maxSlots
     if (i < own) {
       const key = `m${i}`;
       slotOf.set(id, key);
-      models.push({ key, label: MODEL_LABEL(m.model), provider: m.provider, tokens: m.tokens, cost: m.cost, runs: m.runs, share: total > 0 ? m.tokens / total : 0 });
+      models.push({ key, label: MODEL_LABEL(m.model), provider: m.provider, tokens: m.tokens, cost: m.cost, costEstimated: m.costEstimated, runs: m.runs, share: total > 0 ? m.tokens / total : 0 });
     } else {
       slotOf.set(id, 'other');
       let other = models.find((s) => s.key === 'other');
       if (!other) {
-        other = { key: 'other', label: 'other models', provider: '', tokens: 0, cost: null, runs: 0, share: 0 };
+        other = { key: 'other', label: 'other models', provider: '', tokens: 0, cost: null, costEstimated: false, runs: 0, share: 0 };
         models.push(other);
       }
       other.tokens += m.tokens;
       if (m.cost != null) other.cost = (other.cost ?? 0) + m.cost;
+      if (m.costEstimated) other.costEstimated = true;
       other.runs += m.runs;
       other.share = total > 0 ? other.tokens / total : 0;
     }

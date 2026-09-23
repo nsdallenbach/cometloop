@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Engagement, MetricsRange, MetricsReport } from '../types';
 import { api } from '../api';
 import { fmtHours, HEALTH_COLOR, HEALTH_LABEL, mono } from '../util';
-import { fmtCost } from '../lib/usage-format';
+import { fmtCost, fmtCostLabel } from '../lib/usage-format';
 import { AreaChart } from './charts/area-chart';
 import { Area } from './charts/area';
 import { Grid } from './charts/grid';
@@ -400,25 +400,29 @@ function TokensSection({ report }: { report: MetricsReport | null }) {
       <SectionHead title="TOKEN CONSUMPTION" caption="EVERY MODEL CALL METERED — AGENT HARNESSES AND THE CONTROL PLANE'S OWN PLANNING, ESTIMATE AND REVIEW CALLS" />
       <div style={KPI_GRID}>
         <Kpi
-          label="TOKENS"
+          label="TOKENS · IN + OUT"
           value={loading ? '—' : compact(t?.totals.tokens ?? 0)}
           sub={t ? `HARNESS ${compact(t.bySource.harness)} · CONTROL PLANE ${compact(t.bySource.controlPlane)}` : undefined}
         />
         <Kpi
           label="MODEL SPEND"
-          value={loading ? '—' : t?.totals.cost == null ? '—' : fmtCost(t.totals.cost)}
-          sub={t ? `${t.totals.runs} RUN${t.totals.runs === 1 ? '' : 'S'} · ${t.totals.controlPlaneCalls} CONTROL-PLANE CALL${t.totals.controlPlaneCalls === 1 ? '' : 'S'}` : undefined}
+          value={loading ? '—' : !t || t.totals.cost == null ? (t?.totals.unpricedModels.length ? 'est. —' : '—') : fmtCostLabel({ usd: t.totals.cost, estimated: t.totals.costEstimated, unpriced: [] })}
+          sub={
+            t
+              ? `${t.totals.runs} RUN${t.totals.runs === 1 ? '' : 'S'} · ${t.totals.controlPlaneCalls} CONTROL-PLANE CALL${t.totals.controlPlaneCalls === 1 ? '' : 'S'}${t.totals.costEstimated ? ' · EST. FROM MODEL RATES' : ''}${t.totals.unpricedModels.length ? ` · NO RATE FOR ${t.totals.unpricedModels.join(', ').toUpperCase()}` : ''}`
+              : undefined
+          }
         />
         <Kpi label="CACHE HIT RATIO" value={loading ? '—' : pctLabel(t?.cacheHitRatio ?? null)} sub="CACHE READ ÷ (INPUT + CACHE READ)" />
         <Kpi
           label="OUTPUT TOKENS"
           value={loading ? '—' : compact(t?.totals.output ?? 0)}
-          sub={t ? `INPUT ${compact(t.totals.input)} · CACHE WRITE ${compact(t.totals.cacheCreate)}` : undefined}
+          sub={t ? `INPUT ${compact(t.totals.input)} · CACHE ${compact(t.totals.cacheRead)} READ · ${compact(t.totals.cacheCreate)} WRITTEN` : undefined}
         />
       </div>
 
       <div style={CHART_GRID}>
-        <Card title="TOKENS PER DAY — BY MODEL" caption={hasUsage ? 'Input, output and cache tokens stacked by the model that spent them.' : 'Fills in as runs report usage.'}>
+        <Card title="TOKENS PER DAY — BY MODEL" caption={hasUsage ? 'Input and output tokens stacked by the model that spent them; cache traffic is reported, not counted.' : 'Fills in as runs report usage.'}>
           {loading || tokenRows.length > 0 ? (
             <>
               <LegendRow items={pivot.models.map((m) => ({ label: modelLabel(m).toUpperCase(), color: colorOf(m.key), n: compact(m.tokens) }))} />
@@ -440,7 +444,7 @@ function TokensSection({ report }: { report: MetricsReport | null }) {
           )}
         </Card>
 
-        <Card title="COST PER DAY" caption={hasCost ? 'USD as reported by the harness on each finished run.' : 'Cost arrives with a run’s final usage sample.'}>
+        <Card title="COST PER DAY" caption={hasCost ? (t.totals.costEstimated ? 'USD as the harness recorded it where it did; the rest estimated at the workspace’s model rates (est.).' : 'USD as reported by the harness on each finished run.') : 'Fills in as usage is priced — recorded by the harness, or estimated from the model rates under Admin.'}>
           {loading || costRows.length >= 2 ? (
             <AreaChart data={costRows} xDataKey="date" aspectRatio="2.6 / 1" margin={{ ...MARGIN, left: 44 }} status={loading ? 'loading' : 'ready'} loadingLabel="Loading">
               <Grid horizontal numTicksRows={4} />
@@ -466,7 +470,7 @@ function TokensSection({ report }: { report: MetricsReport | null }) {
                   label: m.label,
                   sub: m.provider ? m.provider.toUpperCase() : undefined,
                   value: m.tokens,
-                  display: `${compact(m.tokens)} · ${Math.round(m.share * 100)}%${m.cost != null ? ` · ${fmtCost(m.cost)}` : ''}`,
+                  display: `${compact(m.tokens)} · ${Math.round(m.share * 100)}%${m.cost != null ? ` · ${m.costEstimated ? 'est. ' : ''}${fmtCost(m.cost)}` : ''}`,
                   color: colorOf(m.key),
                 }))}
               />
@@ -510,7 +514,12 @@ function TokensSection({ report }: { report: MetricsReport | null }) {
                       </td>
                       <td style={td('right')}>{row.runs}</td>
                       <td style={td('right')}>{compact(row.tokens)}</td>
-                      <td style={td('right')}>{row.cost == null ? '—' : fmtCost(row.cost)}</td>
+                      <td
+                        style={td('right')}
+                        title={row.unpriced ? 'A model this ticket used has no rate — set one under Admin → Model prices' : row.costEstimated ? 'Estimated at the workspace’s model rates' : undefined}
+                      >
+                        {row.cost == null ? (row.unpriced ? 'est. —' : '—') : `${row.costEstimated ? 'est. ' : ''}${fmtCost(row.cost)}`}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -540,6 +549,7 @@ function EfficiencySection({ report, now }: { report: MetricsReport | null; now:
 
   const saved = e ? hoursSaved(e.totals.humanHrs, e.totals.agentHrs) : 0;
   const cost = report?.tokens.totals.cost ?? null;
+  const est = report?.tokens.totals.costEstimated ? 'est. ' : '';
   const lev = e ? leverage(e.totals.humanHrs, e.totals.agentHrs) : null;
   const perHour = e ? costPerSavedHour(cost, saved) : null;
   const hasWork = !!e && e.totals.tickets > 0;
@@ -551,7 +561,7 @@ function EfficiencySection({ report, now }: { report: MetricsReport | null; now:
         <Kpi
           big
           label="HEADLINE"
-          value={loading ? '—' : hasWork ? `${hrs(Math.max(0, saved))} saved · ${cost == null ? 'no spend reported' : `${fmtCost(cost)} model spend`} · ${lev == null ? '—' : `${lev}×`} leverage` : 'No agent-delivered tickets in this window'}
+          value={loading ? '—' : hasWork ? `${hrs(Math.max(0, saved))} saved · ${cost == null ? 'no spend priced' : `${est}${fmtCost(cost)} model spend`} · ${lev == null ? '—' : `${lev}×`} leverage` : 'No agent-delivered tickets in this window'}
           sub={e ? `${e.totals.tickets} DONE TICKET${e.totals.tickets === 1 ? '' : 'S'} WITH AN AGENT RUN · ${e.totals.withActual} WITH MEASURED AGENT TIME, ${e.totals.tickets - e.totals.withActual} ON THE AGENT ESTIMATE` : undefined}
           color="var(--ok)"
         />
@@ -560,7 +570,7 @@ function EfficiencySection({ report, now }: { report: MetricsReport | null; now:
         <Kpi label="HOURS SAVED" value={loading ? '—' : hasWork ? hrs(Math.max(0, saved)) : '—'} sub={e ? `HUMAN EST ${hrs(e.totals.humanHrs).toUpperCase()} − AGENT ${hrs(e.totals.agentHrs).toUpperCase()}` : undefined} color="var(--ok)" />
         <Kpi label="AGENT HOURS" value={loading ? '—' : hasWork ? hrs(e?.totals.agentHrs) : '—'} sub="ACTUAL RUN TIME, ELSE THE AGENT ESTIMATE" />
         <Kpi label="LEVERAGE" value={loading ? '—' : lev == null ? '—' : `${lev}×`} sub="HUMAN HOURS ÷ AGENT HOURS" />
-        <Kpi label="COST PER SAVED HOUR" value={loading ? '—' : perHour == null ? '—' : fmtCost(perHour)} sub={cost == null ? 'NO MODEL SPEND REPORTED IN RANGE' : 'MODEL SPEND ÷ HOURS SAVED'} />
+        <Kpi label="COST PER SAVED HOUR" value={loading ? '—' : perHour == null ? '—' : `${est}${fmtCost(perHour)}`} sub={cost == null ? 'NO MODEL SPEND PRICED IN RANGE' : `MODEL SPEND ÷ HOURS SAVED${est ? ' · EST. FROM MODEL RATES' : ''}`} />
       </div>
 
       <div style={CHART_GRID}>
@@ -626,10 +636,10 @@ function EfficiencySection({ report, now }: { report: MetricsReport | null; now:
             <b> Leverage</b> = human hours ÷ agent hours. <b>Cost per saved hour</b> = model spend in the range ÷ hours saved.
           </li>
           <li>
-            <b>Model spend</b> — USD from each finished run’s final usage sample, plus nothing for control-plane calls (they carry tokens, not a price). A run that never sent a final sample counts its per-turn tokens and no cost.
+            <b>Model spend</b> — USD as the harness recorded it on a finished run’s final sample where it sent one; every other row (per-turn samples, control-plane calls, harnesses that do not price themselves) is estimated as input × in + output × out + cache read × cr + cache write × cw at the workspace’s model rates (Admin → Model prices: published defaults, per-workspace overrides) and labelled <i>est.</i> A model with no rate adds nothing and is named instead of counted as $0.
           </li>
           <li>
-            <b>Cycle time</b> — hours from a ticket’s first status event (creation) to <code>done_at</code>; median is interpolated, p90 is nearest-rank. <b>Cache hit ratio</b> = cache-read tokens ÷ (input + cache-read).
+            <b>Cycle time</b> — hours from a ticket’s first status event (creation) to <code>done_at</code>; median is interpolated, p90 is nearest-rank. <b>Tokens</b> = input + output; cache reads and writes are shown beside it, never counted. <b>Cache hit ratio</b> = cache-read tokens ÷ (input + cache-read).
           </li>
         </ul>
       </div>

@@ -1,5 +1,6 @@
 import type express from 'express';
-import type { UsageSource } from './token-usage';
+import { DEFAULT_RATES, addSliceCost, emptyRollup, loadEffectiveRates, sliceCost, type CostRollup, type RateTable } from '../llm/pricing';
+import { USAGE_SUM_SQL, usageSums, type UsageSource } from './token-usage';
 
 /**
  * Cross-project Metrics page: velocity & status, token consumption and
@@ -15,10 +16,15 @@ import type { UsageSource } from './token-usage';
  *   cycle time      = done_at − first ticket_events row (creation), hours; median and p90 per completion week
  *   open at day d   = tickets created ≤ d that were not done by the end of d (proposed/dismissed excluded)
  *   throughput      = tickets with done_at on that day / in that ISO week
- *   tokens          = input + output + cache read + cache create, per day per (source, provider, model).
- *                     Harness rows: a run that reported a final sample counts only its final rows (the
- *                     harness's own total), otherwise its per-turn rows. Control-plane rows (the server's
- *                     own planning / estimate / review calls) each count once — same rule as the drawer
+ *   tokens          = input + output, per day per (source, provider, model); cache read / write are
+ *                     reported beside it, never counted. Harness rows: a run that reported a final sample
+ *                     counts only its final rows (the harness's own total), otherwise its per-turn rows.
+ *                     Control-plane rows (the server's own planning / estimate / review calls) each count
+ *                     once — same rule as the drawer
+ *   cost            = the harness's recorded cost_usd where a row has one, else input×in + output×out +
+ *                     cache read×cr + cache write×cw at the workspace's rates for the row's model
+ *                     (server/llm/pricing.ts); flagged `costEstimated`. A model nothing prices adds no
+ *                     cost and is named in `unpricedModels` rather than counted as $0
  *   cache hit ratio = cache read / (input + cache read)
  *   agent hours     = actual_hours when a run was measured, else the agent estimate (est_hours)
  *   human hours     = human_est_hours (the model's independent human-developer estimate)
@@ -77,13 +83,28 @@ export interface MetricsReport {
       cacheRead: number;
       cacheCreate: number;
       cost: number | null;
+      /** `cost` includes figures estimated from rates. */
+      costEstimated: boolean;
       /** Harness runs that reported on that day. */
       runs: number;
       /** Control-plane calls (planning, estimates, reviews, drafts) on that day. */
       calls: number;
     }[];
-    topTickets: { key: string; title: string; engagementId: string; tokens: number; cost: number | null; runs: number }[];
-    totals: { input: number; output: number; cacheRead: number; cacheCreate: number; tokens: number; cost: number | null; runs: number; controlPlaneCalls: number };
+    topTickets: { key: string; title: string; engagementId: string; tokens: number; cost: number | null; costEstimated: boolean; unpriced: boolean; runs: number }[];
+    totals: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheCreate: number;
+      /** input + output */
+      tokens: number;
+      cost: number | null;
+      costEstimated: boolean;
+      /** Models that spent tokens in the window that nothing prices. */
+      unpricedModels: string[];
+      runs: number;
+      controlPlaneCalls: number;
+    };
     bySource: { harness: number; controlPlane: number };
     cacheHitRatio: number | null;
   };
@@ -105,7 +126,6 @@ const num = (v: unknown): number => {
   }
   return 0;
 };
-const numOrNull = (v: unknown): number | null => (v == null ? null : num(v));
 const iso = (v: unknown): string | null =>
   v instanceof Date ? v.toISOString() : typeof v === 'string' && v ? new Date(v).toISOString() : null;
 const round1 = (n: number): number => Math.round(n * 10) / 10;
@@ -238,7 +258,7 @@ function where(f: Filter, timeCol: string | null, engCol: string, params: unknow
   return parts.length ? `AND ${parts.join(' AND ')}` : '';
 }
 
-export async function loadMetrics(q: Query, range: MetricsRange, engagement: string | null, now = new Date()): Promise<MetricsReport> {
+export async function loadMetrics(q: Query, range: MetricsRange, engagement: string | null, now = new Date(), rates: RateTable = DEFAULT_RATES): Promise<MetricsReport> {
   const since = rangeSince(range, now);
   const f: Filter = { since, engagement };
 
@@ -291,10 +311,8 @@ export async function loadMetrics(q: Query, range: MetricsRange, engagement: str
   const usageParams: unknown[] = [];
   const usageRows = (
     await q(
-      `SELECT date, source, provider, model,
-              SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
-              SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_create_tokens) AS cache_create_tokens,
-              SUM(cost_usd) AS cost_usd, COUNT(DISTINCT run_id)::int AS runs, SUM(calls)::int AS calls
+      `SELECT date, source, provider, model, ${USAGE_SUM_SQL},
+              COUNT(DISTINCT run_id)::int AS runs, SUM(calls)::int AS calls
        FROM (SELECT to_char(date_trunc('day', u.created_at), 'YYYY-MM-DD') AS date, u.source, u.provider, u.model,
                     u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_create_tokens, u.cost_usd,
                     CASE WHEN u.source = 'harness' THEN u.task_id ELSE NULL END AS run_id,
@@ -304,42 +322,74 @@ export async function loadMetrics(q: Query, range: MetricsRange, engagement: str
       usageParams,
     )
   ).rows;
+  // Cost per slice by the one shared rule (pricing.ts): recorded where the
+  // harness sent it, estimated at the model's rates where it did not.
+  const windowCost = emptyRollup();
   const perDay: MetricsReport['tokens']['perDay'] = usageRows.map((r) => {
-    const input = num(r.input_tokens);
-    const output = num(r.output_tokens);
-    const cacheRead = num(r.cache_read_tokens);
-    const cacheCreate = num(r.cache_create_tokens);
+    const model = str(r.model);
+    const { totals, unpriced } = usageSums(r);
+    const c = sliceCost({ model, recordedUsd: totals.costUsd, unpriced }, rates);
+    addSliceCost(windowCost, model, c);
     return {
       date: str(r.date),
       source: str(r.source) === 'control-plane' ? 'control-plane' : 'harness',
       provider: str(r.provider),
-      model: str(r.model),
-      tokens: input + output + cacheRead + cacheCreate,
-      input,
-      output,
-      cacheRead,
-      cacheCreate,
-      cost: numOrNull(r.cost_usd),
+      model,
+      tokens: totals.input + totals.output,
+      input: totals.input,
+      output: totals.output,
+      cacheRead: totals.cacheRead,
+      cacheCreate: totals.cacheCreate,
+      cost: c.usd,
+      costEstimated: c.estimated,
       runs: num(r.runs),
       calls: num(r.calls),
     };
   });
 
+  // Top tickets: one row per (ticket, model) so each model's rate applies,
+  // folded per ticket in TS; runs are distinct per ticket, so their own query.
   const topParams: unknown[] = [];
   const topRows = (
     await q(
-      `SELECT x.ticket_key, x.engagement_id, t.title, x.tokens, x.cost_usd, x.runs
-       FROM (SELECT u.ticket_key, u.engagement_id,
-                    SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_create_tokens) AS tokens,
-                    SUM(u.cost_usd) AS cost_usd,
-                    COUNT(DISTINCT CASE WHEN u.source = 'harness' THEN u.task_id ELSE NULL END)::int AS runs
-             FROM app.run_token_usage u ${FOLD} AND u.ticket_key <> '' ${where(f, 'u.created_at', 'u.engagement_id', topParams)}
-             GROUP BY u.ticket_key, u.engagement_id) x
-       LEFT JOIN app.tickets t ON t.key = x.ticket_key
-       ORDER BY x.tokens DESC LIMIT 8`,
+      `SELECT u.ticket_key, u.engagement_id, u.model, ${USAGE_SUM_SQL}
+       FROM app.run_token_usage u ${FOLD} AND u.ticket_key <> '' ${where(f, 'u.created_at', 'u.engagement_id', topParams)}
+       GROUP BY u.ticket_key, u.engagement_id, u.model`,
       topParams,
     )
   ).rows;
+  const byTicket = new Map<string, { key: string; engagementId: string; tokens: number; cost: CostRollup }>();
+  for (const r of topRows) {
+    const key = str(r.ticket_key);
+    const model = str(r.model);
+    const { totals, unpriced } = usageSums(r);
+    const t = byTicket.get(key) ?? { key, engagementId: str(r.engagement_id), tokens: 0, cost: emptyRollup() };
+    t.tokens += totals.input + totals.output;
+    addSliceCost(t.cost, model, sliceCost({ model, recordedUsd: totals.costUsd, unpriced }, rates));
+    byTicket.set(key, t);
+  }
+  const top = [...byTicket.values()].sort((a, b) => b.tokens - a.tokens).slice(0, 8);
+  const topMeta = new Map<string, { title: string; runs: number }>();
+  if (top.length > 0) {
+    const keys = top.map((t) => t.key);
+    const marks = keys.map((_, i) => `$${i + 1}`).join(',');
+    const runsParamsTop: unknown[] = [...keys];
+    for (const r of (
+      await q(
+        `SELECT u.ticket_key, COUNT(DISTINCT CASE WHEN u.source = 'harness' THEN u.task_id ELSE NULL END)::int AS runs
+         FROM app.run_token_usage u ${FOLD} AND u.ticket_key IN (${marks}) ${where(f, 'u.created_at', 'u.engagement_id', runsParamsTop)}
+         GROUP BY u.ticket_key`,
+        runsParamsTop,
+      )
+    ).rows) {
+      topMeta.set(str(r.ticket_key), { title: '', runs: num(r.runs) });
+    }
+    for (const r of (await q(`SELECT key, title FROM app.tickets WHERE key IN (${marks})`, keys)).rows) {
+      const m = topMeta.get(str(r.key)) ?? { title: '', runs: 0 };
+      m.title = str(r.title);
+      topMeta.set(str(r.key), m);
+    }
+  }
 
   // Runs are distinct per (day, model) row, so the window total needs its own count.
   const runsParams: unknown[] = [];
@@ -403,10 +453,9 @@ export async function loadMetrics(q: Query, range: MetricsRange, engagement: str
       cacheRead: a.cacheRead + r.cacheRead,
       cacheCreate: a.cacheCreate + r.cacheCreate,
       tokens: a.tokens + r.tokens,
-      cost: r.cost == null ? a.cost : (a.cost ?? 0) + r.cost,
       controlPlaneCalls: a.controlPlaneCalls + r.calls,
     }),
-    { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, tokens: 0, cost: null as number | null, controlPlaneCalls: 0 },
+    { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, tokens: 0, controlPlaneCalls: 0 },
   );
   const bySource = perDay.reduce(
     (a, r) => (r.source === 'harness' ? { ...a, harness: a.harness + r.tokens } : { ...a, controlPlane: a.controlPlane + r.tokens }),
@@ -429,15 +478,17 @@ export async function loadMetrics(q: Query, range: MetricsRange, engagement: str
     },
     tokens: {
       perDay,
-      topTickets: topRows.map((r) => ({
-        key: str(r.ticket_key),
-        title: str(r.title),
-        engagementId: str(r.engagement_id),
-        tokens: num(r.tokens),
-        cost: numOrNull(r.cost_usd),
-        runs: num(r.runs),
+      topTickets: top.map((t) => ({
+        key: t.key,
+        title: topMeta.get(t.key)?.title ?? '',
+        engagementId: t.engagementId,
+        tokens: t.tokens,
+        cost: t.cost.usd,
+        costEstimated: t.cost.estimated,
+        unpriced: t.cost.unpricedModels.length > 0,
+        runs: topMeta.get(t.key)?.runs ?? 0,
       })),
-      totals: { ...totals, runs: num(runsRow?.runs) },
+      totals: { ...totals, cost: windowCost.usd, costEstimated: windowCost.estimated, unpricedModels: windowCost.unpricedModels, runs: num(runsRow?.runs) },
       bySource,
       cacheHitRatio: cacheDenom > 0 ? Math.round((totals.cacheRead / cacheDenom) * 100_000) / 100_000 : null,
     },
@@ -457,7 +508,7 @@ export function setupMetricsRoutes(app: express.Application, q: Query): void {
       const range = parseRange(req.query.range);
       const engRaw = typeof req.query.engagement === 'string' ? req.query.engagement.trim() : '';
       const engagement = engRaw && engRaw !== 'all' ? engRaw.slice(0, 120) : null;
-      res.json(await loadMetrics(q, range, engagement));
+      res.json(await loadMetrics(q, range, engagement, new Date(), await loadEffectiveRates(q)));
     } catch (err) {
       console.error('metrics failed:', err);
       res.status(500).json({ error: 'Failed to load metrics' });

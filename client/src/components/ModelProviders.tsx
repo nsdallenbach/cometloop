@@ -3,6 +3,7 @@ import { api } from '../api';
 import type { LlmHealth, ModelProvider, ModelProviderInput, ModelRole, ModelRoleMapping, ProviderProbe } from '../types';
 import { mono } from '../util';
 import { MODEL_PROVIDER_PRESETS, modelProviderBrand } from './AgentLogos';
+import { ModelPrices } from './ModelPrices';
 
 /**
  * Workspace model providers (platform-architecture §6; the site's
@@ -226,6 +227,7 @@ export function ModelProviders({ toast }: { toast: (msg: string) => void }) {
       </div>
 
       {providers && <RoleTable providers={providers} roles={roles} health={health} onSaved={(next) => { setRoles(next); reload(); }} toast={toast} />}
+      {providers && <ModelPrices toast={toast} />}
     </div>
   );
 }
