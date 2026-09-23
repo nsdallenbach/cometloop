@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 import { parsePlan, refineTicketWithBoard } from './scoping-agent';
+import { tenancyTestSql } from '../db/tenancy';
 
 /**
  * The board-aware refinement loop end-to-end against pg-mem, with a scripted
@@ -94,6 +95,7 @@ beforeEach(async () => {
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of SUPPORT_SQL) await q(sql);
+  for (const sql of tenancyTestSql(SUPPORT_SQL)) await q(sql);
   // The board the agent will look at.
   await q(`INSERT INTO app.tickets (key, engagement_id, title, status, description, ac) VALUES
     ('DAT-2', 'exec', 'Theme token groundwork', 'progress', 'Introduce dark-capable theme tokens across the client.', '[]'),

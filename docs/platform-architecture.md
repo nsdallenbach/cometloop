@@ -124,104 +124,206 @@ requirement.
 
 ## 4. Tenancy
 
+**Status: shipped in phase 2** (`server/db/`, PR "Phase 2: multi-tenancy").
+This section describes what is in the code; the phase-3 list at the end is
+what was deliberately left for later.
+
 ### Tables
 
-Every table in the `app` schema gets `tenant_id TEXT NOT NULL`. The boot
-arrays own these tables today (grep `CREATE TABLE IF NOT EXISTS app.`):
+Every tenant-scoped table in the `app` schema carries
+`tenant_id TEXT NOT NULL`. The list is `TENANT_TABLES` in
+`server/db/tenancy.ts` — 43 tables, one per `CREATE TABLE IF NOT EXISTS` in
+the module `*_SCHEMA_SQL` arrays — and `tenancy.test.ts` fails the build if a
+new array creates a table that is in neither `TENANT_TABLES` nor
+`GLOBAL_TABLES`. The global allowlist is exactly the tenant directory:
 
-| Owner array (file) | Tables |
+| Table | Purpose |
 |---|---|
-| `SCHEMA_SQL` (`api.ts`) | `engagements`, `tickets`, `sources`, `team_members`, `suggestions`, `engagement_members`, `engagement_leads`, `ticket_comments`, `feed_items` |
-| `NOTIFICATION_SCHEMA_SQL` | `notifications` |
-| `REPO_SCHEMA_SQL` | `repo_connections`, `repo_prs`, `repo_commits` |
-| `AGENT_SCHEMA_SQL` (`agent-work.ts`) | `agent_tasks` |
-| `PROJECT_AGENTS_SCHEMA_SQL` (+ `AGENT_SECURITY_SCHEMA_SQL`) | `project_agents` |
-| `REGISTRY_SCHEMA_SQL` | `registry_mcp_servers`, `registry_skills` |
-| `FLEET_SCHEMA_SQL`, `RUNNER_LOAD_BALANCING_SCHEMA_SQL` | `runner_polls`, `runner_load_balancing` |
-| `TOOL_CALL_SCHEMA_SQL`, `TOKEN_USAGE_SCHEMA_SQL` | `agent_tool_calls`, `run_token_usage` |
-| `COORDINATION_SCHEMA_SQL` | `coordination_messages`, `branch_activity` |
-| `DEPLOY_EVENTS_SCHEMA_SQL` | `deploy_events` |
-| `STANDARDS_SCHEMA_SQL`, `PROJECT_CONFIG_SCHEMA_SQL` | `project_standards`, `project_runner_configs` |
-| `TICKET_*_SCHEMA_SQL`, `LINKS_SCHEMA_SQL`, `ESTIMATE_SCHEMA_SQL`, `ATTACHMENT_SCHEMA_SQL` | `ticket_events`, `ticket_activity`, `ticket_links`, `ticket_estimates`, `ticket_attachments`, `ticket_rejections` |
-| `FILE_LIBRARY_SCHEMA_SQL` | `file_folders`, `file_entries`, `file_rules`, `file_rule_runs` |
-| `PR_REVIEW_SCHEMA_SQL`, `PR_REQUEUE_SCHEMA_SQL`, `PR_ESCALATION_SCHEMA_SQL` | `pr_reviews`, `pr_requeues`, `pr_review_escalations` |
-| `PLANNING_REVIEW_SCHEMA_SQL`, `STALE_NUDGE_SCHEMA_SQL` | `planning_reviews`, `nudge_settings`, `ticket_nudges` |
+| `app.tenants (id TEXT PK, name, created_at)` | one row per tenant; `t_cometloop` is the existing customer and every pre-tenancy row belongs to it |
+| `app.tenant_members (tenant_id, email, role)` | email → tenant for Better Auth sign-ins whose token carries no organization claim; unique on `(tenant_id, LOWER(email))`; the lead's email is seeded into `t_cometloop` as `owner` |
 
-Rule: `tenant_id` goes on **every** row even where `engagement_id` would
-imply it. An engagement belongs to exactly one tenant
-(`engagements.tenant_id`); tables that hang off an engagement carry their
-own `tenant_id` so RLS never needs a join, and tables with no engagement
-(`team_members`, `runner_polls`, `runner_load_balancing`, `nudge_settings`,
-shared registry entries where `engagement_id IS NULL`) are scoped to the
-tenant directly. "Shared" in the registry (`registry.ts`) means shared
-within a tenant, never across.
+Rule (unchanged): `tenant_id` goes on **every** row even where
+`engagement_id` would imply it, so a policy never needs a join. "Shared" in
+the registry means shared within a tenant, never across.
 
-### Keys that are global today and must not be
+`tenant_id` defaults to
+`COALESCE(NULLIF(current_setting('app.tenant_id', true), ''), 't_cometloop')`.
+Route modules never name the column in an INSERT: the default lands the row
+in the request's tenant, and — the single-tenant compatibility path — in
+`t_cometloop` when no tenant is set on the connection. Dropping that
+fallback is the first phase-3 cleanup.
 
-- `tickets.key` is `TEXT PRIMARY KEY` (`api.ts:119`) and is the join key for
-  everything — branch names, PR titles, `agent_tasks.ticket_key`,
-  `run_token_usage.ticket_key`, comments, events. Two tenants will both have
-  a `DAT-12`. Change to `PRIMARY KEY (tenant_id, key)` and make every
-  `ticket_key` FK composite. This is the largest schema edit in the plan; do
-  it once, in phase 2, with a generated script rather than by hand.
-- `engagements.id` is a human-chosen `TEXT PRIMARY KEY` (e.g. `cav`). Same
-  treatment: `(tenant_id, id)`.
-- `team_members_email_unique` (`api.ts:167`) is global; make it
-  `(tenant_id, LOWER(email))`.
-- `SERIAL` ids are fine (globally unique surrogate; RLS hides them).
+### Keys: unique per tenant
+
+Ticket keys and engagement ids stay human (`CL-12`, `cometloop`) and are
+unique **per tenant**: two tenants may both own `CL-1`. What changed, all
+generated from lists in `server/db/tenancy.ts`:
+
+- `PRIMARY_KEYS` — 13 primary keys now lead with `tenant_id`:
+  `tickets (tenant_id, key)`, `engagements (tenant_id, id)`, `suggestions`,
+  `engagement_members`, `engagement_leads`, `branch_activity`,
+  `runner_polls`, `planning_reviews`, `project_runner_configs`,
+  `project_standards`, `nudge_settings`, `runner_load_balancing`,
+  `ticket_activity`. `SERIAL` ids and the random-UUID `id TEXT` keys
+  (`file_*`, `ticket_attachments`) are untouched — a globally unique
+  surrogate is fine, RLS hides the rows.
+- `UNIQUE_CONSTRAINTS` — the inline `UNIQUE (…)` on `repo_connections`,
+  `ticket_links` and `file_folders` gained `tenant_id`.
+- `UNIQUE_INDEXES` — `team_members_email_unique`, `agent_tasks_active_ticket`,
+  `project_agents_eng_name`, the two registry `*_scope_slug` indexes and
+  `ticket_nudges_quiet_period` moved out of the module arrays into
+  `tenancy.ts` (so boot does not recreate the global form every start) and
+  gained `tenant_id`.
+- `FOREIGN_KEYS` — all 34 `REFERENCES app.tickets(key)` /
+  `REFERENCES app.engagements(id)` are now composite
+  `(tenant_id, ticket_key) REFERENCES app.tickets (tenant_id, key)`, same
+  `ON DELETE` action as before. `tenancy.test.ts` asserts the list equals
+  what the module arrays declare.
+
+The 14 `ON CONFLICT (…)` clauses whose target was one of those keys name
+`tenant_id` first now (`ON CONFLICT (tenant_id, engagement_id)` etc.) —
+Postgres infers the arbiter index from the exact column set, so this was the
+one change the route modules could not avoid. Ticket-key allocation needed no
+change: the next number is derived from the keys already on the engagement,
+which under RLS are the tenant's, so the sequence is per
+`(tenant_id, engagement_id)`; `tickets.seq` (SERIAL) is only the board's
+ordering surrogate. The engagement-id uniqueness probe on create is likewise
+RLS-scoped.
+
+### The migration
+
+`TENANCY_SCHEMA_SQL` is the last boot array `initSchema` runs (after every
+module array, so the tables exist). Forward-only, idempotent, generated —
+`bootSchemaSql()` in `api.ts` is the ordered whole. Per table:
+`ADD COLUMN IF NOT EXISTS tenant_id … DEFAULT 't_cometloop'` (constant
+default = metadata-only backfill), then `SET DEFAULT` to the
+`current_setting` form. Postgres has no `ADD CONSTRAINT IF NOT EXISTS`, so
+every key rewrite is a `DO $$ … $$` block that reads `pg_constraint` for the
+**live** constraint (by definition text, not by the name the arrays assume),
+drops the old primary key `CASCADE` (which takes the old single-column FKs
+with it) and adds the composite one; FKs and policies are guarded the same
+way. A second boot changes nothing — the integration test snapshots
+`pg_constraint`, `pg_policies`, `pg_indexes` and the `tenant_id` columns,
+boots again, and asserts equality.
 
 ### Row-level security
 
 ```sql
 ALTER TABLE app.tickets ENABLE ROW LEVEL SECURITY;
-ALTER TABLE app.tickets FORCE ROW LEVEL SECURITY;   -- applies to the owner too
+ALTER TABLE app.tickets FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON app.tickets
   USING (tenant_id = current_setting('app.tenant_id', true))
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 ```
 
-Generate the same three statements for every table in the list above from a
-single `TENANT_TABLES` array (new module `server/db/tenancy.ts`) so a new
-table cannot be forgotten: a test asserts every `app.*` table either appears
-in `TENANT_TABLES` or in an explicit `GLOBAL_TABLES` allowlist (expected to be
-empty). The api and worker connect as `cometloop_app` (no `BYPASSRLS`);
-migrations run as the owner role. `current_setting(..., true)` returns NULL
-when unset, so a connection with no tenant sees nothing — fail closed.
+…for all 43 tables, none on the directory. **Read this before touching the
+role logic:** on Neon the role in `DATABASE_URL` (`neondb_owner`) owns every
+table *and* carries `BYPASSRLS`. `FORCE` makes an owner subject to its
+policies, but a `BYPASSRLS` role skips them regardless — on Neon, FORCE alone
+would enforce nothing. So the migration also creates a `cometloop_app` role
+(`NOLOGIN NOBYPASSRLS`, plain DML + sequence grants, default privileges for
+future tables) and grants it to the connecting role, and the scoped query
+layer runs every tenant query as that role. The boot migration itself keeps
+running as the owner: that is what lets it ALTER tables and backfill with no
+tenant set, and the same owner connection (`adminQuery`) serves the tenant
+directory reads and the one-off scripts. `FORCE` is still set so an owner
+without `BYPASSRLS` (docker-compose's Postgres, any non-Neon host) is
+covered too.
 
-### Setting the tenant per request
+### Setting the tenant per query
 
-`q` is a bare pool query today (`api.ts:765`), so `SET LOCAL` has nowhere to
-live. Introduce `server/db/pool.ts`:
+`server/db/tenant-context.ts` holds the tenant in an `AsyncLocalStorage`;
+`runWithTenant(tenantId, fn)` is the only way in. `requireSignIn` runs the
+rest of the middleware chain inside it, so every route module keeps calling
+its `q` with no signature change — the portable runtime's `q`
+(`server/db/scoped-query.ts`) reads the context and runs each statement as
 
-```ts
-const tenantContext = new AsyncLocalStorage<{ tenantId: string }>();
-export const q: Query = (text, params) => runInTenant(tenantContext.getStore()?.tenantId, text, params);
-export async function withTenant<T>(tenantId: string, fn: () => Promise<T>): Promise<T> { /* checks out one client, BEGIN; SET LOCAL app.tenant_id = $1; runs fn with q bound to that client; COMMIT/ROLLBACK */ }
+```
+BEGIN; SET LOCAL ROLE cometloop_app; SELECT set_config('app.tenant_id', <tenant>, true);
+<statement>;
+COMMIT;
 ```
 
-An Express middleware wraps every `/api/*` handler in
-`withTenant(identity.tenantId, next)`. Route modules keep calling `q` with
-no signature change. Background work (section 7) iterates tenants
-explicitly: `for (const t of tenants) await withTenant(t.id, () => tick(t))`
-— the fleet watch, repo sync, escalations and nudges all become per-tenant
-ticks, which is also what keeps one tenant's slow GitHub from stalling
-another.
+`SET LOCAL` and a transaction-scoped `set_config` are undone by COMMIT or
+ROLLBACK, so a pooled connection cannot leak one request's tenant or the
+app role into the next. It is one transaction **per statement**, not per
+request, on purpose: handlers catch and continue past individual query
+errors (an aborted request-long transaction would reject everything after
+the first), and the runner long-poll holds a request open for ~55 s (a
+request-long transaction would pin a pool client and its row locks). Cost is
+two extra round trips per statement. With no tenant in the context the
+statement still runs as `cometloop_app` with the setting unset and the
+policies match nothing — reads return no rows, writes are rejected — and the
+statement shape is logged once, so a code path that reaches the database
+outside `runWithTenant` is a visible bug, never a leak.
 
-### Migrating the single-tenant data
+The AppKit (Databricks) runtime has no per-query client (`lakebase.query`
+is a bare pool), so `tenantIsolation` is false there: the columns and
+composite keys still land, RLS and the app role are not created, and it logs
+that isolation is single-tenant compatibility only.
 
-1. Create the Datavail organization in Better Auth → its id is `T1`.
-2. `ALTER TABLE ... ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'T1'` on every
-   table, then `ALTER COLUMN tenant_id DROP DEFAULT`. Idempotent, ships in
-   the existing boot arrays (SP-owned tables) and `scripts/dev-migrate.cjs`
-   (dev-owned tables) while still on Lakebase.
-3. Composite-key rewrite (above) in the same migration file.
-4. Enable + force RLS last, after the identity seam (phase 1) sets
-   `app.tenant_id` on every request; until then the policy would blank the
-   app.
+**Background loops** are per tenant: `startPerTenant(adminQuery, start)`
+(`server/db/tenant-loops.ts`) reads `app.tenants` and calls `start` once per
+tenant inside `runWithTenant`, so the `setInterval`s the pollers create
+inherit the tenant and every tick is scoped — repo sync, review-SLA
+escalation, stale nudges, fleet watch, the planning-review sweep and the
+demo mock runner each run once per tenant. The directory is re-read every
+minute so a tenant created after boot gets its loops without a restart.
 
-DB-per-tenant later: because every query already runs inside `withTenant`,
-a tenant→`DATABASE_URL` map in `pool.ts` is the only change needed to give a
-customer their own Neon project.
+**Runner routes** (`/api/agent/*`, sign-in exempt) take the tenant from the
+identity when one is present (the Databricks proxy → `t_cometloop`). With no
+identity — runners on the portable runtime today, whose Databricks bearer
+token means nothing without the proxy — they are scoped to
+`ANONYMOUS_RUNNER_TENANT_ID` (`t_cometloop`) rather than to nothing, so the
+one existing fleet keeps working. Phase 3 replaces this with per-tenant
+runner API keys.
+
+### Tenant from identity
+
+`Identity.tenantId` (section 5): `t_cometloop` for the `databricks` and
+`dev` verifiers; for `better-auth`, the first of the
+`activeOrganizationId` / `organizationId` / `org` claims that looks like a
+tenant id, else `app.tenant_members` by email (`setTenantDirectory`, wired
+by `setupApiRoutes` on the owner connection). An identity with no tenant is
+answered 403 `{ error: 'No workspace' }` by the sign-in gate.
+
+### What the integration test proves
+
+`server/tenancy.integration.test.ts` runs only with `TEST_DATABASE_URL`, on a
+throwaway Neon branch of production (`neon branches create --name phase2-test
+--parent production`, deleted afterwards). On that copy it boots the full
+schema, snapshots the catalog, boots again and asserts nothing changed;
+checks every pre-tenancy ticket is `t_cometloop`'s; creates two tenants,
+inserts `CL-1` (plus engagement and comment) in each through the scoped
+query exactly as the routes do; asserts each tenant sees only its own
+`CL-1` and none of production's rows; asserts an INSERT and an UPDATE under
+A that name B's `tenant_id` are rejected by the policy, a delete of A's row
+under B touches nothing, an unscoped query sees nothing and an unscoped
+write is rejected, and that after a scoped statement the pooled connection
+is back to the owner with no tenant set.
+
+### Phase-3 cleanup list
+
+1. **Drop the `'t_cometloop'` fallback** from every `tenant_id` default
+   (`ALTER COLUMN tenant_id SET DEFAULT NULLIF(current_setting('app.tenant_id', true), '')`)
+   once every writer is known to run inside `runWithTenant` — the boot seed
+   and `scripts/*.mjs` are the ones to wrap first.
+2. **Better Auth organization wiring**: the organization plugin's id becomes
+   `tenant_id` (replace the claim list in `identity.ts` with the one claim
+   Neon Auth actually emits), organization membership replaces
+   `app.tenant_members`, and sign-up creates the `app.tenants` row.
+3. **Per-tenant runner API keys** replace `ANONYMOUS_RUNNER_TENANT_ID`; an
+   anonymous runner then sees no queue.
+4. `tenant_id REFERENCES app.tenants(id)` on every table (skipped now to keep
+   the first migration to keys and policies), and a tenant-delete path.
+5. AppKit runtime: either a per-query client so `tenantIsolation` can be
+   true there too, or retire the runtime (section 7).
+6. Revisit the per-statement transaction cost with the phase-4 worker split
+   (a request-scoped client with SAVEPOINTs is the obvious next step).
+
+DB-per-tenant later: because every query already runs inside
+`runWithTenant`, a tenant → `DATABASE_URL` map in the scoped query layer is
+the only change needed to give a customer their own Neon project.
 
 ## 5. Identity
 
@@ -501,16 +603,16 @@ production still authenticates through the proxy with no behaviour change;
 docker-compose signs in through Better Auth; the "no token → admin" path is
 gone.
 
-**Phase 2 — `tenant_id` + RLS.**
-`TENANT_TABLES`, the `tenant_id` columns (default `T1`, then default
-dropped), composite keys for `tickets`, `engagements`, `team_members`,
-`withTenant` + AsyncLocalStorage `q`, the per-request middleware, per-tenant
-loops in the pollers. RLS enabled + forced in docker-compose; on Lakebase
-the policies are created but the app SP keeps `BYPASSRLS` until phase 5
-(dev-owned tables cannot be forced from the SP anyway). *Done when:* the
-table-coverage test passes, every route test runs inside `withTenant`, a
-second seeded tenant in docker-compose cannot see tenant #1's rows through
-any endpoint or the MCP route.
+**Phase 2 — `tenant_id` + RLS. Shipped** (section 4 is the as-built
+description). `TENANT_TABLES` and the coverage test, `tenant_id` on all 43
+tables (default kept as the `t_cometloop` fallback — dropping it is phase
+3's first item), composite keys for every human key and every FK onto them,
+`runWithTenant` + AsyncLocalStorage, the gate running handlers inside the
+tenant, per-tenant loop sets, RLS enabled + forced with a `cometloop_app`
+role because Neon's owner carries `BYPASSRLS`. On the AppKit runtime the
+columns and keys land but isolation stays off (bare pool, no per-query
+client). Proven on a Neon branch of production by
+`server/tenancy.integration.test.ts` rather than in docker-compose.
 
 **Phase 3 — Provider registry + AI Gateway.**
 `server/llm/` with the interface, the `databricks` adapter (which is what
@@ -558,9 +660,8 @@ their own model key.
 1. **Object storage**: Azure Blob (same cloud as ACA, managed identity) or
    Cloudflare R2 (S3 API, no egress, same account as DNS/Gateway)? Decides
    the files-interface implementation in phase 5 only.
-2. **Ticket key display vs identity**: composite `(tenant_id, key)` keeps
-   `DAT-12` per tenant; alternatively a global surrogate id with a per-tenant
-   display key. Composite is assumed above; confirm before phase 2.
+2. **Ticket key display vs identity**: decided and shipped in phase 2 —
+   composite `(tenant_id, key)`, human keys unique per tenant.
 3. **GitHub App per tenant**: today one App id lives in `app.yaml`. Customers
    install Cometloop's App on their org (simplest, App key stays ours), or
    bring their own App/PAT via `repo_connections.auth_type`. ADO is still

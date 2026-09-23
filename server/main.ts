@@ -15,7 +15,9 @@ import { githubAppConfigured } from './routes/github-app';
  * runs it directly (the Dockerfile's default command). It satisfies the
  * `AppKitServices` interface that `setupApiRoutes` takes:
  *
- * - `lakebase.query` → a `pg.Pool` on `DATABASE_URL` (SSL unless disabled).
+ * - `lakebase.query` → a `pg.Pool` on `DATABASE_URL` (SSL unless disabled),
+ *                      tenant-scoped per query under row-level security
+ *                      (phase 2, `server/db/`); `adminQuery` is the owner.
  * - `server.extend`  → the Express app, with AppKit's global JSON parser
  *                      mirrored so the UTF-8 recovery middleware splices in.
  * - `files(alias)`   → a directory per alias under `FILES_DIR`.
@@ -109,7 +111,9 @@ export async function startPortableServer(): Promise<void> {
   );
 
   await setupApiRoutes({
-    lakebase: { query: db.query },
+    // query is tenant-scoped (RLS as cometloop_app); adminQuery is the owner
+    // connection the boot migration and the tenant directory need.
+    lakebase: { query: db.query, adminQuery: db.adminQuery, tenantIsolation: true },
     server: { extend: (fn) => fn(app) },
     files: (alias) => localFiles(path.join(filesDir, alias)),
     serving: unconfiguredServing(

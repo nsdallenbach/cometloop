@@ -51,9 +51,9 @@ export const AGENT_SCHEMA_SQL = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
-  // One active run per ticket; completed/cancelled runs stay as history.
-  `CREATE UNIQUE INDEX IF NOT EXISTS agent_tasks_active_ticket
-   ON app.agent_tasks (ticket_key) WHERE state IN ('queued','claimed','working')`,
+  // One active run per ticket (per tenant); completed/cancelled runs stay as
+  // history. The partial unique index is agent_tasks_tenant_active_ticket in
+  // server/db/tenancy.ts.
   // Latest progress note, denormalized so board cards can show it live.
   `ALTER TABLE app.agent_tasks ADD COLUMN IF NOT EXISTS last_note TEXT`,
   // Runner-raised warning (reason text); NULL when nothing needs attention.

@@ -225,7 +225,7 @@ export async function announceBranchActivity(q: Query, a: BranchAnnouncement): P
   const { rows } = await q(
     `INSERT INTO app.branch_activity AS ba (branch_name, agent_id, ticket_key, task_description, status)
      VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (branch_name) DO UPDATE SET
+     ON CONFLICT (tenant_id, branch_name) DO UPDATE SET
        agent_id = EXCLUDED.agent_id,
        ticket_key = COALESCE(EXCLUDED.ticket_key, ba.ticket_key),
        task_description = CASE WHEN EXCLUDED.task_description <> '' THEN EXCLUDED.task_description ELSE ba.task_description END,

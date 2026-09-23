@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 import { handleMcpMessage } from './mcp';
+import { tenancyTestSql } from '../db/tenancy';
 
 /** The MCP JSON-RPC surface against pg-mem: handshake, discovery, tool calls. */
 
@@ -53,6 +54,7 @@ beforeEach(async () => {
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of SUPPORT_SQL) await q(sql);
+  for (const sql of tenancyTestSql(SUPPORT_SQL)) await q(sql);
   await q(`INSERT INTO app.tickets (key, engagement_id, title, status, description) VALUES
     ('DAT-1', 'exec', 'Dark mode toggle', 'backlog', 'Add a dark mode toggle to settings.'),
     ('DAT-2', 'exec', 'Billing export', 'backlog', 'Export invoices as CSV.')`);

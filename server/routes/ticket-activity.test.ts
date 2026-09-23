@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 import { clearTicketActivity, setTicketActivity, TICKET_ACTIVITY_SCHEMA_SQL } from './ticket-activity';
+import { tenancyTestSql } from '../db/tenancy';
 
 interface MemPg {
   Pool: new () => { query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }> };
@@ -17,6 +18,7 @@ describe('ticket activity', () => {
     await q('CREATE SCHEMA app');
     await q('CREATE TABLE app.tickets (key TEXT PRIMARY KEY)');
     for (const sql of TICKET_ACTIVITY_SCHEMA_SQL) await q(sql);
+    for (const sql of tenancyTestSql(['tickets', ...TICKET_ACTIVITY_SCHEMA_SQL.filter((s) => s.includes('CREATE TABLE'))])) await q(sql);
     await q("INSERT INTO app.tickets (key) VALUES ('DAT-219')");
   });
 

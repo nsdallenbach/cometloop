@@ -161,7 +161,7 @@ export async function recordRunnerPoll(
     await q(
       `INSERT INTO app.runner_polls (agent, engagement_id, source, last_polled_at)
        VALUES ($1,$2,$3,NOW())
-       ON CONFLICT (agent) DO UPDATE
+       ON CONFLICT (tenant_id, agent) DO UPDATE
          SET engagement_id = CASE WHEN $3 = 'poll' THEN $2 ELSE app.runner_polls.engagement_id END,
              source = $3,
              last_polled_at = NOW()`,

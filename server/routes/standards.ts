@@ -110,7 +110,7 @@ export function setupStandardsRoutes(
       const result = await q(
         `INSERT INTO app.project_standards (engagement_id, content, updated_by, updated_at)
          VALUES ($1, $2, $3, NOW())
-         ON CONFLICT (engagement_id) DO UPDATE SET content = $2, updated_by = $3, updated_at = NOW()
+         ON CONFLICT (tenant_id, engagement_id) DO UPDATE SET content = $2, updated_by = $3, updated_at = NOW()
          RETURNING *`,
         [engagementId, parsed.data.content, who.email],
       );

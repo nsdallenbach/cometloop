@@ -130,7 +130,7 @@ export async function consolidateTickets(
     if (from === to) continue;
     await q(
       `INSERT INTO app.ticket_links (ticket_key, linked_key, type, created_by)
-       VALUES ($1,$2,$3,$4) ON CONFLICT (ticket_key, linked_key, type) DO NOTHING`,
+       VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id, ticket_key, linked_key, type) DO NOTHING`,
       [from, to, txt(row.type), txt(row.created_by)],
     );
   }

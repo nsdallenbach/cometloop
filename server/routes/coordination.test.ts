@@ -8,6 +8,7 @@ import {
   listBranchActivity,
   postCoordinationMessage,
 } from './coordination';
+import { tenancyTestSql } from '../db/tenancy';
 
 /**
  * Runs the coordination library against pg-mem — an in-memory Postgres engine
@@ -39,6 +40,7 @@ beforeEach(async () => {
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of [...SUPPORT_SQL, ...COORDINATION_SCHEMA_SQL]) await q(sql);
+  for (const sql of tenancyTestSql([...SUPPORT_SQL, ...COORDINATION_SCHEMA_SQL])) await q(sql);
 });
 
 describe('branch activity', () => {

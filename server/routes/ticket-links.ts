@@ -103,7 +103,7 @@ export async function addTicketLink(
   }
   const inserted = await q(
     `INSERT INTO app.ticket_links (ticket_key, linked_key, type, created_by)
-     VALUES ($1,$2,$3,$4) ON CONFLICT (ticket_key, linked_key, type) DO NOTHING RETURNING id`,
+     VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id, ticket_key, linked_key, type) DO NOTHING RETURNING id`,
     [from, to, storedType, createdBy],
   );
   if (inserted.rows.length === 0) return { ok: false, status: 409, error: 'These tickets are already linked' };

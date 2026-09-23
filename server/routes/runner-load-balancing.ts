@@ -122,7 +122,7 @@ export function setupRunnerLoadBalancingRoutes(
           `INSERT INTO app.runner_load_balancing
              (engagement_id, model_type, runner_name, weight, concurrency_cap, updated_by, updated_at)
            VALUES ($1,$2,$3,$4,$5,$6,NOW())
-           ON CONFLICT (engagement_id, model_type, runner_name)
+           ON CONFLICT (tenant_id, engagement_id, model_type, runner_name)
            DO UPDATE SET weight = $4, concurrency_cap = $5, updated_by = $6, updated_at = NOW()`,
           [req.params.id, modelType, runner.name, runner.weight, runner.cap, identity.email]
         );

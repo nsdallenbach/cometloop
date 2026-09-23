@@ -1,10 +1,20 @@
 import { Pool, type PoolConfig } from 'pg';
+import { scopedQuery } from '../db/scoped-query';
 
 /**
  * Plain-Postgres connection for the portable runtime (platform-architecture
  * phase 0). `DATABASE_URL` replaces the Lakebase plugin: no workspace OAuth
  * token, no hourly refresh, one owner role — so the boot-time `*_SCHEMA_SQL`
  * statements never hit "must be owner of table".
+ *
+ * Two query functions come out of the one pool (phase 2):
+ *
+ * - `query` is what route modules get. Every call runs as the `cometloop_app`
+ *   role with `app.tenant_id` set from the async context, so row-level
+ *   security scopes it to the request's tenant (`server/db/scoped-query.ts`).
+ * - `adminQuery` is the bare owner connection — boot migrations, the tenant
+ *   directory, anything that legitimately spans tenants. Nothing in a route
+ *   module should hold it.
  *
  * SSL is on unless the URL says `sslmode=disable` (docker-compose's local
  * Postgres); Neon requires it. `sslmode=no-verify` keeps encryption but skips
@@ -40,7 +50,10 @@ export function portablePoolConfig(databaseUrl: string): PortablePoolConfig {
 
 export interface PortableDb {
   pool: Pool;
+  /** Tenant-scoped, RLS-enforced: what route modules use. */
   query: Query;
+  /** The owner connection, unscoped: boot migrations and the tenant directory only. */
+  adminQuery: Query;
   label: string;
   close(): Promise<void>;
 }
@@ -55,9 +68,9 @@ export function createPortableDb(databaseUrl: string): PortableDb {
     connectionTimeoutMillis: 15_000,
   });
   pool.on('error', (err) => console.warn('[db] idle client error:', err.message));
-  const query: Query = async (text, params) => {
+  const adminQuery: Query = async (text, params) => {
     const result = await pool.query(text, params);
     return { rows: result.rows as Record<string, unknown>[] };
   };
-  return { pool, query, label: cfg.label, close: () => pool.end() };
+  return { pool, query: scopedQuery(pool), adminQuery, label: cfg.label, close: () => pool.end() };
 }

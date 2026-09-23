@@ -48,7 +48,7 @@ export const PROJECT_AGENTS_SCHEMA_SQL = [
   )`,
   // Upsert identity for the sync pass (observed runners + auto-registered
   // serving endpoints): one row per engagement × agent name.
-  `CREATE UNIQUE INDEX IF NOT EXISTS project_agents_eng_name ON app.project_agents (engagement_id, lower(name))`,
+  // (engagement, name) is unique per tenant; the index lives in server/db/tenancy.ts (UNIQUE_INDEXES).
   // DAT-209 columns. The app SP created this table (DAT-203), so boot ALTERs
   // succeed here — unlike the dev-role tables that need dev-migrate.cjs.
   `ALTER TABLE app.project_agents ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'delivery'`,
@@ -379,7 +379,7 @@ export async function syncProjectAgents(q: Query): Promise<void> {
     await q(
       `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, status, config, created_by, security_settings)
        VALUES ($1,$2,'runner',$3,$4,$5,$6,'system:observed',$7)
-       ON CONFLICT (engagement_id, lower(name))
+       ON CONFLICT (tenant_id, engagement_id, lower(name))
        DO UPDATE SET status = $5, config = COALESCE(app.project_agents.config, '{}'::jsonb) || $6::jsonb,
                      harness = COALESCE(app.project_agents.harness, $3),
                      model_provider = COALESCE(app.project_agents.model_provider, $4)`,
@@ -436,7 +436,7 @@ export async function syncProjectAgents(q: Query): Promise<void> {
     await q(
       `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, endpoint_type, endpoint_name, role, status, config, created_by, security_settings)
        VALUES ($1,'planning-agent','serving-endpoint',NULL,'databricks',$2,'model-serving',$5,'planning',$3,$4,'system:serving',$6)
-       ON CONFLICT (engagement_id, lower(name))
+       ON CONFLICT (tenant_id, engagement_id, lower(name))
        -- role is forced, not COALESCEd: rows that predate the role column
        -- carry the 'delivery' default, and this row is system-owned anyway.
        DO UPDATE SET model = $2, status = $3, config = $4, role = 'planning',
@@ -976,7 +976,7 @@ export function setupProjectAgentRoutes(
         await q(
           `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, status, config, created_by, security_settings, mcp_servers, skills)
            VALUES ($1,$2,'runner',$3,$4,$5,'configured',$6::jsonb,'system:observed',$7,$8::jsonb,$9::jsonb)
-           ON CONFLICT (engagement_id, lower(name))
+           ON CONFLICT (tenant_id, engagement_id, lower(name))
            DO UPDATE SET harness = $3, model_provider = $4, model = $5,
                          config = COALESCE(app.project_agents.config, '{}'::jsonb) || $6::jsonb,
                          mcp_servers = $8::jsonb, skills = $9::jsonb`,
