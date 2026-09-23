@@ -1,5 +1,6 @@
 import type express from 'express';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
+import { DEFAULT_TENANT_ID, isValidTenantId, runWithTenant } from './db/tenant-context';
 
 /**
  * Who is calling — one module, one answer, fail closed.
@@ -20,6 +21,13 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
  *    `NEON_AUTH_JWKS_URL`. Inactive until that variable is set.
  * 3. `dev` — `DEV_IDENTITY_EMAIL`, for local development only. It is never a
  *    default: without the variable a proxy-less local server answers 401.
+ *
+ * Every identity also names its tenant (phase 2). The databricks and dev
+ * verifiers are single-tenant by construction and answer `t_cometloop`; a
+ * Better Auth identity carries its organization as a claim, or is looked up
+ * in `app.tenant_members` by email through `setTenantDirectory`. The gate
+ * refuses (403 `No workspace`) an identity that resolves to no tenant, and
+ * runs the handler inside `runWithTenant` so every query it issues is scoped.
  */
 
 export type IdentitySource = 'databricks' | 'better-auth' | 'dev';
@@ -31,10 +39,41 @@ export interface Identity {
   name: string;
   source: IdentitySource;
   /**
+   * The tenant (Better Auth organization) this identity works in, or null
+   * when the verifier found none — which the sign-in gate turns into 403.
+   */
+  tenantId: string | null;
+  /**
    * Databricks only: the user's workspace access token the proxy forwarded,
    * which `roles.ts` uses for the group lookup. Never logged or echoed.
    */
   accessToken?: string;
+}
+
+/**
+ * Email → tenant id, for identities whose token carries no organization
+ * claim. Wired by `setupApiRoutes` to a read of `app.tenant_members` on the
+ * owner connection (the directory is global, it is read before any tenant is
+ * known). Unset in tests; then a claim-less Better Auth identity has no
+ * tenant.
+ */
+export type TenantDirectory = (email: string) => Promise<string | null>;
+
+let tenantDirectory: TenantDirectory | null = null;
+
+export function setTenantDirectory(lookup: TenantDirectory | null): void {
+  tenantDirectory = lookup;
+}
+
+/** The organization claims a Better Auth / Neon Auth token may carry, first match wins. */
+const ORG_CLAIMS = ['activeOrganizationId', 'organizationId', 'org'] as const;
+
+function tenantFromClaims(payload: JWTPayload): string | null {
+  for (const key of ORG_CLAIMS) {
+    const v = payload[key];
+    if (typeof v === 'string' && isValidTenantId(v.trim())) return v.trim();
+  }
+  return null;
 }
 
 export type Verifier = (req: express.Request) => Identity | null | Promise<Identity | null>;
@@ -55,6 +94,9 @@ export const databricksVerifier = (req: express.Request): Identity | null => {
     email,
     name: email,
     source: 'databricks',
+    // The Databricks deployment is the one existing customer's; every proxy
+    // identity belongs to that tenant.
+    tenantId: DEFAULT_TENANT_ID,
     ...(token ? { accessToken: token } : {}),
   };
 };
@@ -131,7 +173,9 @@ export const betterAuthVerifier: Verifier = async (req) => {
     const subject = claimString(payload, 'sub');
     const email = claimString(payload, 'email');
     if (!subject || !email) return null;
-    return { subject, email, name: claimString(payload, 'name') || email, source: 'better-auth' };
+    const fromDirectory = tenantDirectory ? await tenantDirectory(email) : null;
+    const tenantId = tenantFromClaims(payload) ?? (fromDirectory && isValidTenantId(fromDirectory) ? fromDirectory : null);
+    return { subject, email, name: claimString(payload, 'name') || email, source: 'better-auth', tenantId };
   } catch (err) {
     console.warn('[identity] better-auth token rejected:', (err as Error).message);
     return null;
@@ -146,7 +190,7 @@ export const betterAuthVerifier: Verifier = async (req) => {
 export const devVerifier = (_req: express.Request): Identity | null => {
   const email = process.env.DEV_IDENTITY_EMAIL?.trim();
   if (!email) return null;
-  return { subject: email, email, name: process.env.DEV_IDENTITY_NAME?.trim() || email, source: 'dev' };
+  return { subject: email, email, name: process.env.DEV_IDENTITY_NAME?.trim() || email, source: 'dev', tenantId: DEFAULT_TENANT_ID };
 };
 
 export const VERIFIERS: readonly Verifier[] = [databricksVerifier, betterAuthVerifier, devVerifier];
@@ -202,19 +246,40 @@ export function isSignInExempt(path: string): boolean {
 }
 
 /**
+ * The tenant an exempt route works in when nobody is signed in. Runners on
+ * the portable runtime reach `/api/agent/*` anonymously today (their
+ * Databricks bearer token means nothing without the proxy), and the one
+ * existing fleet belongs to the one existing tenant — so anonymous runner
+ * traffic is scoped to it rather than to nothing. Phase 3 replaces this with
+ * per-tenant runner API keys, at which point an anonymous runner sees no
+ * queue at all.
+ */
+export const ANONYMOUS_RUNNER_TENANT_ID = DEFAULT_TENANT_ID;
+
+/**
  * Fail-closed gate for `/api/*`: resolves the identity once per request,
- * then answers 401 unless one was found or the path is exempt. Mount before
- * every route module, and only there — the exemption list is the single
- * place that says what is open.
+ * then answers 401 unless one was found or the path is exempt, 403 when the
+ * identity belongs to no workspace, and otherwise runs the rest of the chain
+ * inside that tenant's context so every query is row-level-security scoped.
+ * Mount before every route module, and only there — the exemption list is
+ * the single place that says what is open.
  */
 export function requireSignIn(): express.RequestHandler {
   return (req, res, next) => {
     resolveIdentity(req).then(
       (id) => {
         settled.set(req, id);
+        if (id && !id.tenantId) {
+          res.status(403).json({ error: 'No workspace' });
+          return;
+        }
         // req.path is relative to the mount point; the exemption list is absolute.
-        if (id || isSignInExempt(`${req.baseUrl}${req.path}`)) {
-          next();
+        if (id) {
+          runWithTenant(id.tenantId as string, () => next());
+          return;
+        }
+        if (isSignInExempt(`${req.baseUrl}${req.path}`)) {
+          runWithTenant(ANONYMOUS_RUNNER_TENANT_ID, () => next());
           return;
         }
         res.status(401).json({ error: 'Sign in required' });

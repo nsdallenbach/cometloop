@@ -3,7 +3,8 @@ import express from 'express';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from 'jose';
-import { isSignInExempt, requestAuthor, requireSignIn, resetJwksCache, resolveIdentity } from './identity';
+import { isSignInExempt, requestAuthor, requireSignIn, resetJwksCache, resolveIdentity, setTenantDirectory } from './identity';
+import { currentTenantId, DEFAULT_TENANT_ID } from './db/tenant-context';
 
 /**
  * Phase 1 identity seam: one resolver, three verifiers, fail closed.
@@ -39,13 +40,13 @@ describe('databricks verifier', () => {
         'x-forwarded-access-token': 'eyJ.token.here',
       }),
     );
-    expect(id).toMatchObject({ subject: '1234567890', email: 'ada@datavail.com', name: 'ada@datavail.com', source: 'databricks' });
+    expect(id).toMatchObject({ subject: '1234567890', email: 'ada@datavail.com', name: 'ada@datavail.com', source: 'databricks', tenantId: DEFAULT_TENANT_ID });
     expect(id?.accessToken).toBe('eyJ.token.here');
   });
 
   it('keeps the preferred-username-over-email precedence and falls back to the email as subject', async () => {
     const id = await resolveIdentity(fakeReq({ 'x-forwarded-email': 'ada@datavail.com' }));
-    expect(id).toEqual({ subject: 'ada@datavail.com', email: 'ada@datavail.com', name: 'ada@datavail.com', source: 'databricks' });
+    expect(id).toEqual({ subject: 'ada@datavail.com', email: 'ada@datavail.com', name: 'ada@datavail.com', source: 'databricks', tenantId: DEFAULT_TENANT_ID });
   });
 
   it('returns null with no headers at all', async () => {
@@ -60,7 +61,7 @@ describe('databricks verifier', () => {
 describe('dev verifier', () => {
   it('is only active when DEV_IDENTITY_EMAIL is set explicitly', async () => {
     process.env.DEV_IDENTITY_EMAIL = 'me@localhost';
-    expect(await resolveIdentity(fakeReq())).toEqual({ subject: 'me@localhost', email: 'me@localhost', name: 'me@localhost', source: 'dev' });
+    expect(await resolveIdentity(fakeReq())).toEqual({ subject: 'me@localhost', email: 'me@localhost', name: 'me@localhost', source: 'dev', tenantId: DEFAULT_TENANT_ID });
     expect(requestAuthor(fakeReq())).toBe('me@localhost');
   });
 
@@ -70,32 +71,31 @@ describe('dev verifier', () => {
   });
 });
 
-describe('better-auth verifier', () => {
-  let privateKey: CryptoKey;
-  let jwksServer: Server;
-  let jwksUrl: string;
-
-  beforeAll(async () => {
-    const pair = await generateKeyPair('RS256');
-    privateKey = pair.privateKey;
-    const jwk = { ...(await exportJWK(pair.publicKey)), kid: 'test-key', alg: 'RS256', use: 'sig' };
-    const app = express();
-    app.get('/.well-known/jwks.json', (_req, res) => res.json({ keys: [jwk] }));
-    await new Promise<void>((resolve) => {
-      jwksServer = app.listen(0, '127.0.0.1', () => resolve());
-    });
-    jwksUrl = `http://127.0.0.1:${(jwksServer.address() as AddressInfo).port}/.well-known/jwks.json`;
+// A throwaway JWKS server shared by the better-auth and gate suites.
+let privateKey: CryptoKey;
+let jwksServer: Server;
+let jwksUrl: string;
+const sign = (claims: Record<string, unknown>, opts: { exp?: string; key?: CryptoKey } = {}) =>
+  new SignJWT(claims)
+    .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
+    .setIssuedAt()
+    .setIssuer('https://auth.example.test')
+    .setExpirationTime(opts.exp ?? '5m')
+    .sign(opts.key ?? privateKey);
+beforeAll(async () => {
+  const pair = await generateKeyPair('RS256');
+  privateKey = pair.privateKey;
+  const jwk = { ...(await exportJWK(pair.publicKey)), kid: 'test-key', alg: 'RS256', use: 'sig' };
+  const app = express();
+  app.get('/.well-known/jwks.json', (_req, res) => res.json({ keys: [jwk] }));
+  await new Promise<void>((resolve) => {
+    jwksServer = app.listen(0, '127.0.0.1', () => resolve());
   });
-  afterAll(() => jwksServer.close());
+  jwksUrl = `http://127.0.0.1:${(jwksServer.address() as AddressInfo).port}/.well-known/jwks.json`;
+});
+afterAll(() => jwksServer.close());
 
-  const sign = (claims: Record<string, unknown>, opts: { exp?: string; key?: CryptoKey } = {}) =>
-    new SignJWT(claims)
-      .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
-      .setIssuedAt()
-      .setIssuer('https://auth.example.test')
-      .setExpirationTime(opts.exp ?? '5m')
-      .sign(opts.key ?? privateKey);
-
+describe('better-auth verifier', () => {
   it('is inert until NEON_AUTH_JWKS_URL is set', async () => {
     delete process.env.NEON_AUTH_JWKS_URL;
     const jwt = await sign({ sub: 'u1', email: 'ada@example.test' });
@@ -106,7 +106,29 @@ describe('better-auth verifier', () => {
     process.env.NEON_AUTH_JWKS_URL = jwksUrl;
     const jwt = await sign({ sub: 'user_123', email: 'ada@example.test', name: 'Ada' });
     const id = await resolveIdentity(fakeReq({ authorization: `Bearer ${jwt}` }));
-    expect(id).toEqual({ subject: 'user_123', email: 'ada@example.test', name: 'Ada', source: 'better-auth' });
+    // No organization claim and no directory wired: the identity has no tenant (the gate answers 403).
+    expect(id).toEqual({ subject: 'user_123', email: 'ada@example.test', name: 'Ada', source: 'better-auth', tenantId: null });
+  });
+
+  it('takes the tenant from an organization claim when the token carries one', async () => {
+    process.env.NEON_AUTH_JWKS_URL = jwksUrl;
+    const jwt = await sign({ sub: 'user_123', email: 'ada@example.test', activeOrganizationId: 'org_acme' });
+    expect((await resolveIdentity(fakeReq({ authorization: `Bearer ${jwt}` })))?.tenantId).toBe('org_acme');
+    const bad = await sign({ sub: 'user_123', email: 'ada@example.test', org: 'not a tenant id!' });
+    expect((await resolveIdentity(fakeReq({ authorization: `Bearer ${bad}` })))?.tenantId).toBeNull();
+  });
+
+  it('falls back to the tenant directory by email when the token has no claim', async () => {
+    process.env.NEON_AUTH_JWKS_URL = jwksUrl;
+    setTenantDirectory((email) => Promise.resolve(email === 'ada@example.test' ? 't_ada' : null));
+    try {
+      const jwt = await sign({ sub: 'user_123', email: 'ada@example.test' });
+      expect((await resolveIdentity(fakeReq({ authorization: `Bearer ${jwt}` })))?.tenantId).toBe('t_ada');
+      const stranger = await sign({ sub: 'user_9', email: 'nobody@example.test' });
+      expect((await resolveIdentity(fakeReq({ authorization: `Bearer ${stranger}` })))?.tenantId).toBeNull();
+    } finally {
+      setTenantDirectory(null);
+    }
   });
 
   it('accepts the same JWT from the Better Auth session cookie', async () => {
@@ -147,8 +169,8 @@ describe('requireSignIn middleware', () => {
   beforeAll(async () => {
     const app = express();
     app.use('/api', requireSignIn());
-    app.get('/api/me', (req, res) => res.json({ author: requestAuthor(req) }));
-    app.get('/api/agent/work', (req, res) => res.json({ author: requestAuthor(req, 'anonymous runner') }));
+    app.get('/api/me', (req, res) => res.json({ author: requestAuthor(req), tenant: currentTenantId() }));
+    app.get('/api/agent/work', (req, res) => res.json({ author: requestAuthor(req, 'anonymous runner'), tenant: currentTenantId() }));
     await new Promise<void>((resolve) => {
       server = app.listen(0, '127.0.0.1', () => resolve());
     });
@@ -166,16 +188,26 @@ describe('requireSignIn middleware', () => {
   it('passes a protected route once the proxy headers are present', async () => {
     const res = await fetch(`${base}/api/me`, { headers: { 'x-forwarded-email': 'ada@datavail.com' } });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ author: 'ada@datavail.com' });
+    // The handler ran inside the identity's tenant context.
+    expect(await res.json()).toEqual({ author: 'ada@datavail.com', tenant: DEFAULT_TENANT_ID });
+  });
+
+  it('answers 403 No workspace for an identity that belongs to no tenant', async () => {
+    process.env.NEON_AUTH_JWKS_URL = jwksUrl;
+    const jwt = await sign({ sub: 'user_123', email: 'ada@example.test' });
+    const res = await fetch(`${base}/api/me`, { headers: { authorization: `Bearer ${jwt}` } });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'No workspace' });
   });
 
   it('lets the runner routes through without an identity, and still attributes one when present', async () => {
     delete process.env.DEV_IDENTITY_EMAIL;
     const anon = await fetch(`${base}/api/agent/work`);
     expect(anon.status).toBe(200);
-    expect(await anon.json()).toEqual({ author: 'anonymous runner' });
+    // Anonymous runner traffic is scoped to the compatibility tenant, not to nothing.
+    expect(await anon.json()).toEqual({ author: 'anonymous runner', tenant: DEFAULT_TENANT_ID });
     const named = await fetch(`${base}/api/agent/work`, { headers: { 'x-forwarded-email': 'runner@datavail.com' } });
-    expect(await named.json()).toEqual({ author: 'runner@datavail.com' });
+    expect(await named.json()).toEqual({ author: 'runner@datavail.com', tenant: DEFAULT_TENANT_ID });
   });
 
   it('keeps the exemption list explicit', () => {

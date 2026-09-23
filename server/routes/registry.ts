@@ -47,8 +47,8 @@ export const REGISTRY_SCHEMA_SQL = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
-  // One slug per scope: shared entries share one namespace, each project its own.
-  `CREATE UNIQUE INDEX IF NOT EXISTS registry_mcp_servers_scope_slug ON app.registry_mcp_servers (COALESCE(engagement_id, ''), lower(slug))`,
+  // One slug per scope (shared entries share one namespace within the tenant,
+  // each project its own): registry_mcp_servers_tenant_scope_slug in server/db/tenancy.ts.
   `CREATE TABLE IF NOT EXISTS app.registry_skills (
     id SERIAL PRIMARY KEY,
     engagement_id TEXT REFERENCES app.engagements(id) ON DELETE CASCADE,
@@ -63,7 +63,7 @@ export const REGISTRY_SCHEMA_SQL = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS registry_skills_scope_slug ON app.registry_skills (COALESCE(engagement_id, ''), lower(slug))`,
+  // Same per-scope slug rule: registry_skills_tenant_scope_slug in server/db/tenancy.ts.
 ];
 
 export const MCP_TRANSPORTS = ['stdio', 'http'] as const;

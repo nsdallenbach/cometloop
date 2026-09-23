@@ -16,7 +16,7 @@ type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string
 export async function setTicketActivity(q: Query, key: string, activity: TicketActivityType): Promise<void> {
   await q(
     `INSERT INTO app.ticket_activity (ticket_key, activity_type) VALUES ($1,$2)
-     ON CONFLICT (ticket_key, activity_type) DO UPDATE SET started_at = NOW()`,
+     ON CONFLICT (tenant_id, ticket_key, activity_type) DO UPDATE SET started_at = NOW()`,
     [key, activity]
   );
 }

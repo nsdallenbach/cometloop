@@ -373,7 +373,7 @@ export function setupProjectConfigRoutes(
       const saved = await q(
         `INSERT INTO app.project_runner_configs (engagement_id, base_image, libraries, updated_by, updated_at)
          VALUES ($1, $2, $3, $4, NOW())
-         ON CONFLICT (engagement_id) DO UPDATE SET base_image = $2, libraries = $3, updated_by = $4, updated_at = NOW()
+         ON CONFLICT (tenant_id, engagement_id) DO UPDATE SET base_image = $2, libraries = $3, updated_by = $4, updated_at = NOW()
          RETURNING *`,
         [engagementId, result.config.baseImage, JSON.stringify(result.config.libraries), who.email],
       );

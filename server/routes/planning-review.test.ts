@@ -9,6 +9,7 @@ import {
   sweepExpiredPlanningReviews,
   withPlanningReview,
 } from './planning-review';
+import { tenancyTestSql } from '../db/tenancy';
 
 /**
  * DAT-218. Runs the planning-review helpers against pg-mem — the same SQL the
@@ -45,6 +46,7 @@ beforeEach(async () => {
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of [...SUPPORT_SQL, ...PLANNING_REVIEW_SCHEMA_SQL]) await q(sql);
+  for (const sql of tenancyTestSql([...SUPPORT_SQL, ...PLANNING_REVIEW_SCHEMA_SQL])) await q(sql);
   await q(`INSERT INTO app.tickets (key, engagement_id) VALUES ('DAT-1', 'exec'), ('DAT-2', 'exec'), ('DAT-3', 'exec')`);
 });
 

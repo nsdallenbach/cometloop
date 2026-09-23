@@ -2,7 +2,9 @@ import { z } from 'zod';
 import express, { Application } from 'express';
 import { extractSowText } from './extract-text';
 import { callerOf, resolveCaller, type Caller } from './roles';
-import { requestAuthor, requireSignIn } from '../identity';
+import { requestAuthor, requireSignIn, setTenantDirectory } from '../identity';
+import { tenancySchemaSql } from '../db/tenancy';
+import { startPerTenant } from '../db/tenant-loops';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
 import { AGENT_SCHEMA_SQL, setupAgentRoutes, startMockRunner } from './agent-work';
@@ -71,7 +73,21 @@ import { SEED_ENGAGEMENTS, SEED_TICKETS, SEED_SOURCES, SEED_FEED, SEED_TEAM, SEE
 
 interface AppKitServices {
   lakebase: {
+    /** What every route module queries with. On the portable runtime this is tenant-scoped (RLS). */
     query(text: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+    /**
+     * The owner connection, unscoped: boot migrations and the tenant
+     * directory. Absent on the AppKit runtime, where `query` is the bare pool
+     * and doubles as it.
+     */
+    adminQuery?(text: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+    /**
+     * True when `query` sets the tenant and the app role per statement
+     * (server/db/scoped-query.ts) — the precondition for switching row-level
+     * security on. Off on AppKit, where isolation is single-tenant
+     * compatibility only.
+     */
+    tenantIsolation?: boolean;
   };
   server: {
     extend(fn: (app: Application) => void): void;
@@ -166,7 +182,7 @@ const SCHEMA_SQL = [
     skills JSONB NOT NULL DEFAULT '[]',
     load INT NOT NULL DEFAULT 0
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS team_members_email_unique ON app.team_members (LOWER(email)) WHERE email IS NOT NULL`,
+  // One member per email — per tenant; the unique index lives in server/db/tenancy.ts.
   `CREATE TABLE IF NOT EXISTS app.suggestions (
     id TEXT PRIMARY KEY,
     ticket TEXT NOT NULL,
@@ -210,10 +226,18 @@ const SCHEMA_SQL = [
   `ALTER TABLE app.engagements ADD COLUMN IF NOT EXISTS roadmap_settings JSONB`,
 ];
 
-async function initSchema(appkit: AppKitServices) {
-  // Statements run independently: legacy tables the app SP doesn't own can
-  // reject an ALTER without blocking migrations on the tables it does own.
-  for (const sql of [
+/** The unscoped owner query: migrations, seeds and the tenant directory run on it, never a route. */
+const adminQueryOf = (appkit: AppKitServices) =>
+  appkit.lakebase.adminQuery ? appkit.lakebase.adminQuery.bind(appkit.lakebase) : appkit.lakebase.query.bind(appkit.lakebase);
+
+/**
+ * Every boot statement, in order. The tenancy array goes last on purpose: it
+ * rewrites keys on tables the arrays above create (server/db/tenancy.ts
+ * explains the order). Exported for the tenancy tests and the integration
+ * test, which boot a real database from it.
+ */
+export function bootSchemaSql(opts: { isolation: boolean }): string[] {
+  return [
     ...SCHEMA_SQL,
     ...NOTIFICATION_SCHEMA_SQL,
     ...REPO_SCHEMA_SQL,
@@ -241,9 +265,24 @@ async function initSchema(appkit: AppKitServices) {
     ...TICKET_REVIEW_SCHEMA_SQL,
     ...PROJECT_CONFIG_SCHEMA_SQL,
     ...STALE_NUDGE_SCHEMA_SQL,
-  ]) {
+    ...tenancySchemaSql(opts),
+  ];
+}
+
+/** The isolation-on boot array (what the portable runtime runs). */
+export const BOOT_SCHEMA_SQL: readonly string[] = bootSchemaSql({ isolation: true });
+
+async function initSchema(appkit: AppKitServices) {
+  const admin = adminQueryOf(appkit);
+  const isolation = appkit.lakebase.tenantIsolation === true;
+  if (!isolation) {
+    console.warn('[api] tenant isolation (row-level security) is not enforced on this runtime — single-tenant compatibility only');
+  }
+  // Statements run independently: legacy tables the app SP doesn't own can
+  // reject an ALTER without blocking migrations on the tables it does own.
+  for (const sql of bootSchemaSql({ isolation })) {
     try {
-      await appkit.lakebase.query(sql);
+      await admin(sql);
     } catch (err) {
       console.warn(
         `[api] schema statement failed (${sql.slice(0, 60).replace(/\s+/g, ' ')}…):`,
@@ -251,7 +290,7 @@ async function initSchema(appkit: AppKitServices) {
       );
     }
   }
-  const { rows } = await appkit.lakebase.query('SELECT 1 FROM app.engagements LIMIT 1');
+  const { rows } = await admin('SELECT 1 FROM app.engagements LIMIT 1');
   if (rows.length > 0) {
     await backfillMemberships(appkit);
     return;
@@ -264,7 +303,7 @@ async function initSchema(appkit: AppKitServices) {
   }
   console.log('[api] Seeding demo data');
   for (const e of SEED_ENGAGEMENTS) {
-    await appkit.lakebase.query(
+    await admin(
       `INSERT INTO app.engagements
        (id, client, name, health, health_reason, owner, phase, pct, burn, plan, next_milestone, blockers,
         sow_status, dates, value, hours, team_size, rm_start, rm_end, phases, milestones, composer)
@@ -297,7 +336,7 @@ async function initSchema(appkit: AppKitServices) {
   }
   for (const t of SEED_TICKETS) {
     const seedEst = seedEstimates(t.est);
-    await appkit.lakebase.query(
+    await admin(
       `INSERT INTO app.tickets (key, engagement_id, title, status, assignee, est, workstream, agent, sources, description, ac, blocked, est_hours, human_est_hours, done_at)
        VALUES ($1,'cav',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, CASE WHEN $3 = 'done' THEN NOW() END)`,
       [
@@ -318,21 +357,21 @@ async function initSchema(appkit: AppKitServices) {
     );
   }
   for (const s of SEED_SOURCES) {
-    await appkit.lakebase.query(
+    await admin(
       `INSERT INTO app.sources (engagement_id, name, type, status, status_color, last_sync, chunks, linked)
        VALUES ('cav',$1,$2,$3,$4,$5,$6,$7)`,
       [s.name, s.type, s.status, s.status_color, s.last_sync, s.chunks, s.linked]
     );
   }
   for (const f of SEED_FEED) {
-    await appkit.lakebase.query(
+    await admin(
       `INSERT INTO app.feed_items (engagement_id, actor, text, time_label, source, reversible)
        VALUES ('cav',$1,$2,$3,$4,$5)`,
       [f.actor, f.text, f.time_label, f.source, f.reversible]
     );
   }
   for (const m of SEED_TEAM) {
-    await appkit.lakebase.query(`INSERT INTO app.team_members (name, role, skills, load) VALUES ($1,$2,$3,$4)`, [
+    await admin(`INSERT INTO app.team_members (name, role, skills, load) VALUES ($1,$2,$3,$4)`, [
       m.name,
       m.role,
       JSON.stringify(m.skills),
@@ -340,7 +379,7 @@ async function initSchema(appkit: AppKitServices) {
     ]);
   }
   for (const g of SEED_SUGGESTIONS) {
-    await appkit.lakebase.query(`INSERT INTO app.suggestions (id, ticket, person, rationale) VALUES ($1,$2,$3,$4)`, [
+    await admin(`INSERT INTO app.suggestions (id, ticket, person, rationale) VALUES ($1,$2,$3,$4)`, [
       g.id,
       g.ticket,
       g.person,
@@ -348,16 +387,17 @@ async function initSchema(appkit: AppKitServices) {
     ]);
   }
   // The seeded tickets need baseline events too — the schema-time backfill ran before they existed.
-  await appkit.lakebase.query(TICKET_EVENTS_BACKFILL_SQL);
+  await admin(TICKET_EVENTS_BACKFILL_SQL);
   console.log('[api] Seed complete');
   await backfillMemberships(appkit);
 }
 
 /** One-time: assign the full seeded bench to the Cavendish demo engagement. */
 async function backfillMemberships(appkit: AppKitServices) {
-  const { rows } = await appkit.lakebase.query('SELECT 1 FROM app.engagement_members LIMIT 1');
+  const admin = adminQueryOf(appkit);
+  const { rows } = await admin('SELECT 1 FROM app.engagement_members LIMIT 1');
   if (rows.length > 0) return;
-  await appkit.lakebase.query(
+  await admin(
     `INSERT INTO app.engagement_members (engagement_id, member_id)
      SELECT 'cav', id FROM app.team_members
      WHERE EXISTS (SELECT 1 FROM app.engagements WHERE id = 'cav')
@@ -760,6 +800,19 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   }
 
   const q = appkit.lakebase.query.bind(appkit.lakebase);
+  const adminQ = adminQueryOf(appkit);
+
+  // Better Auth identities without an organization claim find their tenant
+  // by email in the (global) directory — read on the owner connection, since
+  // no tenant is known yet at that point.
+  setTenantDirectory(async (email) => {
+    const { rows } = await adminQ(
+      `SELECT tenant_id FROM app.tenant_members WHERE LOWER(email) = LOWER($1) ORDER BY (role = 'owner') DESC, created_at LIMIT 1`,
+      [email],
+    );
+    const t = rows[0]?.tenant_id;
+    return typeof t === 'string' ? t : null;
+  });
 
   /** Sends 403 and returns null unless the caller is an admin. */
   const requireAdmin = async (req: express.Request, res: express.Response): Promise<Caller | null> => {
@@ -815,7 +868,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     app.get('/healthz', async (_req, res) => {
       const started = Date.now();
       try {
-        await q('SELECT 1');
+        await adminQ('SELECT 1');
         res.json({ ok: true, db: { ok: true, latencyMs: Date.now() - started } });
       } catch (err) {
         res.status(503).json({ ok: false, db: { ok: false, latencyMs: Date.now() - started, error: (err as Error).message } });
@@ -1360,6 +1413,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         }
         // Continue the engagement's existing key sequence (e.g. NAC-118 after
         // NAC-117); fall back to the client-derived prefix for a fresh board.
+        // The number is derived from the keys already on this engagement, and
+        // under row-level security those are this tenant's — so the sequence
+        // is per (tenant, engagement) and two tenants can both own a CL-101.
+        // `tickets.seq` (SERIAL) is only the board's ordering surrogate.
         const existing = (
           await q('SELECT key FROM app.tickets WHERE engagement_id = $1 ORDER BY seq', [engId])
         ).rows.map((r) => String(r.key));
@@ -1877,6 +1934,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             .slice(0, 24) || 'engagement';
         let id = base;
         let n = 2;
+        // Uniqueness is per tenant: the lookup is RLS-scoped and the primary
+        // key is (tenant_id, id), so another tenant's `cometloop` is invisible.
         while ((await q('SELECT 1 FROM app.engagements WHERE id = $1', [id])).rows.length > 0) {
           id = `${base}-${n++}`;
         }
@@ -2273,26 +2332,33 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   });
 
   console.log('[api] API routes registered');
-  // Idle repos sync every 90s; connections with an open linked PR or an
-  // in-flight deploy drop to a 30s cadence so an external merge reflects on
-  // the ticket in under a minute while webhooks can't reach the app
-  // (GitHub App tokens make the extra polling free, rate-limit-wise).
-  startRepoPolling(q, 90_000, 30_000);
-  // Review-SLA watch (DAT-201): the thresholds are 24h and 48h, so a 5-minute
-  // sweep is ample — and PRs inside the first 24h cost no provider calls.
-  startEscalationPolling(q, 5 * 60_000);
-  // Stale-ticket nudges (DAT-107): quietness moves at the speed of days, so a
-  // 30-minute sweep is generous — and every pass is idempotent per quiet
-  // period, so cadence can never cause duplicate nudges.
-  startStaleNudgePolling(q, 30 * 60_000);
-  // Fleet watch (DAT-224): release work orphaned by a dead runner and record a
-  // stranded queue on the feed. A minute is fine — the windows are 15 minutes
-  // (orphan) and 10 (stranded queue), and a quiet fleet costs three cheap
-  // queries.
-  startFleetWatch(q, 60_000);
-  // DAT-218: reap planning-review flags whose owning pass died without
-  // clearing them. Reads already ignore expired rows, so this is housekeeping
-  // (and the log line that tells us a pass went missing).
-  startPlanningReviewSweep(q);
-  if (process.env.DEMO_MOCK_RUNNER === '1') startMockRunner(q);
+  // The background loops are per tenant (phase 2): each tenant gets its own
+  // set, started inside that tenant's context so every query the loop issues
+  // is scoped — and one tenant's slow GitHub cannot stall another's sweep.
+  // Tenants created after boot pick theirs up on the next directory scan.
+  startPerTenant(adminQ, (tenantId) => {
+    console.log(`[api] background loops started for tenant ${tenantId}`);
+    // Idle repos sync every 90s; connections with an open linked PR or an
+    // in-flight deploy drop to a 30s cadence so an external merge reflects on
+    // the ticket in under a minute while webhooks can't reach the app
+    // (GitHub App tokens make the extra polling free, rate-limit-wise).
+    startRepoPolling(q, 90_000, 30_000);
+    // Review-SLA watch (DAT-201): the thresholds are 24h and 48h, so a 5-minute
+    // sweep is ample — and PRs inside the first 24h cost no provider calls.
+    startEscalationPolling(q, 5 * 60_000);
+    // Stale-ticket nudges (DAT-107): quietness moves at the speed of days, so a
+    // 30-minute sweep is generous — and every pass is idempotent per quiet
+    // period, so cadence can never cause duplicate nudges.
+    startStaleNudgePolling(q, 30 * 60_000);
+    // Fleet watch (DAT-224): release work orphaned by a dead runner and record a
+    // stranded queue on the feed. A minute is fine — the windows are 15 minutes
+    // (orphan) and 10 (stranded queue), and a quiet fleet costs three cheap
+    // queries.
+    startFleetWatch(q, 60_000);
+    // DAT-218: reap planning-review flags whose owning pass died without
+    // clearing them. Reads already ignore expired rows, so this is housekeeping
+    // (and the log line that tells us a pass went missing).
+    startPlanningReviewSweep(q);
+    if (process.env.DEMO_MOCK_RUNNER === '1') startMockRunner(q);
+  });
 }

@@ -6,6 +6,7 @@ import { baselineSecurity, parseSecuritySettings } from './agent-security';
 import type { Caller } from './roles';
 import { REGISTRY_SCHEMA_SQL } from './registry';
 import { FLEET_SCHEMA_SQL } from './fleet';
+import { tenancyTestSql } from '../db/tenancy';
 
 /**
  * Runs the agent-map overview against pg-mem, the same in-memory Postgres
@@ -39,6 +40,7 @@ beforeEach(async () => {
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of [...SUPPORT_SQL, ...AGENTS_TABLE_SQL, ...FLEET_SCHEMA_SQL]) await q(sql);
+  for (const sql of tenancyTestSql([...SUPPORT_SQL, ...AGENTS_TABLE_SQL, ...FLEET_SCHEMA_SQL])) await q(sql);
   await q(`INSERT INTO app.engagements (id, client, name, health, phase) VALUES ('eng-a', 'ACME', 'Console', 'ok', 'Build')`);
   await q(`INSERT INTO app.engagements (id, client, name, health, phase) VALUES ('eng-b', 'BETA', 'Portal', 'risk', 'Plan')`);
 });

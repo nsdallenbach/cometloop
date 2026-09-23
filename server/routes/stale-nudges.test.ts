@@ -10,6 +10,7 @@ import {
   clampQuietDays,
   resolveNudgeRecipients,
 } from './stale-nudges';
+import { tenancyTestSql } from '../db/tenancy';
 
 /**
  * The DAT-107 stale-ticket sweep run against pg-mem — the same SQL the
@@ -63,6 +64,7 @@ beforeEach(async () => {
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of [...SUPPORT_SQL, ...STALE_NUDGE_SCHEMA_SQL]) await q(sql);
+  for (const sql of tenancyTestSql([...SUPPORT_SQL, ...STALE_NUDGE_SCHEMA_SQL])) await q(sql);
   await q(`INSERT INTO app.engagements (id) VALUES ('exec')`);
   await q(`INSERT INTO app.engagement_leads (engagement_id, email) VALUES ('exec', 'lead@datavail.com')`);
   await q(

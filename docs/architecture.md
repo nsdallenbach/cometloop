@@ -124,15 +124,36 @@ what is shared by design versus by construction:
 
 | Store | Contents |
 |---|---|
-| Lakebase Postgres (`app.*`) | engagements, tickets (+events/links/tags/attachments/estimates/rejections), comments, feed, notifications, team, agent_tasks (+assignee, reclaims, token usage), runner_polls, project_agents (+security settings), coordination_messages, repo connections/PRs/commits, PR requeues and review-SLA escalations, in-flight planning reviews, deploy events, stale-nudge config, project config/standards |
+| Postgres (`app.*` — Neon on the portable runtime, Lakebase on Databricks) | engagements, tickets (+events/links/tags/attachments/estimates/rejections), comments, feed, notifications, team, agent_tasks (+assignee, reclaims, token usage), runner_polls, project_agents (+security settings), coordination_messages, repo connections/PRs/commits, PR requeues and review-SLA escalations, in-flight planning reviews, deploy events, stale-nudge config, project config/standards, workflows — every one of them with a `tenant_id`; plus the tenant directory `tenants` / `tenant_members` |
 | UC volume `sow_docs` | uploaded SOW/SOP documents, per-engagement context files, standards docs |
 | UC volume `agent_telemetry` | per-run tool-call logs archived as NDJSON under `tool-calls/<engagement>/<ticket>/` |
 
 Schema migrations run at boot from `*_SCHEMA_SQL` arrays (statements execute
-independently; failures log without aborting). Tables owned by the developer
-role can't take boot `ALTER`s from the app's service principal — those
-migrations live in the idempotent `scripts/dev-migrate.cjs`, run manually
-with a Lakebase credential.
+independently; failures log without aborting), with the tenancy array from
+`server/db/tenancy.ts` last. Tables owned by the developer role can't take
+boot `ALTER`s from the app's service principal — those migrations live in
+the idempotent `scripts/dev-migrate.cjs`, run manually with a Lakebase
+credential.
+
+**Tenancy** (platform-architecture phase 2): the database is shared, every
+`app.*` table carries `tenant_id`, human keys are unique per tenant
+(`PRIMARY KEY (tenant_id, key)` on tickets, `(tenant_id, id)` on
+engagements, every FK onto them composite), and Postgres row-level security
+enforces isolation — one `tenant_isolation` policy per table on
+`current_setting('app.tenant_id')`, enabled and forced. Because Neon's owner
+role bypasses RLS, tenant queries run as a `cometloop_app` role: the
+portable runtime's `q` (`server/db/scoped-query.ts`) wraps every statement
+in `BEGIN; SET LOCAL ROLE cometloop_app; set_config('app.tenant_id', …,
+true); …; COMMIT`, taking the tenant from an AsyncLocalStorage that
+`requireSignIn` sets from `Identity.tenantId` (`t_cometloop` for proxy
+and dev identities; the organization claim or `tenant_members` lookup for
+Better Auth; 403 `No workspace` when there is none). Route modules are
+unchanged. Background loops start once per tenant inside that context
+(`server/db/tenant-loops.ts`); boot migrations and the tenant directory use
+the unscoped owner connection (`adminQuery`). On the AppKit runtime the
+columns and keys exist but isolation is off (bare pool). The existing data is
+tenant `t_cometloop`; every `tenant_id` still defaults to it when no tenant
+is set, which phase 3 removes.
 
 ## Server domain modules
 

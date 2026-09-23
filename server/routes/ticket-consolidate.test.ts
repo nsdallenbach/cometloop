@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 import { consolidateTickets, consolidatedTail, mergeAcceptanceCriteria } from './ticket-consolidate';
+import { tenancyTestSql } from '../db/tenancy';
 
 /**
  * Consolidation against pg-mem — the same SQL the console runs on Lakebase.
@@ -68,6 +69,7 @@ beforeEach(async () => {
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of SUPPORT_SQL) await q(sql);
+  for (const sql of tenancyTestSql(SUPPORT_SQL)) await q(sql);
 });
 
 describe('consolidateTickets', () => {

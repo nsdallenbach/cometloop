@@ -69,7 +69,7 @@ export async function beginPlanningReview(q: Query, opts: PlanningReviewStart): 
     await q(
       `INSERT INTO app.planning_reviews (ticket_key, engagement_id, flow, started_at, expires_at)
        VALUES ($1, $2, $3, NOW(), NOW() + ($4::text || ' milliseconds')::interval)
-       ON CONFLICT (ticket_key) DO UPDATE
+       ON CONFLICT (tenant_id, ticket_key) DO UPDATE
          SET engagement_id = EXCLUDED.engagement_id,
              flow = EXCLUDED.flow,
              started_at = EXCLUDED.started_at,

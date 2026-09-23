@@ -15,6 +15,7 @@ import {
   resetFleetAlerts,
   runnerStatus,
 } from './fleet';
+import { tenancyTestSql } from '../db/tenancy';
 
 /**
  * The fleet monitor against pg-mem, same harness as the agent-map tests. These
@@ -68,6 +69,7 @@ beforeEach(async () => {
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of [...SUPPORT_SQL, ...FLEET_SCHEMA_SQL]) await q(sql);
+  for (const sql of tenancyTestSql([...SUPPORT_SQL, ...FLEET_SCHEMA_SQL])) await q(sql);
   resetFleetAlerts();
 });
 

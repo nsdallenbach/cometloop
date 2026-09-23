@@ -47,10 +47,10 @@ export const STALE_NUDGE_SCHEMA_SQL = [
     nudged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     recipients JSONB NOT NULL DEFAULT '[]'
   )`,
-  // The one-nudge-per-quiet-period claim. A separate unique INDEX rather than
-  // an inline table constraint so ON CONFLICT resolves it everywhere — real
-  // Postgres treats them identically, pg-mem only registers the index form.
-  `CREATE UNIQUE INDEX IF NOT EXISTS ticket_nudges_quiet_period ON app.ticket_nudges (ticket_key, quiet_since)`,
+  // The one-nudge-per-quiet-period claim is the unique index
+  // ticket_nudges_tenant_quiet_period (tenant_id, ticket_key, quiet_since) in
+  // server/db/tenancy.ts — a separate INDEX rather than an inline constraint
+  // so ON CONFLICT resolves it everywhere (pg-mem only registers the index form).
   `CREATE INDEX IF NOT EXISTS ticket_nudges_engagement ON app.ticket_nudges (engagement_id, nudged_at)`,
 ];
 
@@ -199,7 +199,7 @@ export async function checkStaleNudges(q: Query, overrides: Partial<NudgeDeps> =
     const claimed = (
       await q(
         `INSERT INTO app.ticket_nudges (ticket_key, engagement_id, quiet_since, recipients)
-         VALUES ($1,$2,$3,$4) ON CONFLICT (ticket_key, quiet_since) DO NOTHING RETURNING id`,
+         VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id, ticket_key, quiet_since) DO NOTHING RETURNING id`,
         [key, engagementId, quietSince, JSON.stringify(recipients)],
       )
     ).rows;
@@ -304,7 +304,7 @@ export function setupStaleNudgeRoutes(
         await q(
           `INSERT INTO app.nudge_settings (engagement_id, quiet_days, updated_by, updated_at)
            VALUES ($1, $2, $3, NOW())
-           ON CONFLICT (engagement_id) DO UPDATE SET quiet_days = $2, updated_by = $3, updated_at = NOW()
+           ON CONFLICT (tenant_id, engagement_id) DO UPDATE SET quiet_days = $2, updated_by = $3, updated_at = NOW()
            RETURNING *`,
           [engagementId, parsed.data.quietDays, lead.email],
         )
