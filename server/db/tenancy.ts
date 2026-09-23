@@ -233,6 +233,20 @@ export const UNIQUE_INDEXES: readonly UniqueIndexRewrite[] = [
   },
 ];
 
+/**
+ * Plain indexes over the composite (tenant-first) key shape that the board's
+ * detail route needs. Each one earned its place on an EXPLAIN (ANALYZE) of
+ * that route against a copy of production (docs/platform-architecture.md §4):
+ * candidates the planner ignored at this data size were not added.
+ */
+export const PERFORMANCE_INDEXES: readonly string[] = [
+  // The feed page: latest N for an engagement, and the older-page cursor.
+  `CREATE INDEX IF NOT EXISTS feed_items_tenant_engagement_created ON app.feed_items (tenant_id, engagement_id, created_at DESC, id DESC)`,
+  // The detail query's two repo_prs LATERALs run once per ticket; this turns
+  // a per-ticket seq scan of repo_prs into an index probe (13 ms → 5 ms on 177 tickets).
+  `CREATE INDEX IF NOT EXISTS repo_prs_tenant_ticket ON app.repo_prs (tenant_id, ticket_key)`,
+];
+
 export interface ForeignKeyRewrite {
   table: string;
   column: string;
@@ -426,6 +440,7 @@ export function tenancySchemaSql(opts: TenancySchemaOptions): string[] {
   for (const u of UNIQUE_CONSTRAINTS) out.push(uniqueConstraintSql(u));
   for (const u of UNIQUE_INDEXES) out.push(...uniqueIndexSql(u));
   for (const f of FOREIGN_KEYS) out.push(foreignKeySql(f));
+  out.push(...PERFORMANCE_INDEXES);
   if (opts.isolation) {
     out.push(...APP_ROLE_SQL);
     for (const t of TENANT_TABLES) out.push(...policySql(t));

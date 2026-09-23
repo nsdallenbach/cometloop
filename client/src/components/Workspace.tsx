@@ -14,7 +14,7 @@ import {
   Users,
 } from 'lucide-react';
 import { api } from '../api';
-import type { AgentTask, ContextFile, Engagement, EngagementDetail, FileLibrary, Ticket, TicketStatus } from '../types';
+import type { AgentTask, ContextFile, Engagement, EngagementDetail, FeedItem, FileLibrary, Ticket, TicketStatus } from '../types';
 import { HEALTH_COLOR, HEALTH_LABEL, fmtDuration, initials, mono } from '../util';
 import { runnerBrand } from './RunnerLogo';
 import { dropBoardTicket, laneOf, type BoardLane } from '../lib/board-order';
@@ -116,6 +116,34 @@ export function Workspace({
   const [pushing, setPushing] = useState(false);
   const [pushConfirm, setPushConfirm] = useState(false);
   const [revertConfirm, setRevertConfirm] = useState<number | null>(null);
+  /** Mirrors the server's FEED_PAGE_SIZE: a full page means there may be older items to load. */
+  const FEED_PAGE_SIZE = 200;
+  // The detail payload carries only the latest feed page (newest first);
+  // "Load older" appends earlier pages here. Reset whenever the engagement
+  // changes so one board's history never trails into another's.
+  const [olderFeed, setOlderFeed] = useState<{ engId: string; items: FeedItem[]; hasMore: boolean; loading: boolean }>({
+    engId: eng.id,
+    items: [],
+    hasMore: true,
+    loading: false,
+  });
+  const feedItems = olderFeed.engId === eng.id ? [...(detail?.feed ?? []), ...olderFeed.items] : (detail?.feed ?? []);
+  const feedPageFull = (detail?.feed.length ?? 0) >= FEED_PAGE_SIZE;
+  const loadOlderFeed = () => {
+    const last = feedItems[feedItems.length - 1];
+    if (!last || olderFeed.loading) return;
+    const engId = eng.id;
+    setOlderFeed((o) => ({ ...(o.engId === engId ? o : { engId, items: [], hasMore: true }), engId, loading: true }));
+    api
+      .feedOlder(engId, last.id)
+      .then((page) => {
+        setOlderFeed((o) => (o.engId === engId ? { engId, items: [...o.items, ...page.items], hasMore: page.hasMore, loading: false } : o));
+      })
+      .catch(() => {
+        setOlderFeed((o) => (o.engId === engId ? { ...o, loading: false } : o));
+        toast('Could not load older activity');
+      });
+  };
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = useState<TicketStatus | 'agent' | null>(null);
   // Jira-style pointer drag: the card itself follows the cursor as a floating
@@ -1747,8 +1775,8 @@ export function Workspace({
             <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line)', ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
               ACTIVITY — EVERY AGENT ACTION IS ATTRIBUTABLE AND REVERSIBLE
             </div>
-            {detail.feed.length === 0 && <Empty label="No activity yet — agent actions and status pushes land here." />}
-            {detail.feed.map((f) => (
+            {feedItems.length === 0 && <Empty label="No activity yet — agent actions and status pushes land here." />}
+            {feedItems.map((f) => (
               <div key={f.id} className="hv-bg" style={{ display: 'flex', gap: 12, padding: 'var(--rowpad)', borderBottom: '1px solid var(--line)', alignItems: 'flex-start' }}>
                 <span
                   style={{
@@ -1814,6 +1842,26 @@ export function Workspace({
                 )}
               </div>
             ))}
+            {feedPageFull && olderFeed.hasMore && (
+              <div style={{ padding: '10px 14px', textAlign: 'center' }}>
+                <button
+                  onClick={loadOlderFeed}
+                  disabled={olderFeed.loading}
+                  style={{
+                    border: '1px solid var(--line)',
+                    background: 'var(--bg3)',
+                    color: 'var(--tx2)',
+                    borderRadius: 3,
+                    padding: '5px 12px',
+                    cursor: olderFeed.loading ? 'default' : 'pointer',
+                    ...mono(500, 10),
+                    letterSpacing: '.06em',
+                  }}
+                >
+                  {olderFeed.loading ? 'LOADING…' : 'LOAD OLDER'}
+                </button>
+              </div>
+            )}
           </div>
           <div style={{ border: '1px solid var(--line)', borderRadius: 4, background: 'var(--bg2)', padding: '14px 16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>

@@ -609,6 +609,17 @@ export const api = {
     return http(`/api/feed/${id}/revert`, { method: 'POST', ...json({}) });
   },
 
+  /**
+   * Older feed items than `before` (a feed item id), newest first. The detail
+   * payload carries only the latest page; the Status Feed tab pages back with this.
+   */
+  async feedOlder(engId: string, before: number, limit = 200): Promise<{ items: FeedItem[]; hasMore: boolean }> {
+    const d = await http<{ items: Row[]; hasMore: boolean }>(
+      `/api/engagements/${engId}/feed?before=${encodeURIComponent(String(before))}&limit=${limit}`,
+    );
+    return { items: d.items.map(mapFeed), hasMore: d.hasMore };
+  },
+
   async uploadSow(file: File): Promise<{ path: string; filename: string; size: number }> {
     return http(`/api/sow/upload?filename=${encodeURIComponent(file.name)}`, {
       method: 'POST',

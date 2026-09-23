@@ -4,6 +4,7 @@ import { extractSowText } from './extract-text';
 import { callerOf, resolveCaller, type Caller } from './roles';
 import { identityOf, requestAuthor, requireSignIn, setTenantDirectory } from '../identity';
 import { tenancySchemaSql } from '../db/tenancy';
+import { feedPageQuery, parseFeedPageQuery } from './feed-page';
 import { startPerTenant } from '../db/tenant-loops';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
 import { setupGithubAppRoutes } from './github-app';
@@ -981,7 +982,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             [id],
           ),
           q('SELECT * FROM app.sources WHERE engagement_id = $1 ORDER BY id', [id]),
-          q('SELECT * FROM app.feed_items WHERE engagement_id = $1 AND NOT reverted ORDER BY id', [id]),
+          // Newest first, capped: the board poll carries the latest page only
+          // (this board's full feed was 385 KB of the 740 KB payload); the
+          // Status Feed tab pages further back through /feed?before=.
+          q(feedPageQuery({ engagementId: id }).text, [id]),
           q(
             `SELECT t.* FROM app.team_members t
              JOIN app.engagement_members m ON m.member_id = t.id
@@ -1015,6 +1019,21 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       } catch (err) {
         console.error('engagement detail failed:', err);
         res.status(500).json({ error: 'Failed to load engagement detail' });
+      }
+    });
+
+    // Older feed pages for the Status Feed tab: the items before `before`
+    // (a feed item id), newest first, at most `limit` (default and cap
+    // FEED_PAGE_SIZE). Ids are SERIAL and created_at defaults to NOW(), so the
+    // id cursor and the created_at order agree.
+    app.get('/api/engagements/:id/feed', async (req, res) => {
+      try {
+        const { text, params, limit } = feedPageQuery(parseFeedPageQuery(req.params.id, req.query as { before?: unknown; limit?: unknown }));
+        const { rows } = await q(text, params);
+        res.json({ items: rows, hasMore: rows.length === limit });
+      } catch (err) {
+        console.error('feed page failed:', err);
+        res.status(500).json({ error: 'Failed to load feed' });
       }
     });
 
