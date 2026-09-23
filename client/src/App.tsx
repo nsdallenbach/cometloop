@@ -754,7 +754,7 @@ export default function App() {
         />
       )}
 
-      {screen.name === 'metrics' && <Metrics />}
+      {screen.name === 'metrics' && <Metrics engagements={engagements} />}
 
       {screen.name === 'agent-map' && <AgentsPage canLead={canLead} canPublishShared={isAdmin} toast={showToast} />}
 

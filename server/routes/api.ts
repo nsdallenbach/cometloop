@@ -62,6 +62,7 @@ import { setupTicketOrderRoutes } from './ticket-order';
 import { setupTicketDecisionRoutes } from './ticket-decision';
 import { clipText, installUtf8BodyRecovery } from './utf8-body';
 import { setupVelocityRoutes } from './velocity';
+import { setupMetricsRoutes } from './metrics';
 import {
   TICKET_EVENTS_SCHEMA_SQL,
   TICKET_EVENTS_BACKFILL_SQL,
@@ -2244,6 +2245,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupTicketOrderRoutes(app, q);
     setupTicketDecisionRoutes(app, q);
     setupVelocityRoutes(app, q);
+    setupMetricsRoutes(app, q);
     setupGithubAppRoutes(app);
     setupAgentRoutes(app, q, appkit.files('files'), requireProjectAccess, telemetry);
     setupProjectAgentRoutes(app, q, requireLead, resolveCaller);
