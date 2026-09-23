@@ -54,6 +54,27 @@ export const mono = (weight: number, size: number): CSSProperties => ({
   fontSize: size,
 });
 
+const hoursFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
+const wholeHoursFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+
+/**
+ * Hours as hours — never rolled into days: 18.7h, 79h, 505.7h, 1,240h.
+ * One decimal (dropped when whole) below 1,000, whole hours with thousands
+ * separators from there; minutes only under one hour (36m). This is the
+ * formatter for every hour quantity on the Analytics tab and the Metrics
+ * page (estimates, actuals, hours saved, cycle time); `fmtDuration` keeps
+ * the d/h form for elapsed-time chips elsewhere.
+ */
+export function fmtHours(hours: number | null | undefined): string {
+  if (hours == null || !Number.isFinite(hours) || hours < 0) return '—';
+  if (hours < 1) {
+    const mins = Math.round(hours * 60);
+    return mins >= 60 ? '1h' : `${mins}m`;
+  }
+  if (hours < 1000) return `${hoursFmt.format(hours)}h`;
+  return `${wholeHoursFmt.format(hours)}h`;
+}
+
 /** Human duration from decimal hours: 45s, 6m, 1h 12m, 2d 4h. Storage stays decimal hours. */
 export function fmtDuration(hours: number | null | undefined): string {
   if (hours == null || !Number.isFinite(hours) || hours < 0) return '—';
