@@ -24,7 +24,7 @@ In this codebase that surface is small and known:
 - **Client idioms that native views mirror** — markdown rendering, toasts,
   theme toggle, fonts.
 
-Everything else is exempt by construction: the desktop Tickets tab embeds the
+Everything else is exempt by construction: the desktop Projects entry embeds the
 deployed web app in a webview, so board/drawer/planning changes reach desktop
 automatically, and features like Agents or Identity are deliberately
 platform-exclusive.

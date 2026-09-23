@@ -34,7 +34,7 @@ The repo ships **one product in two shells** that must move together:
 | Package | What it is | Validate with |
 |---|---|---|
 | `client/` + `server/` | The web console — a Databricks App (AppKit, Express + React/Vite). Deployed by CI on every merge to `main`. | `npm run typecheck && npm run lint && npm run build` (root) |
-| `desktop/` | The Electron desktop client — embeds the deployed web console in its Tickets tab and adds native-only surfaces (Agents, Identity, Deploys, Terminal, Metrics). Released by tag (`v*`). | `cd desktop && npm run typecheck && npm run build` |
+| `desktop/` | The Electron desktop client — embeds the deployed web console in its Projects entry (and routes it to Workflows, Metrics and Settings) and adds native-only surfaces (Agents, Agent Tools, Identity, Deploys, Terminal). Released by tag (`v*`). | `cd desktop && npm run typecheck && npm run build` |
 | `shared/` | Code both shells import: `api-client/` (typed console client), `design/` (tokens), `harnesses/` (coding-agent adapters). | Covered by both of the above |
 | `mcp/`, `devbox-runner/`, `scripts/` | Standalone plain-JS packages (MCP server, headless runner, ops scripts). | `node --check <file>` |
 

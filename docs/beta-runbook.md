@@ -67,13 +67,18 @@ says otherwise. All tokens land encrypted via the OS keychain, never in
 plaintext files — that claim is part of the exit criteria, so if you ever
 find token-looking material in a plain file, that is a finding.
 
-## 3. The five surfaces
+## 3. The surfaces
 
-The left nav has five entries:
+The left sidebar is the only navigation (the embedded console shows no
+top bar of its own inside the desktop). Its entries:
 
-- **▤ Tickets** — the web console itself, embedded (board, ticket drawer,
-  planning chatbox, Standards tab), signed in as you with no second login.
-  This is where you pick up and steer work.
+- **Projects** — the web console itself, embedded (portfolio, each
+  project's Board · Tickets · Roadmap · … tabs, ticket drawer, planning
+  chatbox, Standards tab), signed in as you with no second login. This is
+  where you pick up and steer work.
+- **Workflows** / **Metrics** / **Settings** (bottom) — the console's
+  `/workflows`, `/metrics` and `/settings` pages in the same embedded view.
+- **Agent Tools** — MCP servers and skills the agents on this machine run with.
 - **◆ Agents** — the coding agents on this machine: per-type config (install
   status, instance count 0–4, auto-start), the work queue (**ROUTED TO
   YOU** / **SHARED POOL** / **ACTIVE ON THIS MACHINE**), tabbed live feeds
@@ -129,7 +134,7 @@ deploy).
 - **FLEET DOWN on the board** → work queued 10+ minutes with zero online
   runners; start an instance or ask who owns the queue.
 - **Web console looks stale after a deploy** → the served bundle doesn't
-  hot-reload; hard-refresh the Tickets tab (↻ reload button in its toolbar).
+  hot-reload; reload the console (↻ in the sidebar footer).
 - **A run seems dead** → Agents tab: if the row is active with no live
   process the orphan banner and **Release** appear (scenario 4); otherwise
   **✕ Kill run**.
@@ -157,7 +162,7 @@ scenario 8 needs a merged sample.
 
 ### Scenario 2 — pick up a seeded ticket, watch it through to Review
 
-- [ ] Tickets tab → Execution Console board → filter the board by tag
+- [ ] Projects → Execution Console board → filter the board by tag
       `beta-sample`; pick an unclaimed sample
 - [ ] Queue it (**Queue for agent** in the drawer or drag to
       **◆ Deploy to Agent**) routed to yourself

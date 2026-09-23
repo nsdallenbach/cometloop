@@ -10,6 +10,7 @@ import {
   Rocket,
   SlidersHorizontal,
   SquareKanban,
+  Ticket as TicketIcon,
   Users,
 } from 'lucide-react';
 import { api } from '../api';
@@ -24,6 +25,7 @@ import { DeploysMirror } from './Deploys';
 import { ProjectConfig, RepoCard } from './ProjectConfig';
 import { Roadmap } from './Roadmap';
 import { Standards } from './Standards';
+import { Tickets } from './Tickets';
 import { RichText } from './AgentComment';
 import type { Tab } from '../App';
 
@@ -248,6 +250,7 @@ export function Workspace({
   const tabIcon = { size: 14, strokeWidth: 1.75 } as const;
   const tabs: { key: Tab; label: string; icon: ReactNode }[] = [
     { key: 'board', label: 'Board', icon: <SquareKanban {...tabIcon} /> },
+    { key: 'tickets', label: 'Tickets', icon: <TicketIcon {...tabIcon} /> },
     { key: 'roadmap', label: 'Roadmap', icon: <Milestone {...tabIcon} /> },
     { key: 'analytics', label: 'Analytics', icon: <ChartColumn {...tabIcon} /> },
     { key: 'sources', label: 'Sources', icon: <Database {...tabIcon} /> },
@@ -1520,6 +1523,9 @@ export function Workspace({
           )}
         </div>
       )}
+
+      {/* ===== TICKETS ===== */}
+      {detail && tab === 'tickets' && <Tickets tickets={tickets} onOpen={openTicket} />}
 
       {/* ===== ROADMAP ===== */}
       {detail && tab === 'roadmap' && (

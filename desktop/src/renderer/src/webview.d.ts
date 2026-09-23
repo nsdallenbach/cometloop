@@ -1,5 +1,5 @@
-// Electron <webview> as a JSX intrinsic (the embedded console in the Tickets
-// tab). Must live in a module file — a top-level import makes this an
+// Electron <webview> as a JSX intrinsic (the embedded console behind the
+// Projects entry). Must live in a module file — a top-level import makes this an
 // augmentation of React's types instead of a replacement.
 import type { DetailedHTMLProps, HTMLAttributes } from 'react';
 

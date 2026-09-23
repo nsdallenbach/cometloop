@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Bot, Gauge, KeyRound, RefreshCw, Rocket, Ticket, Workflow, Wrench } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Bot, FolderKanban, Gauge, KeyRound, RefreshCw, Rocket, Settings, Workflow, Wrench } from 'lucide-react';
 import { TerminalPane, type TerminalOpenRequest } from './TerminalPane';
 import { IdentityView } from './IdentityView';
 import { ToolsView } from './ToolsView';
@@ -17,7 +17,7 @@ const mono = (weight: number, size: number): CSSProperties => ({
 
 const NAV_ICON = { size: 15, strokeWidth: 1.75 } as const;
 const NAV = [
-  { id: 'tickets', label: 'Tickets', icon: <Ticket {...NAV_ICON} /> },
+  { id: 'projects', label: 'Projects', icon: <FolderKanban {...NAV_ICON} /> },
   { id: 'workflows', label: 'Workflows', icon: <Workflow {...NAV_ICON} /> },
   { id: 'agents', label: 'Agents', icon: <Bot {...NAV_ICON} /> },
   { id: 'tools', label: 'Agent Tools', icon: <Wrench {...NAV_ICON} /> },
@@ -26,8 +26,10 @@ const NAV = [
   { id: 'sync', label: 'Sync', icon: <RefreshCw {...NAV_ICON} /> },
   { id: 'deploys', label: 'Deploys', icon: <Rocket {...NAV_ICON} /> },
 ] as const;
+/** Pinned to the bottom of the sidebar, below the surfaces. */
+const NAV_FOOTER = [{ id: 'settings', label: 'Settings', icon: <Settings {...NAV_ICON} /> }] as const;
 
-type NavId = (typeof NAV)[number]['id'];
+type NavId = (typeof NAV)[number]['id'] | (typeof NAV_FOOTER)[number]['id'];
 
 function TitleBar() {
   const btn: CSSProperties = {
@@ -97,19 +99,47 @@ function Placeholder({ title, note }: { title: string; note: string }) {
   );
 }
 
-/* ------------------------------------------------------------------ tickets */
+/* ------------------------------------------------------------------ console */
 
 /**
- * The Tickets tab IS the web console (DAT-232): the deployed app rendered in
- * a webview whose session gets the dev's workspace bearer token injected by
+ * Projects IS the web console (DAT-232): the deployed app rendered in a
+ * webview whose session gets the dev's workspace bearer token injected by
  * the main process — full board/drawer/planning parity with zero duplicated
- * UI, signed in as you without a second login.
+ * UI, signed in as you without a second login. Workflows, Metrics and
+ * Settings are the same webview routed to those console pages; the console
+ * renders no top bar of its own inside the shell, so this sidebar is the
+ * only navigation.
  */
-/** Console sections the sidebar can open in the one embedded webview. */
-type ConsoleSection = 'tickets' | 'workflows';
-const WORKFLOWS_PATH = '/workflows';
+/** Console sections the sidebar can open in the one embedded webview, and the console path each routes to. */
+type ConsoleSection = 'projects' | 'workflows' | 'metrics' | 'settings';
+const CONSOLE_PATHS: Record<ConsoleSection, string> = {
+  projects: '/projects',
+  workflows: '/workflows',
+  metrics: '/metrics',
+  settings: '/settings',
+};
+const isConsoleSection = (id: string): id is ConsoleSection => id in CONSOLE_PATHS;
+/** Which sidebar entry a console pathname belongs to (/admin is Settings' old URL). */
+const sectionOfPath = (pathname: string): ConsoleSection =>
+  pathname.startsWith('/workflows')
+    ? 'workflows'
+    : pathname.startsWith('/metrics')
+      ? 'metrics'
+      : pathname.startsWith('/settings') || pathname.startsWith('/admin')
+        ? 'settings'
+        : 'projects';
 
-function ConsoleView({ section }: { section: ConsoleSection }) {
+function ConsoleView({
+  section,
+  onSectionChange,
+  reloadToken,
+}: {
+  section: ConsoleSection;
+  /** The console moved on its own (palette command, link) — keep the sidebar lit accordingly. */
+  onSectionChange: (section: ConsoleSection) => void;
+  /** Bumped by the sidebar's ↻; each change reloads the webview. */
+  reloadToken: number;
+}) {
   const [cfg, setCfg] = useState<Awaited<ReturnType<DesktopBridge['getConfig']>> | null>(null);
   const [auth, setAuth] = useState<AuthMode | null>(null);
   const [signingIn, setSigningIn] = useState(false);
@@ -121,53 +151,60 @@ function ConsoleView({ section }: { section: ConsoleSection }) {
     void window.desktopBridge.authStatus().then((s) => setAuth(s.mode));
   }, []);
 
-  // Remember where you were (the app routes by URL), so a restart reopens the
-  // same project/board instead of the portfolio. Tab switches don't even hit
-  // this — the webview stays mounted (see App) and keeps its state live.
+  // Where Projects last was (a board, a ticket) — the app routes by URL, so
+  // switching sections and coming back lands there, and a restart reopens
+  // it instead of the portfolio. Never a Workflows/Metrics/Settings URL.
+  const projectsPath = useRef(CONSOLE_PATHS.projects);
+  const sectionRef = useRef<ConsoleSection>('projects');
   useEffect(() => {
     const wv = viewRef.current;
     if (!wv || !cfg) return;
-    const save = (e: Event) => {
+    const onNavigate = (e: Event) => {
       const url = (e as unknown as { url?: string }).url;
-      // Workflows is its own sidebar entry: a restart reopens Tickets where
-      // you left it, never the workflow builder.
-      if (typeof url === 'string' && url.startsWith(cfg.consoleUrl) && !new URL(url).pathname.startsWith(WORKFLOWS_PATH)) {
-        try {
-          localStorage.setItem('console-last-url', url);
-        } catch {
-          // storage unavailable — restart lands on the portfolio, no harm
-        }
+      if (typeof url !== 'string' || !url.startsWith(cfg.consoleUrl)) return;
+      const next = sectionOfPath(new URL(url).pathname);
+      sectionRef.current = next;
+      onSectionChange(next);
+      if (next !== 'projects') return;
+      try {
+        localStorage.setItem('console-last-url', url);
+      } catch {
+        // storage unavailable — restart lands on the portfolio, no harm
       }
     };
-    wv.addEventListener('did-navigate', save);
-    wv.addEventListener('did-navigate-in-page', save);
+    wv.addEventListener('did-navigate', onNavigate);
+    wv.addEventListener('did-navigate-in-page', onNavigate);
     return () => {
-      wv.removeEventListener('did-navigate', save);
-      wv.removeEventListener('did-navigate-in-page', save);
+      wv.removeEventListener('did-navigate', onNavigate);
+      wv.removeEventListener('did-navigate-in-page', onNavigate);
     };
-  }, [cfg, auth]);
+  }, [cfg, auth, onSectionChange]);
 
   // Sidebar → console section (DAT-284). The webview stays mounted, so this
   // routes inside the running SPA (pushState + popstate, which its router
-  // listens to) instead of reloading it: Tickets keeps its place while you
-  // look at Workflows, and comes back exactly where it was.
-  const ticketsPath = useRef('/projects');
-  const sectionRef = useRef<ConsoleSection>('tickets');
+  // listens to) instead of reloading it: Projects keeps its place while you
+  // look at Workflows or Settings, and comes back exactly where it was.
   useEffect(() => {
     const wv = viewRef.current as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown>; getURL?: () => string }) | null;
     if (!wv || !cfg || auth === 'signed-out' || sectionRef.current === section) return;
     try {
       const current = wv.getURL ? new URL(wv.getURL()) : null;
-      if (sectionRef.current === 'tickets' && current && !current.pathname.startsWith(WORKFLOWS_PATH)) {
-        ticketsPath.current = current.pathname + current.search;
+      if (current && sectionOfPath(current.pathname) === 'projects') {
+        projectsPath.current = current.pathname + current.search;
       }
-      const to = section === 'workflows' ? WORKFLOWS_PATH : ticketsPath.current;
+      const to = section === 'projects' ? projectsPath.current : CONSOLE_PATHS[section];
       void wv.executeJavaScript?.(`history.pushState({}, '', ${JSON.stringify(to)}); dispatchEvent(new PopStateEvent('popstate'));`);
       sectionRef.current = section;
     } catch {
       // The webview is not ready yet; the next sidebar click tries again.
     }
   }, [section, cfg, auth]);
+
+  // ↻ lives in the sidebar footer now that the console has no bar of its own.
+  useEffect(() => {
+    if (reloadToken === 0) return;
+    (viewRef.current as unknown as { reload?: () => void } | null)?.reload?.();
+  }, [reloadToken]);
 
   const initialUrl = (() => {
     if (!cfg) return '';
@@ -193,7 +230,7 @@ function ConsoleView({ section }: { section: ConsoleSection }) {
   if (auth === 'signed-out') {
     return (
       <div style={{ padding: 28, display: 'grid', gap: 12, maxWidth: 480 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Tickets</h2>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Console</h2>
         <p style={{ margin: 0, fontSize: 13, color: 'var(--tx2)', lineHeight: 1.5 }}>
           The full console loads here once you&rsquo;re signed in to Databricks.
         </p>
@@ -223,64 +260,14 @@ function ConsoleView({ section }: { section: ConsoleSection }) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          padding: '6px 12px',
-          borderBottom: '1px solid var(--line)',
-          background: 'var(--bg2)',
-          flex: 'none',
-        }}
-      >
-        <span style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>
-          ▤ CONSOLE
-        </span>
-        <span
-          style={{
-            ...mono(400, 10),
-            color: 'var(--tx3)',
-            minWidth: 0,
-            overflow: 'hidden',
-            whiteSpace: 'nowrap',
-            textOverflow: 'ellipsis',
-          }}
-        >
-          {cfg.consoleUrl}
-        </span>
-        <div style={{ flex: 1 }} />
-        <button
-          className="no-drag"
-          title="Reload the console"
-          onClick={() => {
-            const wv = viewRef.current as unknown as { reload?: () => void } | null;
-            wv?.reload?.();
-          }}
-          style={{ border: 'none', background: 'none', color: 'var(--tx2)', cursor: 'pointer', fontSize: 13 }}
-        >
-          ↻
-        </button>
-        <a
-          href={cfg.consoleUrl}
-          target="_blank"
-          rel="noreferrer"
-          title="Open in your browser"
-          style={{ ...mono(400, 10), color: 'var(--link)' }}
-        >
-          open in browser ↗
-        </a>
-      </div>
-      <webview
-        ref={(el: HTMLElement | null) => {
-          viewRef.current = el;
-        }}
-        src={initialUrl}
-        partition="persist:console"
-        style={{ flex: 1, minHeight: 0 }}
-      />
-    </div>
+    <webview
+      ref={(el: HTMLElement | null) => {
+        viewRef.current = el;
+      }}
+      src={initialUrl}
+      partition="persist:console"
+      style={{ flex: 1, minHeight: 0 }}
+    />
   );
 }
 
@@ -1092,186 +1079,6 @@ function DeploysView() {
   );
 }
 
-/* ------------------------------------------------------------------ metrics */
-
-const fmtTok = (v: number): string =>
-  v >= 1_000_000 ? `${(v / 1_000_000).toFixed(2)}M` : v >= 1_000 ? `${(v / 1_000).toFixed(1)}k` : String(v);
-
-const addUsage = (a: UsageTotals, s: { input: number; output: number; cacheRead: number; cacheCreate: number; costUsd?: number; final?: boolean }): UsageTotals =>
-  s.final
-    ? { input: s.input, output: s.output, cacheRead: s.cacheRead, cacheCreate: s.cacheCreate, costUsd: s.costUsd ?? a.costUsd }
-    : { ...a, input: a.input + s.input, output: a.output + s.output, cacheRead: a.cacheRead + s.cacheRead, cacheCreate: a.cacheCreate + s.cacheCreate };
-
-interface UsageTick {
-  instance: string;
-  ev: Extract<RunnerEvent, { kind: 'usage' }>;
-}
-
-/**
- * Metrics (DAT-266): live token consumption streaming off the harnesses —
- * per-instance running totals plus the raw sample stream, updating per model
- * turn. The same samples land in Lakebase for the dashboard and agent map.
- */
-function MetricsView() {
-  const [agents, setAgents] = useState<AgentsState | null>(null);
-  const [stream, setStream] = useState<UsageTick[]>([]);
-
-  useEffect(() => {
-    void window.desktopBridge.agentsState().then((s) => {
-      setAgents(s);
-      // Replay the recent usage stream from the instance feeds.
-      const replay: UsageTick[] = [];
-      for (const inst of s.instances) {
-        for (const ev of inst.feed) if (ev.kind === 'usage') replay.push({ instance: inst.label, ev });
-      }
-      replay.sort((a, b) => a.ev.ts.localeCompare(b.ev.ts));
-      setStream(replay.slice(-60));
-    });
-    const off = window.desktopBridge.onAgentsEvent(({ instanceId, ev }) => {
-      if (ev.kind !== 'usage') {
-        if (ev.kind === 'status') {
-          setAgents((s) => (s ? { ...s, instances: s.instances.map((i) => (i.id === instanceId ? { ...i, state: ev.state } : i)) } : s));
-        }
-        return;
-      }
-      setAgents((s) =>
-        s
-          ? {
-              ...s,
-              instances: s.instances.map((i) =>
-                i.id === instanceId
-                  ? { ...i, runUsage: addUsage(i.runUsage, ev), sessionUsage: addUsage({ ...i.sessionUsage }, { ...ev, final: false }) }
-                  : i,
-              ),
-            }
-          : s,
-      );
-      setStream((prev) => {
-        const label = agentsRef.current?.instances.find((i) => i.id === instanceId)?.label ?? instanceId;
-        return [...prev.slice(-59), { instance: label, ev }];
-      });
-    });
-    return off;
-  }, []);
-
-  // Latest agents state for the event handler without re-subscribing.
-  const agentsRef = useRef<AgentsState | null>(null);
-  useEffect(() => {
-    agentsRef.current = agents;
-  }, [agents]);
-
-  const totals = (agents?.instances ?? []).reduce(
-    (a, i) => ({
-      input: a.input + i.sessionUsage.input,
-      output: a.output + i.sessionUsage.output,
-      cacheRead: a.cacheRead + i.sessionUsage.cacheRead,
-      cacheCreate: a.cacheCreate + i.sessionUsage.cacheCreate,
-      costUsd: i.sessionUsage.costUsd != null ? (a.costUsd ?? 0) + i.sessionUsage.costUsd : a.costUsd,
-    }),
-    { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, costUsd: null as number | null },
-  );
-
-  const stat = (label: string, value: string) => (
-    <div>
-      <div style={{ ...mono(700, 26), letterSpacing: '-0.02em' }}>{value}</div>
-      <div style={{ ...mono(500, 9.5), color: 'var(--tx3)', letterSpacing: '.08em', marginTop: 2 }}>{label}</div>
-    </div>
-  );
-
-  return (
-    <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 16, height: '100%', boxSizing: 'border-box' }}>
-      <div>
-        <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700 }}>Metrics</h2>
-        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--tx2)' }}>
-          Live token consumption from the harness event streams — the same samples land in Lakebase
-          for the beta dashboard and the agent map.
-        </p>
-      </div>
-
-      <div
-        style={{
-          display: 'flex',
-          gap: 34,
-          flexWrap: 'wrap',
-          background: 'var(--bg2)',
-          border: '1px solid var(--line)',
-          borderRadius: 10,
-          padding: '14px 18px',
-        }}
-      >
-        {stat('TOKENS IN (SESSION)', fmtTok(totals.input))}
-        {stat('TOKENS OUT', fmtTok(totals.output))}
-        {stat('CACHE READ', fmtTok(totals.cacheRead))}
-        {stat('CACHE WRITE', fmtTok(totals.cacheCreate))}
-        {stat('COST', totals.costUsd != null ? `$${totals.costUsd.toFixed(2)}` : '—')}
-      </div>
-
-      {agents && agents.instances.length > 0 && (
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {agents.instances.map((i) => (
-            <div
-              key={i.id}
-              style={{
-                background: 'var(--bg2)',
-                border: '1px solid var(--line)',
-                borderLeft: `3px solid ${i.state === 'running' ? 'var(--ok)' : i.state === 'waiting' ? 'var(--agent)' : 'var(--line2)'}`,
-                borderRadius: 8,
-                padding: '10px 14px',
-                minWidth: 240,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                <span style={{ fontSize: 13, fontWeight: 700 }}>{i.label}</span>
-                <span style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>
-                  {i.current ? i.current.ticketKey : i.state}
-                </span>
-              </div>
-              <div style={{ ...mono(400, 11), color: 'var(--tx2)', marginTop: 6 }}>
-                run&nbsp;&nbsp;&nbsp;&nbsp;{fmtTok(i.runUsage.input)} in · {fmtTok(i.runUsage.output)} out
-                {i.runUsage.costUsd != null ? ` · $${i.runUsage.costUsd.toFixed(2)}` : ''}
-              </div>
-              <div style={{ ...mono(400, 11), color: 'var(--tx3)', marginTop: 2 }}>
-                session {fmtTok(i.sessionUsage.input)} in · {fmtTok(i.sessionUsage.output)} out ·{' '}
-                {fmtTok(i.sessionUsage.cacheRead)} cached
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div style={{ ...mono(500, 10), color: 'var(--tx3)', letterSpacing: '.08em' }}>≋ LIVE STREAM</div>
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: 'auto',
-          background: 'var(--bg2)',
-          border: '1px solid var(--line)',
-          borderRadius: 8,
-          padding: '10px 14px',
-          ...mono(400, 11),
-          lineHeight: 1.6,
-          userSelect: 'text',
-        }}
-      >
-        {stream.length === 0 && (
-          <div style={{ color: 'var(--tx3)' }}>
-            No usage samples yet — they stream in per model turn while an agent works.
-          </div>
-        )}
-        {[...stream].reverse().map((t, idx) => (
-          <div key={idx} style={{ color: t.ev.final ? 'var(--ok)' : 'var(--tx2)' }}>
-            {t.ev.ts.slice(11, 19)} · {t.instance} · {t.ev.ticketKey || '—'} ·{' '}
-            {t.ev.final
-              ? `FINAL ${fmtTok(t.ev.input)} in / ${fmtTok(t.ev.output)} out${t.ev.costUsd != null ? ` / $${t.ev.costUsd.toFixed(2)}` : ''}`
-              : `+${t.ev.input} in / +${t.ev.output} out${t.ev.cacheRead ? ` / ${fmtTok(t.ev.cacheRead)} cached` : ''}`}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 /* ----------------------------------------------------------------- identity */
 
 
@@ -1287,11 +1094,24 @@ const VIEWS_STATIC: Partial<Record<NavId, ReactNode>> = {
 };
 
 export function App() {
-  const [nav, setNav] = useState<NavId>('tickets');
+  const [nav, setNav] = useState<NavId>('projects');
+  // The console section the webview shows — or last showed, while a native
+  // view sits on top — so coming back to it finds it unchanged.
+  const [consoleSection, setConsoleSection] = useState<ConsoleSection>('projects');
+  const [reloadToken, setReloadToken] = useState(0);
   const [agentsActive, setAgentsActive] = useState(false);
-  // The embedded console stays mounted no matter which tab is active —
+  const go = (id: NavId) => {
+    setNav(id);
+    if (isConsoleSection(id)) setConsoleSection(id);
+  };
+  // The console navigated on its own (palette, link, redirect): follow it.
+  const onSectionChange = useCallback((s: ConsoleSection) => {
+    setConsoleSection(s);
+    setNav((n) => (isConsoleSection(n) ? s : n));
+  }, []);
+  // The embedded console stays mounted no matter which entry is active —
   // unmounting the webview would reset it to the portfolio, so leaving
-  // Tickets and coming back must find you exactly where you were. Hidden
+  // Projects and coming back must find you exactly where you were. Hidden
   // via visibility (not display:none, which breaks Electron webviews).
   const overlay =
     nav === 'agents' ? (
@@ -1302,9 +1122,50 @@ export function App() {
       <IdentityView />
     ) : nav === 'tools' ? (
       <ToolsView />
-    ) : nav === 'tickets' || nav === 'workflows' ? null : (
+    ) : isConsoleSection(nav) ? null : (
       VIEWS_STATIC[nav]
     );
+  const navButton = (n: { id: NavId; label: string; icon: ReactNode }) => (
+    <button
+      key={n.id}
+      className="no-drag"
+      onClick={() => go(n.id)}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 9,
+        background: nav === n.id ? 'var(--bg3)' : 'transparent',
+        color: nav === n.id ? 'var(--tx)' : 'var(--tx2)',
+        border: 'none',
+        borderRadius: 6,
+        padding: '8px 10px',
+        fontSize: 13,
+        fontWeight: nav === n.id ? 600 : 500,
+        cursor: 'pointer',
+        justifyContent: 'flex-start',
+        textAlign: 'left',
+        fontFamily: 'inherit',
+      }}
+    >
+      <span style={{ color: nav === n.id ? 'var(--acc)' : 'var(--tx3)', width: 16, display: 'inline-flex', justifyContent: 'center' }}>
+        {n.icon}
+      </span>
+      {n.label}
+      {n.id === 'agents' && agentsActive && (
+        <span
+          title="agents active"
+          style={{
+            marginLeft: 'auto',
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: 'var(--ok)',
+            animation: 'eec-pulse 2.4s infinite',
+          }}
+        />
+      )}
+    </button>
+  );
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <TitleBar />
@@ -1321,50 +1182,20 @@ export function App() {
             gap: 2,
           }}
         >
-          {NAV.map((n) => (
-            <button
-              key={n.id}
-              className="no-drag"
-              onClick={() => setNav(n.id)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 9,
-                background: nav === n.id ? 'var(--bg3)' : 'transparent',
-                color: nav === n.id ? 'var(--tx)' : 'var(--tx2)',
-                border: 'none',
-                borderRadius: 6,
-                padding: '8px 10px',
-                fontSize: 13,
-                fontWeight: nav === n.id ? 600 : 500,
-                cursor: 'pointer',
-                justifyContent: 'flex-start',
-                textAlign: 'left',
-                fontFamily: 'inherit',
-              }}
-            >
-              <span style={{ color: nav === n.id ? 'var(--acc)' : 'var(--tx3)', width: 16, display: 'inline-flex', justifyContent: 'center' }}>
-                {n.icon}
-              </span>
-              {n.label}
-              {n.id === 'agents' && agentsActive && (
-                <span
-                  title="agents active"
-                  style={{
-                    marginLeft: 'auto',
-                    width: 7,
-                    height: 7,
-                    borderRadius: '50%',
-                    background: 'var(--ok)',
-                    animation: 'eec-pulse 2.4s infinite',
-                  }}
-                />
-              )}
-            </button>
-          ))}
+          {NAV.map(navButton)}
           <div style={{ flex: 1 }} />
-          <div style={{ ...mono(400, 9.5), color: 'var(--tx3)', padding: '0 10px 6px' }}>
-            phase A+
+          {NAV_FOOTER.map(navButton)}
+          <div style={{ display: 'flex', alignItems: 'center', padding: '4px 10px 6px' }}>
+            <span style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>phase A+</span>
+            <div style={{ flex: 1 }} />
+            <button
+              className="no-drag"
+              title="Reload the console"
+              onClick={() => setReloadToken((n) => n + 1)}
+              style={{ border: 'none', background: 'none', color: 'var(--tx3)', cursor: 'pointer', fontSize: 13, padding: 0, lineHeight: 1 }}
+            >
+              ↻
+            </button>
           </div>
         </nav>
         <main style={{ flex: 1, minWidth: 0, minHeight: 0, position: 'relative' }}>
@@ -1374,10 +1205,10 @@ export function App() {
               inset: 0,
               display: 'flex',
               flexDirection: 'column',
-              visibility: nav === 'tickets' || nav === 'workflows' ? 'visible' : 'hidden',
+              visibility: isConsoleSection(nav) ? 'visible' : 'hidden',
             }}
           >
-            <ConsoleView section={nav === 'workflows' ? 'workflows' : 'tickets'} />
+            <ConsoleView section={consoleSection} onSectionChange={onSectionChange} reloadToken={reloadToken} />
           </div>
           {overlay && (
             <div style={{ position: 'absolute', inset: 0, overflowY: 'auto', background: 'var(--bg)' }}>

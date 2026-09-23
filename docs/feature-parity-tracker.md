@@ -16,7 +16,7 @@ the same PR as the change it describes.
 **Parity classes** (defined in the process doc)
 
 - **By construction** — one implementation serves both platforms (the desktop
-  Tickets tab embeds the deployed web app; `shared/design/tokens.css`).
+  Projects entry embeds the deployed web app; `shared/design/tokens.css`).
   Nothing to track per-feature; listed so nobody re-audits them by hand.
 - **Shared by design** — implemented separately on each platform and expected
   to match. This is the surface this tracker exists for.
@@ -43,7 +43,8 @@ the same PR as the change it describes.
 
 | Feature | Web | Desktop | Class | Last reviewed | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Tickets board, drawer, planning, palette, notifications | ✅ | ✅ | By construction | 2026-08-26 | Desktop Tickets tab is a `<webview>` of the deployed web app with the dev's token injected — full parity with zero duplicated UI. Anything shipped in `client/` is on desktop the moment it deploys. Caveat: it shows the *deployed* bundle, not local builds. |
+| Primary navigation | ✅ top bar: Projects · Agents · Workflows · Metrics · Settings · search | ✅ sidebar: Projects · Workflows · Agents · Agent Tools · Metrics · Identity · Sync · Deploys · Settings | Shared by design (asymmetric) | 2026-09-23 | Inside the desktop the console renders no top bar (`IN_DESKTOP_SHELL`); the sidebar routes the one webview to `/projects`, `/workflows`, `/metrics`, `/settings` and follows in-console navigation. The web's Agents tab is deliberately absent from the shell — the desktop Agents page is the agents surface. Ctrl+K palette works in both; the theme toggle and notification bell live in the web top bar only (open gap for the desktop). |
+| Tickets board, project Tickets tab, drawer, planning, palette | ✅ | ✅ | By construction | 2026-09-23 | Desktop Projects entry is a `<webview>` of the deployed web app with the dev's token injected — full parity with zero duplicated UI. Anything shipped in `client/` is on desktop the moment it deploys. Caveat: it shows the *deployed* bundle, not local builds. |
 | Workflows builder (placeholder DAG canvas, DAT-284) | ✅ | ✅ | By construction | 2026-09-21 | A web page at `/workflows`; the desktop's Workflows sidebar entry routes the same embedded webview there, so there is no second implementation. Workflows are stored on the server (DAT-288), so web and desktop show the same ones. |
 | Board card motion (Motion layout springs) | ✅ | ✅ | By construction | 2026-08-26 | Lives entirely in the web app; reaches desktop through the webview. |
 | Deploys | ✅ (read-only mirror) | ✅ (executor) | Shared by design (asymmetric) | 2026-08-26 | Intentionally asymmetric: deploys run on the dev's machine with their identity; the web renders a read-only mirror from events. The *asymmetry* is the design — track that both halves stay in step when deploy states/fields change. |
@@ -51,8 +52,8 @@ the same PR as the change it describes.
 | Interactive terminal (DAT-240) | ➖ | ✅ | Platform-exclusive | 2026-08-26 | Requires local PTY. |
 | Identity (Databricks OAuth, gh/az/ADO device flows, MCP secrets) | ➖ | ✅ | Platform-exclusive | 2026-08-26 | Local keychain by design. |
 | Managed file sync | ➖ | 🟡 | Platform-exclusive | 2026-08-26 | Desktop placeholder ("coming in a later phase"); manifest editing is planned to live in the console. Revisit the classification when it lands. |
-| Portfolio, roadmap, analytics, standards, admin | ✅ | ✅ | By construction | 2026-08-26 | Via the embedded console. |
-| Model providers + role → model map (Admin, phase 3) | ✅ | ✅ | By construction | 2026-09-23 | Web Admin section reached through the embedded console; a workspace/lead setting for the control plane, never runner configuration. Provider logos (`MODEL_PROVIDER_PRESETS`) live in `shared/design/AgentLogos.tsx` next to the agent marks. |
+| Portfolio, roadmap, analytics, standards, settings (formerly admin), metrics | ✅ | ✅ | By construction | 2026-09-23 | Via the embedded console. |
+| Model providers + role → model map (Settings, phase 3) | ✅ | ✅ | By construction | 2026-09-23 | Web Settings section (the page formerly called Admin) reached through the embedded console; a workspace/lead setting for the control plane, never runner configuration. Provider logos (`MODEL_PROVIDER_PRESETS`) live in `shared/design/AgentLogos.tsx` next to the agent marks. |
 
 ## Known gaps (seeded by the initial audit, 2026-08-26)
 
