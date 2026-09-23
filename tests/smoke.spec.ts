@@ -53,9 +53,9 @@ test('smoke test - roadmap tab renders', async ({ page, request }) => {
   await expect(page.getByText('DERIVED FROM SOW', { exact: false })).toBeVisible();
 });
 
-test('smoke test - admin page shows staffing matrix', async ({ page, request }) => {
+test('smoke test - settings page shows staffing matrix', async ({ page, request }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'ADMIN' }).click();
+  await page.getByRole('button', { name: 'SETTINGS' }).click();
 
   await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
   await expect(page.getByText('TEAM ASSIGNMENT', { exact: false })).toBeVisible();
@@ -83,8 +83,11 @@ test('smoke test - project detail deep link renders board', async ({ page, reque
   await expect(page.getByText('BACKLOG', { exact: true })).toBeVisible();
 });
 
-test('smoke test - tickets list and ticket deep link render', async ({ page, request }) => {
-  await page.goto('/tickets');
+test('smoke test - project tickets tab and ticket deep link render', async ({ page, request }) => {
+  const eng = await firstEngagement(request);
+  test.skip(!eng, 'no engagements in database');
+
+  await page.goto(`/projects/${eng!.id}/tickets`);
   await expect(page.getByRole('heading', { name: 'Tickets' })).toBeVisible();
 
   const tickets = (await (await request.get('/api/tickets')).json()) as { key: string }[];

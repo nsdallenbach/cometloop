@@ -23,23 +23,24 @@ export function suggestedTags(current: string[]): string[] {
   return STANDARD_TAGS.filter((t) => !applied.has(t));
 }
 
-/** The subset of a ticket the cross-project list filter searches. */
+/** The subset of a ticket the list filter searches; the project fields are
+ *  only present on cross-project rows (`TicketWithEngagement`). */
 export interface SearchableTicket {
   key: string;
   title: string;
   assignee: string;
-  client: string;
-  engagementName: string;
+  client?: string;
+  engagementName?: string;
   tags: string[];
 }
 
 /**
- * Free-text filter for the /tickets list: key, title, assignee, project and
+ * Free-text filter for a tickets list: key, title, assignee, project and
  * tags, case-insensitive substring. Tags are in the haystack so `feature` /
  * `bug` (and any other tag) filter the list with no extra control.
  */
 export function ticketMatchesQuery(t: SearchableTicket, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) return true;
-  return [t.key, t.title, t.assignee, t.client, t.engagementName, ...t.tags].some((v) => v.toLowerCase().includes(needle));
+  return [t.key, t.title, t.assignee, t.client ?? '', t.engagementName ?? '', ...t.tags].some((v) => v.toLowerCase().includes(needle));
 }

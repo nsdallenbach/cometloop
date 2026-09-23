@@ -1,11 +1,11 @@
-export const TABS = ['board', 'roadmap', 'analytics', 'sources', 'deploys', 'config', 'standards', 'team', 'feed'] as const;
+export const TABS = ['board', 'tickets', 'roadmap', 'analytics', 'sources', 'deploys', 'config', 'standards', 'team', 'feed'] as const;
 export type Tab = (typeof TABS)[number];
 
 export type Screen =
   | { name: 'portfolio' }
   | { name: 'setup' }
-  | { name: 'admin' }
-  | { name: 'tickets' }
+  | { name: 'settings' }
+  | { name: 'metrics' }
   | { name: 'agent-map' }
   | { name: 'workflows' }
   | { name: 'workspace'; engId: string; tab: Tab }
@@ -15,11 +15,11 @@ export type Screen =
 
 export const paths = {
   portfolio: '/projects',
-  tickets: '/tickets',
   agentMap: '/agent-map',
   workflows: '/workflows',
+  metrics: '/metrics',
   setup: '/setup',
-  admin: '/admin',
+  settings: '/settings',
   // The board is the workspace's canonical URL; other tabs get a segment.
   project: (id: string, tab: Tab = 'board') =>
     tab === 'board' ? `/projects/${encodeURIComponent(id)}` : `/projects/${encodeURIComponent(id)}/${tab}`,
@@ -39,17 +39,22 @@ export function parsePath(pathname: string): Screen {
     return { name: 'redirect', to: paths.project(id) };
   }
   if (head === 'tickets') {
-    if (segs.length === 1) return { name: 'tickets' };
+    // The cross-project list became each project's Tickets tab
+    // (/projects/:id/tickets); a bare /tickets has no project to scope to.
+    if (segs.length === 1) return { name: 'redirect', to: paths.portfolio };
     if (segs.length === 2) return { name: 'ticket', ticketKey: id };
     return { name: 'redirect', to: paths.ticket(id) };
   }
   if (head === 'agent-map' && segs.length === 1) return { name: 'agent-map' };
   if (head === 'workflows' && segs.length === 1) return { name: 'workflows' };
+  if (head === 'metrics' && segs.length === 1) return { name: 'metrics' };
   // The map answered to /agents before it became a first-class nav tab
   // (DAT-267); keep those links — docs and shared URLs still point there.
   if (head === 'agents') return { name: 'redirect', to: paths.agentMap };
   if (head === 'setup' && segs.length === 1) return { name: 'setup' };
-  if (head === 'admin' && segs.length === 1) return { name: 'admin' };
+  if (head === 'settings' && segs.length === 1) return { name: 'settings' };
+  // Admin became Settings; old /admin links follow it.
+  if (head === 'admin') return { name: 'redirect', to: paths.settings };
   // The in-app landing page moved to the public site; old /learn links follow it.
   if (head === 'learn') return { name: 'external', to: 'https://cometloop.ai' };
   return { name: 'redirect', to: paths.portfolio };

@@ -8,24 +8,26 @@ import { mono, STATUS_LABEL } from './util';
 import { Admin } from './components/Admin';
 import { AgentsPage } from './components/AgentsPage';
 import { Wordmark } from './components/Brand';
+import { Metrics } from './components/Metrics';
 import { Portfolio } from './components/Portfolio';
 import { Setup } from './components/Setup';
-import { Tickets } from './components/Tickets';
 import { Workflows } from './components/Workflows';
 import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
 import { prefetchMermaid } from './components/Markdown';
 import { Palette, type PaletteItem } from './components/Palette';
-import { Bot, FolderKanban, ShieldCheck, Ticket } from 'lucide-react';
+import { Bot, FolderKanban, Gauge, Settings as SettingsIcon, Workflow } from 'lucide-react';
 import { NotificationCenter } from './components/NotificationCenter';
 
 export type { Tab } from './routes';
 
-/** True when the console is the desktop app's embedded webview, not a browser tab. */
+/**
+ * True when the console is the desktop app's embedded webview, not a browser
+ * tab. The desktop sidebar is the only navigation there, so the top bar is
+ * not rendered at all; the sidebar routes this webview (see
+ * desktop/src/renderer/src/App.tsx ConsoleView).
+ */
 const IN_DESKTOP_SHELL = typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron/');
-
-/** The public site owns the product story; the in-app landing page is gone. */
-const SITE_URL = 'https://cometloop.ai';
 
 /** Leaves the app for an external URL (the router's Navigate only knows in-app paths). */
 function ExternalRedirect({ to }: { to: string }) {
@@ -169,7 +171,7 @@ export default function App() {
       .catch(() => {
         if (!stale) {
           showToast(`Ticket ${key} not found`);
-          void navigate(paths.tickets, { replace: true });
+          void navigate(paths.portfolio, { replace: true });
         }
       });
     return () => {
@@ -207,11 +209,11 @@ export default function App() {
 
   const closeTicket = useCallback(() => {
     // Opened in-app: back returns to the screen beneath the drawer. Opened via
-    // a direct link: land on the ticket's board (or the tickets list).
+    // a direct link: land on the ticket's board (or the portfolio).
     if ((location.state as { fromApp?: boolean } | null)?.fromApp) {
       void navigate(-1);
     } else {
-      void navigate(engId ? paths.project(engId) : paths.tickets, { replace: true });
+      void navigate(engId ? paths.project(engId) : paths.portfolio, { replace: true });
     }
   }, [location.state, engId, navigate]);
 
@@ -263,6 +265,8 @@ export default function App() {
    * URL, so a tab is deep-linkable and the browser's back button behaves.
    * Projects stays lit for everything that hangs off a project — the workspace,
    * a ticket drawer, the setup flow — so the bar never reads as "nowhere".
+   * Browser only: inside the desktop shell the sidebar carries these entries
+   * (plus its native-only surfaces) and the bar is not rendered.
    */
   const navTabs = useMemo(
     () => [
@@ -275,14 +279,6 @@ export default function App() {
         active: ['portfolio', 'workspace', 'ticket', 'setup'].includes(screen.name),
       },
       {
-        key: 'tickets',
-        label: 'Tickets',
-        icon: <Ticket size={13} strokeWidth={1.75} />,
-        title: 'All tickets across projects',
-        path: paths.tickets,
-        active: screen.name === 'tickets',
-      },
-      {
         key: 'agent-map',
         label: 'Agents',
         icon: <Bot size={13} strokeWidth={1.75} />,
@@ -290,28 +286,31 @@ export default function App() {
         path: paths.agentMap,
         active: screen.name === 'agent-map',
       },
-      // Inside the desktop app the left sidebar is the way into Workflows
-      // (DAT-286), so the embedded console leaves it out of its top bar.
-      ...(IN_DESKTOP_SHELL
-        ? []
-        : [
-            {
-              key: 'workflows',
-              label: 'Workflows',
-              title: 'Workflows — a placeholder builder for automation DAGs',
-              path: paths.workflows,
-              active: screen.name === 'workflows',
-            },
-          ]),
+      {
+        key: 'workflows',
+        label: 'Workflows',
+        icon: <Workflow size={13} strokeWidth={1.75} />,
+        title: 'Workflows — a placeholder builder for automation DAGs',
+        path: paths.workflows,
+        active: screen.name === 'workflows',
+      },
+      {
+        key: 'metrics',
+        label: 'Metrics',
+        icon: <Gauge size={13} strokeWidth={1.75} />,
+        title: 'Metrics — usage and cost across projects',
+        path: paths.metrics,
+        active: screen.name === 'metrics',
+      },
       ...(isAdmin
         ? [
             {
-              key: 'admin',
-              label: 'Admin',
-              icon: <ShieldCheck size={13} strokeWidth={1.75} />,
-              title: 'Staffing & project lifecycle',
-              path: paths.admin,
-              active: screen.name === 'admin',
+              key: 'settings',
+              label: 'Settings',
+              icon: <SettingsIcon size={13} strokeWidth={1.75} />,
+              title: 'Settings — staffing & project lifecycle',
+              path: paths.settings,
+              active: screen.name === 'settings',
             },
           ]
         : []),
@@ -394,6 +393,14 @@ export default function App() {
             },
             {
               kind: 'NAV',
+              label: `${eng.client} — open Tickets`,
+              hint: '',
+              description: 'Every ticket on this project as a filterable list',
+              keywords: ['tickets', 'list', 'search', 'all', eng.id],
+              run: () => openEngagement(eng.id, 'tickets'),
+            },
+            {
+              kind: 'NAV',
               label: `${eng.client} — open Config`,
               hint: '',
               description: 'Repository connection and runner environment for this project',
@@ -412,14 +419,6 @@ export default function App() {
       },
       {
         kind: 'NAV',
-        label: 'Go to Tickets — all projects',
-        hint: '',
-        description: 'Cross-project ticket list',
-        keywords: ['tickets', 'all', 'list', 'search'],
-        run: () => void navigate(paths.tickets),
-      },
-      {
-        kind: 'NAV',
         label: 'Go to Agent Map — architecture view',
         hint: '',
         description: 'Projects and their agents as an architecture diagram',
@@ -433,6 +432,14 @@ export default function App() {
         description: 'Draw an automation as a DAG: triggers, agent steps, conditions, actions',
         keywords: ['workflows', 'automation', 'dag', 'n8n', 'builder', 'canvas'],
         run: () => void navigate(paths.workflows),
+      },
+      {
+        kind: 'NAV',
+        label: 'Go to Metrics — usage across projects',
+        hint: '',
+        description: 'Token usage, cost and throughput for every project and agent',
+        keywords: ['metrics', 'usage', 'tokens', 'cost', 'dashboard'],
+        run: () => void navigate(paths.metrics),
       },
       ...engagements.slice(0, 4).map((e) => ({
         kind: 'NAV',
@@ -458,10 +465,10 @@ export default function App() {
         ? [
             {
               kind: 'NAV',
-              label: 'Open Admin — staffing & project lifecycle',
+              label: 'Open Settings — staffing & project lifecycle',
               hint: '',
-              keywords: ['settings', 'team', 'staffing', 'lifecycle'],
-              run: () => void navigate(paths.admin),
+              keywords: ['settings', 'admin', 'team', 'staffing', 'lifecycle'],
+              run: () => void navigate(paths.settings),
             },
           ]
         : []),
@@ -558,176 +565,158 @@ export default function App() {
         overflow: 'hidden',
       }}
     >
-      {/* TOP BAR */}
-      <div
-        style={{
-          height: 46,
-          flex: 'none',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 16,
-          padding: '0 14px',
-          borderBottom: '1px solid var(--line)',
-          background: 'var(--bg2)',
-        }}
-      >
-        <div onClick={goPortfolio} style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-          <Wordmark size={20} />
-        </div>
-        <nav aria-label="Primary" style={{ display: 'flex', alignSelf: 'stretch', gap: 2, marginLeft: 2 }}>
-          {navTabs.map((t) => (
-            <button
-              key={t.key}
-              className="hv-tx"
-              onClick={() => void navigate(t.path)}
-              title={t.title}
-              aria-current={t.active ? 'page' : undefined}
-              style={{
-                position: 'relative',
-                background: 'none',
-                border: 'none',
-                color: t.active ? 'var(--tx)' : 'var(--tx3)',
-                padding: '0 11px',
-                ...mono(500, 10.5),
-                letterSpacing: '.09em',
-                textTransform: 'uppercase',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              <span style={{ display: 'inline-flex', color: t.active ? 'var(--acc)' : 'inherit' }}>{t.icon}</span>
-              {t.label}
-              {t.active && (
-                <motion.span
-                  layoutId="eec-nav-underline"
-                  transition={{ type: 'spring', stiffness: 550, damping: 42 }}
-                  style={{ position: 'absolute', left: 7, right: 7, bottom: 0, height: 2, background: 'var(--acc)' }}
-                />
-              )}
-            </button>
-          ))}
-        </nav>
-        <div style={{ flex: 1 }} />
+      {/* TOP BAR — browser only. The desktop shell renders no bar at all: its sidebar is the navigation and Ctrl+K still opens the palette. */}
+      {!IN_DESKTOP_SHELL && (
         <div
-          className="hv-border"
-          onClick={() => setPalette(true)}
           style={{
+            height: 46,
+            flex: 'none',
             display: 'flex',
             alignItems: 'center',
-            gap: 8,
-            border: '1px solid var(--line2)',
-            borderRadius: 3,
-            padding: '5px 10px',
-            cursor: 'pointer',
-            color: 'var(--tx3)',
-            minWidth: 220,
+            gap: 16,
+            padding: '0 14px',
+            borderBottom: '1px solid var(--line)',
+            background: 'var(--bg2)',
           }}
         >
-          <span style={{ fontSize: 12 }}>Search or run a command</span>
-          <span style={{ marginLeft: 'auto', ...mono(400, 10), border: '1px solid var(--line2)', borderRadius: 3, padding: '1px 5px' }}>
-            Ctrl+K
-          </span>
-        </div>
-        {lastSync && !loadError && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-            <span
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                background: 'var(--ok)',
-                animation: 'eec-pulse 2.4s infinite',
-              }}
-            />
-            <span style={{ ...mono(400, 10), color: 'var(--tx2)', letterSpacing: '.06em' }}>
-              SYNCED {lastSync.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false })}
+          <div onClick={goPortfolio} style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+            <Wordmark size={20} />
+          </div>
+          <nav aria-label="Primary" style={{ display: 'flex', alignSelf: 'stretch', gap: 2, marginLeft: 2 }}>
+            {navTabs.map((t) => (
+              <button
+                key={t.key}
+                className="hv-tx"
+                onClick={() => void navigate(t.path)}
+                title={t.title}
+                aria-current={t.active ? 'page' : undefined}
+                style={{
+                  position: 'relative',
+                  background: 'none',
+                  border: 'none',
+                  color: t.active ? 'var(--tx)' : 'var(--tx3)',
+                  padding: '0 11px',
+                  ...mono(500, 10.5),
+                  letterSpacing: '.09em',
+                  textTransform: 'uppercase',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <span style={{ display: 'inline-flex', color: t.active ? 'var(--acc)' : 'inherit' }}>{t.icon}</span>
+                {t.label}
+                {t.active && (
+                  <motion.span
+                    layoutId="eec-nav-underline"
+                    transition={{ type: 'spring', stiffness: 550, damping: 42 }}
+                    style={{ position: 'absolute', left: 7, right: 7, bottom: 0, height: 2, background: 'var(--acc)' }}
+                  />
+                )}
+              </button>
+            ))}
+          </nav>
+          <div style={{ flex: 1 }} />
+          <div
+            className="hv-border"
+            onClick={() => setPalette(true)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              border: '1px solid var(--line2)',
+              borderRadius: 3,
+              padding: '5px 10px',
+              cursor: 'pointer',
+              color: 'var(--tx3)',
+              minWidth: 220,
+            }}
+          >
+            <span style={{ fontSize: 12 }}>Search or run a command</span>
+            <span style={{ marginLeft: 'auto', ...mono(400, 10), border: '1px solid var(--line2)', borderRadius: 3, padding: '1px 5px' }}>
+              Ctrl+K
             </span>
           </div>
-        )}
-        {meError && (
+          {lastSync && !loadError && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: 'var(--ok)',
+                  animation: 'eec-pulse 2.4s infinite',
+                }}
+              />
+              <span style={{ ...mono(400, 10), color: 'var(--tx2)', letterSpacing: '.06em' }}>
+                SYNCED {lastSync.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false })}
+              </span>
+            </div>
+          )}
+          {meError && (
+            <button
+              onClick={loadMe}
+              title="Your role couldn't be verified, so admin/lead actions are hidden. Click to retry."
+              style={{
+                ...mono(400, 10),
+                background: 'none',
+                border: '1px solid var(--warn)',
+                color: 'var(--warn)',
+                borderRadius: 3,
+                padding: '3px 7px',
+                cursor: 'pointer',
+                letterSpacing: '.06em',
+              }}
+            >
+              ROLE UNVERIFIED — RETRY
+            </button>
+          )}
+          <NotificationCenter onOpenTicket={openTicket} />
           <button
-            onClick={loadMe}
-            title="Your role couldn't be verified, so admin/lead actions are hidden. Click to retry."
+            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            title="Toggle theme"
             style={{
               ...mono(400, 10),
               background: 'none',
-              border: '1px solid var(--warn)',
-              color: 'var(--warn)',
+              border: '1px solid var(--line2)',
+              color: 'var(--tx3)',
               borderRadius: 3,
               padding: '3px 7px',
               cursor: 'pointer',
               letterSpacing: '.06em',
             }}
+            className="hv-tx2"
           >
-            ROLE UNVERIFIED — RETRY
+            {theme === 'dark' ? 'LIGHT' : 'DARK'}
           </button>
-        )}
-        <button
-          className="hv-lift"
-          onClick={() => window.open(SITE_URL, '_blank', 'noopener')}
-          title="What Cometloop does"
-          style={{
-            ...mono(500, 10),
-            background: 'none',
-            border: '1px solid var(--acc)',
-            color: 'var(--acc)',
-            borderRadius: 3,
-            padding: '3px 9px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 5,
-          }}
-        >
-          <span>◆</span> LEARN MORE
-        </button>
-        <NotificationCenter onOpenTicket={openTicket} />
-        <button
-          onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-          title="Toggle theme"
-          style={{
-            ...mono(400, 10),
-            background: 'none',
-            border: '1px solid var(--line2)',
-            color: 'var(--tx3)',
-            borderRadius: 3,
-            padding: '3px 7px',
-            cursor: 'pointer',
-            letterSpacing: '.06em',
-          }}
-          className="hv-tx2"
-        >
-          {theme === 'dark' ? 'LIGHT' : 'DARK'}
-        </button>
-        <div
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: '50%',
-            background: 'var(--bg3)',
-            border: '1px solid var(--line2)',
-            display: 'grid',
-            placeItems: 'center',
-            ...mono(500, 10),
-            color: 'var(--tx2)',
-          }}
-          title={me ? `${me.email} · ${me.role.toUpperCase()}` : ''}
-        >
-          {me && me.email.includes('@')
-            ? me.email
-                .split('@')[0]
-                .split(/[._-]/)
-                .filter(Boolean)
-                .map((w) => w[0])
-                .join('')
-                .slice(0, 2)
-                .toUpperCase()
-            : '·'}
+          <div
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: '50%',
+              background: 'var(--bg3)',
+              border: '1px solid var(--line2)',
+              display: 'grid',
+              placeItems: 'center',
+              ...mono(500, 10),
+              color: 'var(--tx2)',
+            }}
+            title={me ? `${me.email} · ${me.role.toUpperCase()}` : ''}
+          >
+            {me && me.email.includes('@')
+              ? me.email
+                  .split('@')[0]
+                  .split(/[._-]/)
+                  .filter(Boolean)
+                  .map((w) => w[0])
+                  .join('')
+                  .slice(0, 2)
+                  .toUpperCase()
+              : '·'}
+          </div>
         </div>
-      </div>
+      )}
 
       {loadError && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 14px', background: 'var(--accsoft)', color: 'var(--bad)', ...mono(400, 11) }}>
@@ -754,14 +743,14 @@ export default function App() {
         />
       )}
 
-      {screen.name === 'tickets' && <Tickets onOpen={openTicket} />}
+      {screen.name === 'metrics' && <Metrics />}
 
       {screen.name === 'agent-map' && <AgentsPage canLead={canLead} canPublishShared={isAdmin} toast={showToast} />}
 
       {screen.name === 'workflows' && <Workflows toast={showToast} />}
 
-      {screen.name === 'admin' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
-      {screen.name === 'admin' && !isAdmin && (
+      {screen.name === 'settings' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
+      {screen.name === 'settings' && !isAdmin && (
         <div style={{ padding: 40, textAlign: 'center', color: 'var(--tx3)', ...mono(400, 11) }}>
           ADMIN ACCESS REQUIRED —{' '}
           <button onClick={goPortfolio} style={{ border: 'none', background: 'none', color: 'var(--acc)', ...mono(500, 11), cursor: 'pointer', padding: 0 }}>

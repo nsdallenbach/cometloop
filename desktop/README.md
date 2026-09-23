@@ -6,15 +6,31 @@ an Electron shell with the console's design tokens, a zod-validated config, a
 Databricks credential manager with **native browser OAuth** (authorization
 code + PKCE, refresh token encrypted via `safeStorage`, silent renewal,
 ≤10 min access-token cache, 401 → refresh-once), and a typed IPC bridge. The
-My Tickets view proves the loop: it lists engagements from the console API
-authenticated as *you*.
+Projects view proves the loop: it is the console itself, signed in as *you*.
 
-## Workflows
+## Sidebar
 
-The **Workflows** sidebar entry (DAT-284) opens the web console's
-`/workflows` page in the same embedded webview the Tickets tab uses — a
-placeholder builder for automation DAGs. It is routed inside the running
-console rather than reloaded, so Tickets keeps its place while you look.
+The sidebar is the only navigation: the embedded console renders no top
+bar of its own inside the desktop (it detects the `Electron/` user agent).
+
+| Entry | What it shows |
+|---|---|
+| **Projects** | The web console, embedded: portfolio, each project's Board · Tickets · Roadmap · … tabs, ticket drawer, planning. Remembers where you were across entries and restarts. |
+| **Workflows** | The console's `/workflows` page (DAT-284) in the same webview. |
+| **Agents** | Native: the coding agents on this machine — the desktop is *the* agents surface; the console's Agents tab is not shown in the shell. |
+| **Agent Tools** | Native: MCP servers and skills the agents run with. |
+| **Metrics** | The console's `/metrics` page (cross-project usage) in the same webview. |
+| **Identity** | Native: every identity the machine works with. |
+| **Sync** | Placeholder. |
+| **Deploys** | Native: the local deployment queue. |
+| **Settings** (bottom) | The console's `/settings` page (staffing & project lifecycle; formerly Admin). |
+
+Console entries are routed inside the running SPA (`history.pushState`)
+rather than reloaded, so Projects keeps its place while you look at
+Workflows, Metrics or Settings. Navigating inside the console (a palette
+command, a link) moves the sidebar highlight to match. The **↻** in the
+sidebar footer reloads the console — useful after a deploy, since the
+served bundle does not hot-reload.
 
 ## Run it
 
@@ -44,7 +60,7 @@ deployed one, start `npm run dev` at the repo root (port 8000) and then:
 APP_URL=http://localhost:8000 AGENT_NAME=desktop-dev-<you> npm run dev
 ```
 
-The Tickets tab, queue and deploy events all hit that local server; the
+The embedded console, queue and deploy events all hit that local server; the
 runner still claims real work from the shared queue, so name the agent
 distinctly and stop it when you are done.
 

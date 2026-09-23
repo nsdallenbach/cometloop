@@ -105,7 +105,7 @@ Workflows are stored on the server (`workflows.ts`) and autosave, so the web,
 the desktop and every user see the same ones. Nothing executes yet.
 
 **The desktop client** (`desktop/`, Electron) runs on each developer's
-machine and is the second shell of the same product. Its Tickets tab embeds
+machine and is the second shell of the same product. Its Projects entry embeds
 the *deployed* web console in a webview signed in as the developer (native
 browser OAuth, refresh token in the OS keychain), so every board, drawer and
 planning change reaches the desktop by construction. Around that it adds

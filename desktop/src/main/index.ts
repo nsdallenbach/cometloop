@@ -76,7 +76,7 @@ function createWindow(): BrowserWindow {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      // The Tickets tab embeds the deployed web console in a <webview>
+      // The Projects entry embeds the deployed web console in a <webview>
       // (partition 'persist:console') — full UI parity without a port.
       webviewTag: true,
     },
