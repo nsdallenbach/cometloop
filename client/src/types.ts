@@ -537,11 +537,25 @@ export interface MetricsReport {
       cacheRead: number;
       cacheCreate: number;
       cost: number | null;
+      /** `cost` includes figures estimated from model rates. */
+      costEstimated: boolean;
       runs: number;
       calls: number;
     }[];
-    topTickets: { key: string; title: string; engagementId: string; tokens: number; cost: number | null; runs: number }[];
-    totals: { input: number; output: number; cacheRead: number; cacheCreate: number; tokens: number; cost: number | null; runs: number; controlPlaneCalls: number };
+    topTickets: { key: string; title: string; engagementId: string; tokens: number; cost: number | null; costEstimated: boolean; unpriced: boolean; runs: number }[];
+    totals: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheCreate: number;
+      /** input + output */
+      tokens: number;
+      cost: number | null;
+      costEstimated: boolean;
+      unpricedModels: string[];
+      runs: number;
+      controlPlaneCalls: number;
+    };
     bySource: { harness: number; controlPlane: number };
     cacheHitRatio: number | null;
   };
@@ -669,8 +683,12 @@ export interface TicketUsage {
   /** Planning / estimate / review / draft calls the server made for the ticket. */
   controlPlaneCalls: number;
   total: UsageTotals;
-  /** Largest first; model is '' for usage recorded before models were tracked. */
-  models: (UsageTotals & { model: string; provider: string; runs: number })[];
+  /** `total.costUsd` includes figures estimated from the workspace's model rates. */
+  costEstimated: boolean;
+  /** Models that spent tokens nothing prices — their cost is missing from the total, not $0. */
+  unpricedModels: string[];
+  /** Largest (input + output) first; model is '' for usage recorded before models were tracked. */
+  models: (UsageTotals & { model: string; provider: string; runs: number; costEstimated: boolean; unpriced: boolean })[];
   bySource: { harness: UsageTotals; controlPlane: UsageTotals };
 }
 
@@ -721,6 +739,28 @@ export interface ModelRoleMapping {
   model: string;
   /** Why the mapping cannot meet the role's contract, when it cannot. */
   gap: string | null;
+}
+
+/** USD per 1M tokens for one model: a published default or the workspace's override (Admin → Model prices). */
+export interface ModelPrice {
+  model: string;
+  provider: 'anthropic' | 'openai' | 'google' | null;
+  source: 'default' | 'override';
+  inputPerM: number;
+  outputPerM: number;
+  cacheReadPerM: number;
+  cacheWritePerM: number;
+  /** The published row this is (or overrides), with where and when it was read; null for a model with no default. */
+  default: { inputPerM: number; outputPerM: number; cacheReadPerM: number; cacheWritePerM: number; sourceUrl: string; fetchedAt: string; note?: string } | null;
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
+export interface ModelPriceInput {
+  inputPerM: number;
+  outputPerM: number;
+  cacheReadPerM: number;
+  cacheWritePerM: number;
 }
 
 export interface ProviderProbe {

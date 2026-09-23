@@ -111,9 +111,10 @@ export const TENANT_TABLES = [
   'ticket_nudges',
   // WORKFLOWS_SCHEMA_SQL
   'workflows',
-  // MODEL_CONFIG_SCHEMA_SQL (server/llm/config.ts)
+  // MODEL_CONFIG_SCHEMA_SQL (server/llm/config.ts, incl. MODEL_PRICES_SCHEMA_SQL from pricing.ts)
   'model_providers',
   'model_roles',
+  'model_prices',
 ] as const;
 
 /** Tables that are not tenant-scoped: the tenant directory itself. */
@@ -143,6 +144,7 @@ export const PRIMARY_KEYS: Readonly<Record<string, readonly string[]>> = {
   runner_load_balancing: ['tenant_id', 'engagement_id', 'model_type', 'runner_name'],
   ticket_activity: ['tenant_id', 'ticket_key', 'activity_type'],
   model_roles: ['tenant_id', 'role'],
+  model_prices: ['tenant_id', 'model'],
 };
 
 export interface UniqueConstraintRewrite {

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type express from 'express';
+import { DEFAULT_RATES, addSliceCost, emptyRollup, loadEffectiveRates, sliceCost, type RateTable, type UsageBuckets } from '../llm/pricing';
 
 /**
  * Live token consumption (DAT-266): harness adapters surface per-turn usage
@@ -17,6 +18,12 @@ import type express from 'express';
  * final sample may split its totals `byModel`. Rows keep the model so a ticket
  * can show what it cost across every run, per model. Rows written before this
  * have no model and read back as "unknown".
+ *
+ * Cost: a row's `cost_usd` is the harness's own figure when it sent one (a
+ * Claude Code final sample); every other row is estimated at the model's
+ * rates (`server/llm/pricing.ts` — published defaults, per-workspace
+ * overrides). The fold keeps the two apart: `costEstimated` says rates were
+ * used, `unpricedModels` names what nothing prices.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -205,13 +212,17 @@ export interface TicketUsage {
   /** Server-side model calls (planning, estimate, review, draft) made for the ticket. */
   controlPlaneCalls: number;
   total: UsageTotals;
-  /** Largest first; model is '' for usage recorded before models were tracked. */
-  models: (UsageTotals & { model: string; provider: string; runs: number })[];
+  /** `total.costUsd` includes figures estimated from rates (not only recorded by a harness). */
+  costEstimated: boolean;
+  /** Models that spent tokens nothing prices — their cost is missing from the total, not $0. */
+  unpricedModels: string[];
+  /** Largest (input + output) first; model is '' for usage recorded before models were tracked. */
+  models: (UsageTotals & { model: string; provider: string; runs: number; costEstimated: boolean; unpriced: boolean })[];
   /** The same total split by where it was spent. */
   bySource: { harness: UsageTotals; controlPlane: UsageTotals };
 }
 
-interface UsageRow {
+export interface UsageRow {
   taskId: number;
   model: string;
   provider: string;
@@ -220,17 +231,19 @@ interface UsageRow {
   /** Control-plane rows: how many calls the row aggregates. */
   calls: number;
   totals: UsageTotals;
+  /** The part of `totals` that came from rows with no recorded `cost_usd` — what gets estimated. */
+  unpriced: UsageBuckets;
 }
 
 const emptyTotals = (): UsageTotals => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0, costUsd: null });
-function addTotals(into: UsageTotals, t: UsageTotals): void {
+function addTokens(into: UsageTotals, t: UsageBuckets): void {
   into.input += t.input;
   into.output += t.output;
   into.cacheRead += t.cacheRead;
   into.cacheCreate += t.cacheCreate;
-  if (t.costUsd != null) into.costUsd = (into.costUsd ?? 0) + t.costUsd;
 }
-const tokenSum = (t: UsageTotals): number => t.input + t.output + t.cacheRead + t.cacheCreate;
+/** The number people quote: input + output. Cache traffic is shown, not counted. */
+const tokenSum = (t: UsageBuckets): number => t.input + t.output;
 
 /**
  * Fold a ticket's usage rows into totals per model (DAT-260). A run that
@@ -238,37 +251,79 @@ const tokenSum = (t: UsageTotals): number => t.input + t.output + t.cacheRead + 
  * a run that never finished (crashed, cancelled, still going) only has its
  * per-turn rows, so those are what count for it. Never both for one run.
  */
-export function foldTicketUsage(rows: UsageRow[]): TicketUsage {
+export function foldTicketUsage(rows: UsageRow[], rates: RateTable = DEFAULT_RATES): TicketUsage {
   const harness = rows.filter((r) => r.source === 'harness');
   const finished = new Set(harness.filter((r) => r.final).map((r) => r.taskId));
   // Control-plane rows are never final and have no run: every one counts.
   const counted = [...harness.filter((r) => r.final === finished.has(r.taskId)), ...rows.filter((r) => r.source === 'control-plane')];
   const total = emptyTotals();
   const bySource = { harness: emptyTotals(), controlPlane: emptyTotals() };
-  const byModel = new Map<string, { model: string; provider: string; totals: UsageTotals; tasks: Set<number> }>();
+  const cost = { total: emptyRollup(), harness: emptyRollup(), controlPlane: emptyRollup() };
+  const byModel = new Map<string, { model: string; provider: string; totals: UsageTotals; cost: ReturnType<typeof emptyRollup>; tasks: Set<number> }>();
   let controlPlaneCalls = 0;
   for (const r of counted) {
-    addTotals(total, r.totals);
-    addTotals(r.source === 'harness' ? bySource.harness : bySource.controlPlane, r.totals);
+    // One cost rule for every reader (pricing.ts): recorded stays recorded, the rest is rated.
+    const c = sliceCost({ model: r.model, recordedUsd: r.totals.costUsd, unpriced: r.unpriced }, rates);
+    addTokens(total, r.totals);
+    addSliceCost(cost.total, r.model, c);
+    addTokens(r.source === 'harness' ? bySource.harness : bySource.controlPlane, r.totals);
+    addSliceCost(r.source === 'harness' ? cost.harness : cost.controlPlane, r.model, c);
     if (r.source === 'control-plane') controlPlaneCalls += r.calls;
     const key = `${r.provider} ${r.model}`;
-    const m = byModel.get(key) ?? { model: r.model, provider: r.provider, totals: emptyTotals(), tasks: new Set<number>() };
-    addTotals(m.totals, r.totals);
+    const m = byModel.get(key) ?? { model: r.model, provider: r.provider, totals: emptyTotals(), cost: emptyRollup(), tasks: new Set<number>() };
+    addTokens(m.totals, r.totals);
+    addSliceCost(m.cost, r.model, c);
     if (r.source === 'harness') m.tasks.add(r.taskId);
     byModel.set(key, m);
   }
+  total.costUsd = cost.total.usd;
+  bySource.harness.costUsd = cost.harness.usd;
+  bySource.controlPlane.costUsd = cost.controlPlane.usd;
   const models = [...byModel.values()]
-    .map((m) => ({ model: m.model, provider: m.provider, runs: m.tasks.size, ...m.totals }))
+    .map((m) => ({ model: m.model, provider: m.provider, runs: m.tasks.size, ...m.totals, costUsd: m.cost.usd, costEstimated: m.cost.estimated, unpriced: m.cost.unpricedModels.length > 0 }))
     .sort((a, b) => tokenSum(b) - tokenSum(a));
-  return { runs: new Set(counted.filter((r) => r.source === 'harness').map((r) => r.taskId)).size, controlPlaneCalls, total, models, bySource };
+  return {
+    runs: new Set(counted.filter((r) => r.source === 'harness').map((r) => r.taskId)).size,
+    controlPlaneCalls,
+    total,
+    costEstimated: cost.total.estimated,
+    unpricedModels: cost.total.unpricedModels,
+    models,
+    bySource,
+  };
 }
 
-export async function usageByTicket(q: Query, ticketKey: string): Promise<TicketUsage> {
-  const { rows } = await q(
-    `SELECT task_id, model, provider, source, final, COUNT(*)::int AS calls,
-            SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+/** Per-row usage split by whether the row carried a recorded cost — the SELECT list every cost reader shares. */
+export const USAGE_SUM_SQL = `SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
             SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_create_tokens) AS cache_create_tokens,
-            SUM(cost_usd) AS cost_usd
+            SUM(cost_usd) AS cost_usd,
+            SUM(CASE WHEN cost_usd IS NULL THEN input_tokens ELSE 0 END) AS unpriced_input,
+            SUM(CASE WHEN cost_usd IS NULL THEN output_tokens ELSE 0 END) AS unpriced_output,
+            SUM(CASE WHEN cost_usd IS NULL THEN cache_read_tokens ELSE 0 END) AS unpriced_cache_read,
+            SUM(CASE WHEN cost_usd IS NULL THEN cache_create_tokens ELSE 0 END) AS unpriced_cache_create`;
+
+/** Read the {@link USAGE_SUM_SQL} columns off a row. */
+export function usageSums(r: Record<string, unknown>): { totals: UsageTotals; unpriced: UsageBuckets } {
+  return {
+    totals: {
+      input: Number(r.input_tokens ?? 0),
+      output: Number(r.output_tokens ?? 0),
+      cacheRead: Number(r.cache_read_tokens ?? 0),
+      cacheCreate: Number(r.cache_create_tokens ?? 0),
+      costUsd: r.cost_usd == null ? null : Number(r.cost_usd),
+    },
+    unpriced: {
+      input: Number(r.unpriced_input ?? 0),
+      output: Number(r.unpriced_output ?? 0),
+      cacheRead: Number(r.unpriced_cache_read ?? 0),
+      cacheCreate: Number(r.unpriced_cache_create ?? 0),
+    },
+  };
+}
+
+export async function usageByTicket(q: Query, ticketKey: string, rates: RateTable = DEFAULT_RATES): Promise<TicketUsage> {
+  const { rows } = await q(
+    `SELECT task_id, model, provider, source, final, COUNT(*)::int AS calls, ${USAGE_SUM_SQL}
      FROM app.run_token_usage WHERE ticket_key = $1
      GROUP BY task_id, model, provider, source, final`,
     [ticketKey],
@@ -281,14 +336,9 @@ export async function usageByTicket(q: Query, ticketKey: string): Promise<Ticket
       source: str(r.source) === 'control-plane' ? 'control-plane' : 'harness',
       final: r.final === true,
       calls: Number(r.calls ?? 0),
-      totals: {
-        input: Number(r.input_tokens ?? 0),
-        output: Number(r.output_tokens ?? 0),
-        cacheRead: Number(r.cache_read_tokens ?? 0),
-        cacheCreate: Number(r.cache_create_tokens ?? 0),
-        costUsd: r.cost_usd == null ? null : Number(r.cost_usd),
-      },
+      ...usageSums(r),
     })),
+    rates,
   );
 }
 
@@ -296,7 +346,7 @@ export function setupTokenUsageRoutes(app: express.Application, q: Query): void 
   // What a ticket has cost so far, across every agent run, per model (DAT-260).
   app.get('/api/tickets/:key/usage', async (req, res) => {
     try {
-      res.json(await usageByTicket(q, String(req.params.key)));
+      res.json(await usageByTicket(q, String(req.params.key), await loadEffectiveRates(q)));
     } catch (err) {
       console.error('ticket usage failed:', err);
       res.status(500).json({ error: 'Failed to load token usage' });

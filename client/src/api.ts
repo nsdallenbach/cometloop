@@ -25,6 +25,8 @@ import type {
   FleetStatus,
   LlmHealth,
   Me,
+  ModelPrice,
+  ModelPriceInput,
   ModelProvider,
   ModelProviderInput,
   ModelProvidersData,
@@ -569,6 +571,17 @@ export const api = {
   },
   saveModelRoles(roles: { role: ModelRole; providerId: number | null; model: string }[]): Promise<{ roles: ModelRoleMapping[] }> {
     return http('/api/settings/model-roles', { method: 'PUT', ...json({ roles }) });
+  },
+  /** The effective model price table: published defaults with the workspace's overrides on top. */
+  modelPrices(): Promise<{ prices: ModelPrice[] }> {
+    return http('/api/settings/model-prices');
+  },
+  saveModelPrice(model: string, rates: ModelPriceInput): Promise<{ price: ModelPrice | null }> {
+    return http(`/api/settings/model-prices/${encodeURIComponent(model)}`, { method: 'PUT', ...json(rates) });
+  },
+  /** Back to the published default (or gone, for a model that has none). */
+  resetModelPrice(model: string): Promise<{ price: ModelPrice | null; removed: number }> {
+    return http(`/api/settings/model-prices/${encodeURIComponent(model)}`, { method: 'DELETE' });
   },
   /** Per-role live health; the body is returned even on 503 (a configured role that does not answer). */
   async llmHealth(): Promise<LlmHealth> {

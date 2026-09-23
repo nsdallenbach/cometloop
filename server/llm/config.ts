@@ -2,6 +2,7 @@ import { isProviderKind, providerFor } from './providers';
 import { resolveCredential } from './credentials';
 import { type ChatRequest, type ModelProvider, type ProviderCapabilities, type ProviderConfig, type ProviderKind, type ResolvedModel } from './provider';
 import { currentTenantId } from '../db/tenant-context';
+import { MODEL_PRICES_SCHEMA_SQL } from './pricing';
 
 /**
  * Per-workspace model configuration (platform-architecture §6, the site's
@@ -12,6 +13,8 @@ import { currentTenantId } from '../db/tenant-context';
  *    a default model and adapter extras.
  *  - `app.model_roles` — role → (provider, model). Cometloop never calls
  *    "the model"; it calls a role, and the role is mapped here.
+ *  - `app.model_prices` — per-model USD rates the workspace set over the
+ *    published defaults (`pricing.ts`), for estimated cost.
  *
  * Both get `tenant_id` and row-level security from the phase-2 migration
  * (`TENANT_TABLES` in server/db/tenancy.ts), so every read below is already
@@ -44,6 +47,9 @@ export const MODEL_CONFIG_SCHEMA_SQL = [
     model TEXT NOT NULL DEFAULT '',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  // Per-workspace price overrides (server/llm/pricing.ts) — one boot array so
+  // the settings tests and the tenancy list see the three tables together.
+  ...MODEL_PRICES_SCHEMA_SQL,
 ];
 
 /** The roles the control plane calls, with the site docs' names. */

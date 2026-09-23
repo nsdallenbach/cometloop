@@ -42,6 +42,7 @@ describe('pivotByModel', () => {
     cacheRead: 0,
     cacheCreate: 0,
     cost,
+    costEstimated: false,
     runs: 1,
     calls: 0,
   });

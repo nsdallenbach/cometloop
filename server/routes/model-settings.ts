@@ -21,6 +21,7 @@ import {
 import { credentialStatus, isValidCredentialRef } from '../llm/credentials';
 import { LIVE_PROVIDER_KINDS } from '../llm/providers';
 import { PROVIDER_KINDS, type ProviderConfig } from '../llm/provider';
+import { loadPriceOverrides, mergePrices, normalizeModelId, type EffectivePrice } from '../llm/pricing';
 import { probeModel } from './llm-health';
 
 /**
@@ -33,6 +34,11 @@ import { probeModel } from './llm-health';
  * NAME of its credential, and the API reports only where that name resolves
  * (`env`, `key-vault`, `missing`). `extra` is allow-listed per key so a key
  * pasted into the wrong field cannot land in the database.
+ *
+ * Model prices (`/api/settings/model-prices`) are the USD-per-1M-token rates
+ * estimated cost uses (server/llm/pricing.ts): the published defaults with
+ * the workspace's overrides on top, each row saying which it is. PUT
+ * overrides one model, DELETE puts the default back.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -87,6 +93,11 @@ const ProviderBody = z.object({
 });
 
 const TestBody = z.object({ model: z.string().trim().max(200).optional() });
+
+const Rate = z.number().min(0).max(100_000);
+/** USD per 1M tokens; the cache rates default to 0 (no cache, or a provider that does not charge for it). */
+const PriceBody = z.object({ inputPerM: Rate, outputPerM: Rate, cacheReadPerM: Rate.default(0), cacheWritePerM: Rate.default(0) });
+const ModelParam = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9._:@-]+$/);
 
 const RolesBody = z.object({
   roles: z
@@ -333,6 +344,75 @@ export function setupModelSettingsRoutes(app: express.Application, q: Query, req
     } catch (err) {
       console.error('model roles save failed:', err);
       res.status(500).json({ error: 'Failed to save model roles' });
+    }
+  });
+
+  // ---- model prices: the rates estimated cost uses ----
+
+  const effectivePrices = async (): Promise<EffectivePrice[]> => mergePrices(await loadPriceOverrides(q));
+  const priceFor = (prices: EffectivePrice[], model: string): EffectivePrice | null => {
+    const key = normalizeModelId(model);
+    return prices.find((p) => normalizeModelId(p.model) === key) ?? null;
+  };
+  const badModel = (res: express.Response) => res.status(400).json({ error: 'Model id: letters, digits, dots, dashes, colons, @ and _ only' });
+
+  /** Defaults merged with the workspace's overrides, each row flagged `default` | `override` with the default's fetched-at date. */
+  app.get('/api/settings/model-prices', async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    try {
+      res.json({ prices: await effectivePrices() });
+    } catch (err) {
+      console.error('model prices failed:', err);
+      res.status(500).json({ error: 'Failed to load model prices' });
+    }
+  });
+
+  /** Upsert one override. A dated / hosted alias of a default is stored under the default's id so one row per model stays true. */
+  app.put('/api/settings/model-prices/:model', async (req, res) => {
+    const caller = await requireAdmin(req, res);
+    if (!caller) return;
+    const model = ModelParam.safeParse(req.params.model);
+    if (!model.success) {
+      badModel(res);
+      return;
+    }
+    const parsed = PriceBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Rates are USD per 1M tokens: inputPerM and outputPerM (0 or more), cacheReadPerM and cacheWritePerM optional' });
+      return;
+    }
+    try {
+      const canonical = priceFor(mergePrices([]), model.data)?.model ?? model.data;
+      const r = parsed.data;
+      await q(
+        `INSERT INTO app.model_prices (model, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, updated_by) VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (tenant_id, model) DO UPDATE SET input_per_m = EXCLUDED.input_per_m, output_per_m = EXCLUDED.output_per_m,
+           cache_read_per_m = EXCLUDED.cache_read_per_m, cache_write_per_m = EXCLUDED.cache_write_per_m, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+        [canonical, r.inputPerM, r.outputPerM, r.cacheReadPerM, r.cacheWritePerM, caller.email],
+      );
+      res.json({ price: priceFor(await effectivePrices(), canonical) });
+    } catch (err) {
+      console.error('model price save failed:', err);
+      res.status(500).json({ error: 'Failed to save the model price' });
+    }
+  });
+
+  /** Reset to default: every override that resolves to the model goes; what remains is the default row, or nothing. */
+  app.delete('/api/settings/model-prices/:model', async (req, res) => {
+    if (!(await requireAdmin(req, res))) return;
+    const model = ModelParam.safeParse(req.params.model);
+    if (!model.success) {
+      badModel(res);
+      return;
+    }
+    try {
+      const key = normalizeModelId(model.data);
+      const overrides = (await loadPriceOverrides(q)).filter((o) => normalizeModelId(o.model) === key);
+      for (const o of overrides) await q('DELETE FROM app.model_prices WHERE model = $1', [o.model]);
+      res.json({ price: priceFor(await effectivePrices(), model.data), removed: overrides.length });
+    } catch (err) {
+      console.error('model price reset failed:', err);
+      res.status(500).json({ error: 'Failed to reset the model price' });
     }
   });
 }
