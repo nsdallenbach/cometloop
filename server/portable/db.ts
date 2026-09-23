@@ -9,9 +9,12 @@ import { scopedQuery } from '../db/scoped-query';
  *
  * Two query functions come out of the one pool (phase 2):
  *
- * - `query` is what route modules get. Every call runs as the `cometloop_app`
- *   role with `app.tenant_id` set from the async context, so row-level
- *   security scopes it to the request's tenant (`server/db/scoped-query.ts`).
+ * - `query` is what route modules get. It runs as the `cometloop_app` role
+ *   with `app.tenant_id` set from the async context, so row-level security
+ *   scopes it to the request's tenant (`server/db/scoped-query.ts`). On a
+ *   direct connection (`DATABASE_URL_UNPOOLED`, or a `DATABASE_URL` with no
+ *   `-pooler` host) each request pins one client and sets the session once;
+ *   behind Neon's pooler it falls back to a transaction per statement.
  * - `adminQuery` is the bare owner connection — boot migrations, the tenant
  *   directory, anything that legitimately spans tenants. Nothing in a route
  *   module should hold it.
@@ -55,15 +58,44 @@ export interface PortableDb {
   /** The owner connection, unscoped: boot migrations and the tenant directory only. */
   adminQuery: Query;
   label: string;
+  /**
+   * How `query` scopes: `pinned` = one direct connection per request, session
+   * set once (needs a direct endpoint); `statement` = a short transaction per
+   * statement, safe behind a transaction-mode pooler.
+   */
+  mode: 'pinned' | 'statement';
   close(): Promise<void>;
 }
 
-export function createPortableDb(databaseUrl: string): PortableDb {
-  const cfg = portablePoolConfig(databaseUrl);
+export interface PortableDbOptions {
+  /**
+   * Neon's direct endpoint (`DATABASE_URL` without `-pooler` in the host).
+   * With it the pool sits on direct connections and requests pin one each;
+   * without it the pool uses `databaseUrl` and every statement scopes itself.
+   */
+  unpooledUrl?: string;
+}
+
+/** Neon's pooler hosts carry a `-pooler` label; anything else is treated as direct. */
+export function looksPooled(databaseUrl: string): boolean {
+  try {
+    return /-pooler\b/.test(new URL(databaseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function createPortableDb(databaseUrl: string, opts: PortableDbOptions = {}): PortableDb {
+  const direct = opts.unpooledUrl?.trim();
+  // A DATABASE_URL that is itself direct (docker-compose, a plain Postgres) can pin too.
+  const pinning = Boolean(direct) || !looksPooled(databaseUrl);
+  const cfg = portablePoolConfig(direct || databaseUrl);
   const pool = new Pool({
     connectionString: cfg.connectionString,
     ssl: cfg.ssl,
-    max: Number(process.env.PG_POOL_MAX) || 10,
+    // Pinned requests hold a client for their whole duration, so the default
+    // has headroom for a busy board; long-lived handlers opt out (markLongLived).
+    max: Number(process.env.PG_POOL_MAX) || 20,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 15_000,
   });
@@ -72,5 +104,12 @@ export function createPortableDb(databaseUrl: string): PortableDb {
     const result = await pool.query(text, params);
     return { rows: result.rows as Record<string, unknown>[] };
   };
-  return { pool, query: scopedQuery(pool), adminQuery, label: cfg.label, close: () => pool.end() };
+  return {
+    pool,
+    query: scopedQuery(pool, { pinning }),
+    adminQuery,
+    label: cfg.label,
+    mode: pinning ? 'pinned' : 'statement',
+    close: () => pool.end(),
+  };
 }

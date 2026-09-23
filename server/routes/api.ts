@@ -926,8 +926,13 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         // repo_connected completes the deploy gate's inputs (DAT-213) — with
         // it alongside the PR and deploy joins above, every card can carry the
         // reason it cannot move to Done without a second round trip.
-        const tickets = (
-          await q(
+        //
+        // The seven reads are independent, so they are issued together: on a
+        // pinned connection the first takes the request's client and the rest
+        // spill over to their own checkouts, and the route costs one round
+        // trip of latency instead of seven (docs/platform-architecture.md §4).
+        const [ticketRows, sourceRows, feedRows, teamRows, suggestionRows, agentTaskRows, fleet] = await Promise.all([
+          q(
             `SELECT t.*, d.deploy_state, d.deploy_url, (conn.present IS NOT NULL) AS repo_connected,
                     p.number AS pr_number, p.title AS pr_title, p.state AS pr_state, p.branch AS pr_branch, p.url AS pr_url,
                     ba.branch_name AS active_branch,
@@ -969,38 +974,38 @@ export async function setupApiRoutes(appkit: AppKitServices) {
              ${REPO_CONNECTED_JOIN}
              WHERE t.engagement_id = $1 ORDER BY t.seq DESC`,
             [id],
-          )
-        ).rows.map((r) => ({ ...r, done_blocked_reason: doneBlockedReason(gateInputFromRow(r)) }));
-        const sources = (await q('SELECT * FROM app.sources WHERE engagement_id = $1 ORDER BY id', [id])).rows;
-        const feed = (
-          await q('SELECT * FROM app.feed_items WHERE engagement_id = $1 AND NOT reverted ORDER BY id', [id])
-        ).rows;
-        const team = (
-          await q(
+          ),
+          q('SELECT * FROM app.sources WHERE engagement_id = $1 ORDER BY id', [id]),
+          q('SELECT * FROM app.feed_items WHERE engagement_id = $1 AND NOT reverted ORDER BY id', [id]),
+          q(
             `SELECT t.* FROM app.team_members t
              JOIN app.engagement_members m ON m.member_id = t.id
              WHERE m.engagement_id = $1 ORDER BY t.id`,
             [id]
-          )
-        ).rows;
-        const suggestions = (
-          await q(
+          ),
+          q(
             `SELECT s.* FROM app.suggestions s
              JOIN app.tickets t ON t.key = s.ticket
              WHERE t.engagement_id = $1 ORDER BY s.id`,
             [id]
-          )
-        ).rows;
-        const agentTasks = (await q('SELECT * FROM app.agent_tasks WHERE engagement_id = $1 ORDER BY id DESC LIMIT 50', [id])).rows;
-        // Fleet liveness (DAT-224) rides the board poll: whether anything is
-        // actually online to claim queued work. Read-only here — the feed entry
-        // and orphan recovery belong to the background watch, which has to run
-        // whether or not anyone has the board open. A failure must not blank
-        // the board: the fleet warning is the least important thing on it.
-        const fleet = await loadFleetStatus(q, id).catch((err: Error) => {
-          console.warn('[fleet] status unavailable:', err.message);
-          return null;
-        });
+          ),
+          q('SELECT * FROM app.agent_tasks WHERE engagement_id = $1 ORDER BY id DESC LIMIT 50', [id]),
+          // Fleet liveness (DAT-224) rides the board poll: whether anything is
+          // actually online to claim queued work. Read-only here — the feed entry
+          // and orphan recovery belong to the background watch, which has to run
+          // whether or not anyone has the board open. A failure must not blank
+          // the board: the fleet warning is the least important thing on it.
+          loadFleetStatus(q, id).catch((err: Error) => {
+            console.warn('[fleet] status unavailable:', err.message);
+            return null;
+          }),
+        ]);
+        const tickets = ticketRows.rows.map((r) => ({ ...r, done_blocked_reason: doneBlockedReason(gateInputFromRow(r)) }));
+        const sources = sourceRows.rows;
+        const feed = feedRows.rows;
+        const team = teamRows.rows;
+        const suggestions = suggestionRows.rows;
+        const agentTasks = agentTaskRows.rows;
         res.json({ tickets, sources, feed, team, suggestions, agentTasks, fleet });
       } catch (err) {
         console.error('engagement detail failed:', err);

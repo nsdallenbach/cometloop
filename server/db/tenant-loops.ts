@@ -6,7 +6,9 @@ import { runWithTenant } from './tenant-context';
  * `setInterval` that closes over `q`; a timer created inside `runWithTenant`
  * inherits the tenant through the AsyncLocalStorage, so every tick of that
  * interval — and every query it issues — is scoped to the tenant it was
- * started for. Nothing in the modules changes.
+ * started for. Nothing in the modules changes. Loops run in `statement`
+ * mode: a tick has no request end to release a pinned connection on, and
+ * latency is not what a background sweep is about.
  *
  * The directory is re-read on a slow cadence so a tenant created after boot
  * gets its loops without a restart; a tenant never gets a second set.
@@ -45,7 +47,7 @@ export function startPerTenant(
       if (started.has(id)) continue;
       started.add(id);
       try {
-        runWithTenant(id, () => start(id));
+        runWithTenant(id, () => start(id), { mode: 'statement' });
       } catch (err) {
         console.warn(`[tenants] loops for ${id} failed to start:`, (err as Error).message);
       }

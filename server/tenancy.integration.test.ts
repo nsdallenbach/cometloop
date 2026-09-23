@@ -76,7 +76,12 @@ describe.skipIf(!url)('tenancy on Postgres', () => {
   }
 
   beforeAll(async () => {
-    db = createPortableDb(url as string);
+    // One connection in the pool: every checkout below reuses the same
+    // backend, which is what makes the "nothing carries over" checks real.
+    process.env.PG_POOL_MAX = '1';
+    const unpooledUrl = process.env.TEST_DATABASE_URL_UNPOOLED?.trim();
+    db = createPortableDb(url as string, unpooledUrl ? { unpooledUrl } : {});
+    console.log(`[integration] scoping mode: ${db.mode}`);
     await cleanup().catch(() => undefined); // first run on a fresh branch: tables may lack tenant_id yet
   }, 60_000);
 
@@ -162,10 +167,33 @@ describe.skipIf(!url)('tenancy on Postgres', () => {
     );
   });
 
-  it('leaves no tenant or role on the pooled connection after a scoped statement', async () => {
-    await runWithTenant(A, () => q('SELECT 1'));
-    const { rows } = await admin(`SELECT current_user AS who, current_setting('app.tenant_id', true) AS tenant`);
+  it('a failing statement does not poison the rest of the request', async () => {
+    const after = await runWithTenant(A, async () => {
+      await expect(q(`INSERT INTO app.tickets (key, engagement_id, title, est_hours, human_est_hours) VALUES ('CL-1', 'itest', 'dup', 1, 4)`)).rejects.toThrow(
+        /duplicate key/,
+      );
+      await expect(q(`SELECT no_such_column FROM app.tickets`)).rejects.toThrow(/no_such_column/);
+      return q(`SELECT key FROM app.tickets ORDER BY key`);
+    });
+    expect(after.rows).toEqual([{ key: 'CL-1' }]);
+  });
+
+  it('a released connection carries no role or tenant into the next checkout (same backend, pool of one)', async () => {
+    const pid = (await admin(`SELECT pg_backend_pid() AS pid`)).rows[0].pid;
+    const inside = await runWithTenant(A, () =>
+      q(`SELECT pg_backend_pid() AS pid, current_user AS who, current_setting('app.tenant_id', true) AS tenant`),
+    );
+    expect(inside.rows[0]).toMatchObject({ who: APP_ROLE, tenant: A });
+    const { rows } = await admin(`SELECT pg_backend_pid() AS pid, current_user AS who, current_setting('app.tenant_id', true) AS tenant`);
     expect(rows[0].who).not.toBe(APP_ROLE);
     expect(rows[0].tenant ?? '').toBe('');
+    if (db.mode === 'pinned') {
+      // With one connection in the pool this is the very backend the request used.
+      expect(inside.rows[0].pid).toBe(pid);
+      expect(rows[0].pid).toBe(pid);
+    }
+    // And the next tenant context on that same backend sees only its own rows.
+    expect((await runWithTenant(B, () => q(`SELECT tenant_id FROM app.tickets WHERE key = 'CL-1'`))).rows).toEqual([{ tenant_id: B }]);
+    expect((await q(`SELECT count(*)::int AS n FROM app.tickets`)).rows[0].n).toBe(0);
   });
 });

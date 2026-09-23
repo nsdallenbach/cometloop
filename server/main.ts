@@ -15,9 +15,10 @@ import { githubAppConfigured } from './routes/github-app';
  * runs it directly (the Dockerfile's default command). It satisfies the
  * `AppKitServices` interface that `setupApiRoutes` takes:
  *
- * - `lakebase.query` → a `pg.Pool` on `DATABASE_URL` (SSL unless disabled),
- *                      tenant-scoped per query under row-level security
- *                      (phase 2, `server/db/`); `adminQuery` is the owner.
+ * - `lakebase.query` → a `pg.Pool` on `DATABASE_URL_UNPOOLED` (the direct
+ *                      endpoint) or `DATABASE_URL`, SSL unless disabled,
+ *                      tenant-scoped under row-level security (phase 2,
+ *                      `server/db/`); `adminQuery` is the owner.
  * - `server.extend`  → the Express app, with AppKit's global JSON parser
  *                      mirrored so the UTF-8 recovery middleware splices in.
  * - `files(alias)`   → a directory per alias under `FILES_DIR`.
@@ -80,8 +81,16 @@ export async function startPortableServer(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is required for the portable runtime');
 
-  const db = createPortableDb(databaseUrl);
-  console.log(`${LOG} Postgres via DATABASE_URL (${db.label}); Databricks token flow skipped`);
+  const unpooledUrl = process.env.DATABASE_URL_UNPOOLED?.trim();
+  const db = createPortableDb(databaseUrl, unpooledUrl ? { unpooledUrl } : {});
+  console.log(`${LOG} Postgres via ${unpooledUrl ? 'DATABASE_URL_UNPOOLED' : 'DATABASE_URL'} (${db.label}); Databricks token flow skipped`);
+  if (db.mode === 'pinned') {
+    console.log(`${LOG} Tenant scoping: one direct connection per request, session set once (pool max ${db.pool.options.max})`);
+  } else {
+    console.warn(
+      `${LOG} DATABASE_URL points at a transaction-mode pooler and DATABASE_URL_UNPOOLED is not set — session settings would not stick there, so every statement scopes itself in its own transaction (three round trips each). Set DATABASE_URL_UNPOOLED to the direct endpoint for the fast path.`,
+    );
+  }
 
   const filesDir = path.resolve(process.env.FILES_DIR ?? 'data/files');
   console.log(`${LOG} Files on local disk under ${filesDir}`);

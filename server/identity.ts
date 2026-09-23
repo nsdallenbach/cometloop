@@ -1,6 +1,6 @@
 import type express from 'express';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
-import { DEFAULT_TENANT_ID, isValidTenantId, runWithTenant } from './db/tenant-context';
+import { DEFAULT_TENANT_ID, isValidTenantId, runWithTenantRequest } from './db/tenant-context';
 
 /**
  * Who is calling — one module, one answer, fail closed.
@@ -27,7 +27,8 @@ import { DEFAULT_TENANT_ID, isValidTenantId, runWithTenant } from './db/tenant-c
  * Better Auth identity carries its organization as a claim, or is looked up
  * in `app.tenant_members` by email through `setTenantDirectory`. The gate
  * refuses (403 `No workspace`) an identity that resolves to no tenant, and
- * runs the handler inside `runWithTenant` so every query it issues is scoped.
+ * runs the handler inside `runWithTenantRequest` so every query it issues
+ * is scoped (and shares one pinned connection until the response ends).
  */
 
 export type IdentitySource = 'databricks' | 'better-auth' | 'dev';
@@ -275,11 +276,11 @@ export function requireSignIn(): express.RequestHandler {
         }
         // req.path is relative to the mount point; the exemption list is absolute.
         if (id) {
-          runWithTenant(id.tenantId as string, () => next());
+          runWithTenantRequest(id.tenantId as string, res, next);
           return;
         }
         if (isSignInExempt(`${req.baseUrl}${req.path}`)) {
-          runWithTenant(ANONYMOUS_RUNNER_TENANT_ID, () => next());
+          runWithTenantRequest(ANONYMOUS_RUNNER_TENANT_ID, res, next);
           return;
         }
         res.status(401).json({ error: 'Sign in required' });
