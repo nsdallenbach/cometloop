@@ -322,6 +322,31 @@ function registerIpc(): void {
       return fail(e);
     }
   });
+  // Title-bar bell: the same /api/notifications the web bar reads, as the dev.
+  ipcMain.handle('console:notifications', async () => {
+    try {
+      return { ok: true as const, ...(await client.notifications()) };
+    } catch (e) {
+      return fail(e);
+    }
+  });
+  ipcMain.handle('console:notification-read', async (_e, id: unknown) => {
+    try {
+      if (typeof id !== 'number' || !Number.isInteger(id)) throw new Error('notification id required');
+      await client.markNotificationRead(id);
+      return { ok: true as const };
+    } catch (e) {
+      return fail(e);
+    }
+  });
+  ipcMain.handle('console:notifications-read-all', async () => {
+    try {
+      await client.markAllNotificationsRead();
+      return { ok: true as const };
+    } catch (e) {
+      return fail(e);
+    }
+  });
   ipcMain.handle('console:models', async () => {
     try {
       const models = await client.agentModels();

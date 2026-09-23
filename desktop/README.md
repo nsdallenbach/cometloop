@@ -32,6 +32,21 @@ command, a link) moves the sidebar highlight to match. The **↻** in the
 sidebar footer reloads the console — useful after a deploy, since the
 served bundle does not hot-reload.
 
+## Title bar
+
+Right of the wordmark, before the window controls, three icon-only
+affordances the web top bar used to carry (tooltips name them):
+
+- **Sun / moon** — theme. It sets `data-theme` on the shell and writes the
+  same `eec-theme` key into the embedded console, which switches at once;
+  the choice survives restarts on both sides.
+- **Bell** — your console notifications: unread count, dropdown, mark
+  read / mark all read; a row with a ticket opens it in Projects. Read via
+  the console client in the main process (`/api/notifications`), polled
+  every 30s and whenever the window regains focus.
+- **Shield** (only when shown) — the console could not verify your role,
+  so admin/lead actions inside it are hidden; click to retry.
+
 ## Run it
 
 ```bash
