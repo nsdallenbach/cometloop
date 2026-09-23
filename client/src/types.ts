@@ -494,6 +494,63 @@ export interface VelocityReport {
   } | null;
 }
 
+/** Cross-project metrics (server/routes/metrics.ts) — the shape is mirrored there. */
+export type MetricsRange = '7d' | '30d' | '90d' | 'all';
+
+export interface MetricsProject {
+  id: string;
+  client: string;
+  name: string;
+  health: Health;
+  /** backlog + progress */
+  open: number;
+  /** review + deploying */
+  review: number;
+  done: number;
+  proposed: number;
+  total: number;
+  doneInRange: number;
+}
+
+export interface MetricsReport {
+  range: MetricsRange;
+  since: string | null;
+  engagement: string | null;
+  generatedAt: string;
+  projects: MetricsProject[];
+  velocity: {
+    doneByWeek: { week: string; done: number }[];
+    cycleByWeek: { week: string; medianHrs: number | null; p90Hrs: number | null; samples: number }[];
+    cycle: { medianHrs: number | null; p90Hrs: number | null; samples: number };
+    flow: { date: string; open: number; done: number }[];
+    status: { backlog: number; progress: number; review: number; deploying: number; done: number; proposed: number };
+  };
+  tokens: {
+    perDay: {
+      date: string;
+      source: 'harness' | 'control-plane';
+      provider: string;
+      model: string;
+      tokens: number;
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheCreate: number;
+      cost: number | null;
+      runs: number;
+      calls: number;
+    }[];
+    topTickets: { key: string; title: string; engagementId: string; tokens: number; cost: number | null; runs: number }[];
+    totals: { input: number; output: number; cacheRead: number; cacheCreate: number; tokens: number; cost: number | null; runs: number; controlPlaneCalls: number };
+    bySource: { harness: number; controlPlane: number };
+    cacheHitRatio: number | null;
+  };
+  efficiency: {
+    perWeek: { week: string; tickets: number; agentHrs: number; humanHrs: number; withActual: number }[];
+    totals: { tickets: number; agentHrs: number; humanHrs: number; withActual: number };
+  };
+}
+
 export type CommitDay = {
   date: string;
   commits: number;

@@ -67,6 +67,8 @@ import type {
   TicketWithEngagement,
   ToolCall,
   VelocityReport,
+  MetricsRange,
+  MetricsReport,
 } from './types';
 
 import { parseWorkflow, type SavedWorkflow, type Workflow, type WorkflowSummary } from './lib/workflow-graph';
@@ -473,6 +475,12 @@ export const api = {
 
   velocity(engId: string): Promise<VelocityReport> {
     return http<VelocityReport>(`/api/engagements/${engId}/velocity`);
+  },
+
+  /** Cross-project Metrics page: velocity, tokens and efficiency in one payload. */
+  metrics(range: MetricsRange, engagement: string | null): Promise<MetricsReport> {
+    const qs = new URLSearchParams({ range, engagement: engagement ?? 'all' });
+    return http<MetricsReport>(`/api/metrics?${qs.toString()}`);
   },
 
   async burndown(engId: string): Promise<BurndownDay[]> {

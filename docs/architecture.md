@@ -191,6 +191,7 @@ is set, which phase 3 removes.
 - `notifications.ts` — the notification centre (mentions, escalations, nudges)
 - `stale-nudges.ts` — business-day sweep that nudges assignees of idle tickets, with digest and config
 - `velocity.ts` — organizational velocity KPIs replayed from the ticket event trail for the Analytics tab
+- `metrics.ts` — the cross-project Metrics page (`GET /api/metrics?range=7d|30d|90d|all&engagement=<id|all>`): one tenant-scoped payload with velocity & status (done per ISO week, created→done cycle time median/p90, end-of-day open vs throughput, status per project), token consumption (per day per source/provider/model from `run_token_usage` with the drawer's final-vs-partial fold, top tickets by spend, cache hit ratio) and efficiency (agent hours vs human estimate per completion week over agent-delivered done tickets). Volume series aggregate in SQL with `date_trunc`; percentiles and the open series derive from one per-ticket row set
 - `scoping-agent.ts` / `scoping-tools.ts` — planning-agent scoping with board-reading tools and a single-shot fallback
 - `project-config.ts` — per-project runner environment (base image, libraries) that rides along in the claim payload
 - `project-access.ts` — the parent permission for every runner attached to a project
