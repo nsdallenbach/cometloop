@@ -1,4 +1,5 @@
 import type express from 'express';
+import { envWorkspaceAuth, listServingEndpoints } from '../llm/providers/databricks';
 
 /**
  * Model catalog for the Agents page (DAT-278): what the model picker offers.
@@ -12,8 +13,8 @@ import type express from 'express';
  *    (`claude --model claude-opus-5`, `codex -m gpt-5.3-codex`). Those ids
  *    are the harness vendor's, not the workspace's, so they are a static table.
  *
- * The workspace list is read through the SDK's default auth chain (the app's
- * service principal when deployed, the developer's CLI profile locally) and
+ * The workspace list is read with the app's service principal through the
+ * Databricks provider adapter (server/llm/providers/databricks.ts) and
  * cached for a few minutes. When it cannot be read the route still answers with
  * the static fallback and says so (`source: 'static'`) — a model picker that
  * blanks because a list call failed would block registering an agent.
@@ -102,13 +103,6 @@ export const STATIC_SERVING_ENDPOINTS: ServingEndpointOption[] = [
   'databricks-llama-4-maverick',
 ].map((name) => ({ name, servedModel: name, task: 'llm/v1/chat', provider: providerForModel(name), ready: true }));
 
-/** `system.ai.databricks-claude-opus-5` → `databricks-claude-opus-5`. */
-const shortModel = (entity: string | null | undefined): string | null => {
-  if (!entity) return null;
-  const parts = entity.split('.');
-  return parts[parts.length - 1] || entity;
-};
-
 let cache: { at: number; endpoints: ServingEndpointOption[] } | null = null;
 const CACHE_MS = 5 * 60_000;
 let loggedNoWorkspace = false;
@@ -116,31 +110,26 @@ let loggedNoWorkspace = false;
 /** Chat/agent endpoints from the workspace, or null when the list cannot be read. */
 export async function listAgentEndpoints(): Promise<ServingEndpointOption[] | null> {
   if (cache && Date.now() - cache.at < CACHE_MS) return cache.endpoints;
-  // No workspace, no SDK: outside Databricks the AppKit client is never
-  // loaded and the picker runs on the static catalog.
-  if (!process.env.DATABRICKS_HOST) {
+  // No workspace credentials: outside Databricks (or a dev shell without the
+  // SP pair) the picker runs on the static catalog.
+  const auth = envWorkspaceAuth();
+  if (!auth) {
     if (!loggedNoWorkspace) {
       loggedNoWorkspace = true;
-      console.log('[agents] DATABRICKS_HOST not set — serving endpoint list off, using the static model catalog');
+      console.log('[agents] DATABRICKS_HOST / DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET not set — serving endpoint list off, using the static model catalog');
     }
     return null;
   }
   try {
-    const { getWorkspaceClient } = await import('@databricks/appkit');
-    const w = getWorkspaceClient({});
     const out: ServingEndpointOption[] = [];
-    for await (const ep of w.servingEndpoints.list()) {
-      if (!ep.name) continue;
-      const task = ep.task ?? null;
-      if (task && !AGENT_TASKS.has(task)) continue;
-      const entity = ep.config?.served_entities?.[0];
-      const servedModel = shortModel(entity?.entity_name ?? entity?.foundation_model?.name ?? entity?.name ?? null);
+    for (const ep of await listServingEndpoints(auth)) {
+      if (ep.task && !AGENT_TASKS.has(ep.task)) continue;
       out.push({
         name: ep.name,
-        servedModel,
-        task,
-        provider: providerForModel(servedModel ?? ep.name),
-        ready: ep.state?.ready === 'READY',
+        servedModel: ep.servedModel,
+        task: ep.task,
+        provider: providerForModel(ep.servedModel ?? ep.name),
+        ready: ep.ready,
       });
     }
     out.sort((a, b) => a.name.localeCompare(b.name));

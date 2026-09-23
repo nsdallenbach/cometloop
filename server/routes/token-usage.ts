@@ -46,7 +46,45 @@ export const TOKEN_USAGE_SCHEMA_SQL = [
   // DAT-260 — the app SP created run_token_usage, so the boot ALTER works.
   `ALTER TABLE app.run_token_usage ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT ''`,
   `CREATE INDEX IF NOT EXISTS run_token_usage_ticket ON app.run_token_usage (ticket_key)`,
+  // Phase 3 (platform-architecture §6): the same ledger takes the control
+  // plane's own calls. `source` tells the two apart; `provider` and `role`
+  // say who served the call and why it was made.
+  `ALTER TABLE app.run_token_usage ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'harness'`,
+  `ALTER TABLE app.run_token_usage ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE app.run_token_usage ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT ''`,
 ];
+
+export const USAGE_SOURCES = ['harness', 'control-plane'] as const;
+export type UsageSource = (typeof USAGE_SOURCES)[number];
+
+/** The agent name control-plane rows carry, so the per-agent window never shows them as a runner. */
+export const CONTROL_PLANE_AGENT = 'control-plane';
+
+export interface ControlPlaneUsage {
+  role: string;
+  flow: string;
+  provider: string;
+  model: string;
+  ticketKey: string;
+  engagementId: string;
+  usage: { input: number; output: number; cacheRead: number; cacheCreate: number };
+}
+
+/**
+ * One row per server-side model call (`invokeModel`), attributed to the
+ * ticket and project it was made for when the caller knew them. `task_id` is
+ * 0 — there is no runner task — and the row is never `final`, so
+ * `foldTicketUsage` counts it exactly once alongside the harness runs.
+ */
+export async function recordControlPlaneUsage(q: Query, u: ControlPlaneUsage): Promise<void> {
+  const total = u.usage.input + u.usage.output + u.usage.cacheRead + u.usage.cacheCreate;
+  if (total <= 0) return; // a provider that reports no usage leaves no row
+  await q(
+    `INSERT INTO app.run_token_usage (task_id, ticket_key, engagement_id, agent, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, source, provider, role)
+     VALUES (0,$1,$2,$3,$4,$5,$6,$7,$8,'control-plane',$9,$10)`,
+    [u.ticketKey, u.engagementId, CONTROL_PLANE_AGENT, u.usage.input, u.usage.output, u.usage.cacheRead, u.usage.cacheCreate, u.model, u.provider, u.role],
+  );
+}
 
 const Counts = {
   input: z.number().int().min(0).max(1_000_000_000),
@@ -142,7 +180,7 @@ export async function usageByAgent(q: Query, hours: number): Promise<Map<string,
             SUM(CASE WHEN final THEN 0 ELSE cache_create_tokens END) AS cache_create_tokens,
             SUM(cost_usd) AS cost_usd
      FROM app.run_token_usage
-     WHERE created_at >= NOW() - ($1 || ' hours')::interval
+     WHERE created_at >= NOW() - ($1 || ' hours')::interval AND source = 'harness'
      GROUP BY agent`,
     [String(Math.min(720, Math.max(1, Math.round(hours))))],
   );
@@ -164,15 +202,23 @@ const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 export interface TicketUsage {
   /** Agent runs that reported any usage. */
   runs: number;
+  /** Server-side model calls (planning, estimate, review, draft) made for the ticket. */
+  controlPlaneCalls: number;
   total: UsageTotals;
   /** Largest first; model is '' for usage recorded before models were tracked. */
-  models: (UsageTotals & { model: string; runs: number })[];
+  models: (UsageTotals & { model: string; provider: string; runs: number })[];
+  /** The same total split by where it was spent. */
+  bySource: { harness: UsageTotals; controlPlane: UsageTotals };
 }
 
 interface UsageRow {
   taskId: number;
   model: string;
+  provider: string;
+  source: UsageSource;
   final: boolean;
+  /** Control-plane rows: how many calls the row aggregates. */
+  calls: number;
   totals: UsageTotals;
 }
 
@@ -193,38 +239,48 @@ const tokenSum = (t: UsageTotals): number => t.input + t.output + t.cacheRead + 
  * per-turn rows, so those are what count for it. Never both for one run.
  */
 export function foldTicketUsage(rows: UsageRow[]): TicketUsage {
-  const finished = new Set(rows.filter((r) => r.final).map((r) => r.taskId));
-  const counted = rows.filter((r) => r.final === finished.has(r.taskId));
+  const harness = rows.filter((r) => r.source === 'harness');
+  const finished = new Set(harness.filter((r) => r.final).map((r) => r.taskId));
+  // Control-plane rows are never final and have no run: every one counts.
+  const counted = [...harness.filter((r) => r.final === finished.has(r.taskId)), ...rows.filter((r) => r.source === 'control-plane')];
   const total = emptyTotals();
-  const byModel = new Map<string, { totals: UsageTotals; tasks: Set<number> }>();
+  const bySource = { harness: emptyTotals(), controlPlane: emptyTotals() };
+  const byModel = new Map<string, { model: string; provider: string; totals: UsageTotals; tasks: Set<number> }>();
+  let controlPlaneCalls = 0;
   for (const r of counted) {
     addTotals(total, r.totals);
-    const m = byModel.get(r.model) ?? { totals: emptyTotals(), tasks: new Set<number>() };
+    addTotals(r.source === 'harness' ? bySource.harness : bySource.controlPlane, r.totals);
+    if (r.source === 'control-plane') controlPlaneCalls += r.calls;
+    const key = `${r.provider} ${r.model}`;
+    const m = byModel.get(key) ?? { model: r.model, provider: r.provider, totals: emptyTotals(), tasks: new Set<number>() };
     addTotals(m.totals, r.totals);
-    m.tasks.add(r.taskId);
-    byModel.set(r.model, m);
+    if (r.source === 'harness') m.tasks.add(r.taskId);
+    byModel.set(key, m);
   }
-  const models = [...byModel.entries()]
-    .map(([model, m]) => ({ model, runs: m.tasks.size, ...m.totals }))
+  const models = [...byModel.values()]
+    .map((m) => ({ model: m.model, provider: m.provider, runs: m.tasks.size, ...m.totals }))
     .sort((a, b) => tokenSum(b) - tokenSum(a));
-  return { runs: new Set(counted.map((r) => r.taskId)).size, total, models };
+  return { runs: new Set(counted.filter((r) => r.source === 'harness').map((r) => r.taskId)).size, controlPlaneCalls, total, models, bySource };
 }
 
 export async function usageByTicket(q: Query, ticketKey: string): Promise<TicketUsage> {
   const { rows } = await q(
-    `SELECT task_id, model, final,
+    `SELECT task_id, model, provider, source, final, COUNT(*)::int AS calls,
             SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
             SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_create_tokens) AS cache_create_tokens,
             SUM(cost_usd) AS cost_usd
      FROM app.run_token_usage WHERE ticket_key = $1
-     GROUP BY task_id, model, final`,
+     GROUP BY task_id, model, provider, source, final`,
     [ticketKey],
   );
   return foldTicketUsage(
     rows.map((r) => ({
       taskId: Number(r.task_id),
       model: str(r.model),
+      provider: str(r.provider),
+      source: str(r.source) === 'control-plane' ? 'control-plane' : 'harness',
       final: r.final === true,
+      calls: Number(r.calls ?? 0),
       totals: {
         input: Number(r.input_tokens ?? 0),
         output: Number(r.output_tokens ?? 0),

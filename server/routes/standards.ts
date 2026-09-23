@@ -14,7 +14,6 @@ import { invokeModel } from './llm-health';
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
 
-type Serving = (alias: string) => { invoke(body: unknown): Promise<unknown> };
 
 export const STANDARDS_SCHEMA_SQL = [
   `CREATE TABLE IF NOT EXISTS app.project_standards (
@@ -30,28 +29,6 @@ const dirFor = (engagementId: string) => `standards/${engagementId}`;
 function safeFilename(raw: string): string {
   const cleaned = raw.replace(/[^A-Za-z0-9._ -]/g, '_').replace(/^\.+/, '').trim();
   return cleaned || 'file';
-}
-
-/** Same ExecutionResult unwrapping as the planning endpoints in api.ts. */
-function extractModelText(response: unknown): string {
-  let payload = response;
-  if (payload && typeof payload === 'object' && 'ok' in payload) {
-    const wrapper = payload as { ok: boolean; data?: unknown; message?: string };
-    if (!wrapper.ok) throw new Error(wrapper.message ?? 'model invocation failed');
-    payload = wrapper.data;
-  }
-  const r = payload as { choices?: { message?: { content?: unknown } }[] };
-  const content = r?.choices?.[0]?.message?.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((c: unknown) => {
-        const part = c as { type?: string; text?: string };
-        return part?.type === 'text' && typeof part.text === 'string' ? part.text : '';
-      })
-      .join('');
-  }
-  return '';
 }
 
 /** The model is told not to fence the document, but strip a wrapper fence if it does anyway. */
@@ -72,7 +49,6 @@ export function setupStandardsRoutes(
   app: express.Application,
   q: Query,
   files: FilesVolume,
-  serving: Serving,
   requireLead: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<Caller | null>,
 ) {
   const engagementExists = async (id: string): Promise<boolean> =>
@@ -149,11 +125,12 @@ export function setupStandardsRoutes(
         content,
         '---',
       ].join('\n\n');
-      const response = await invokeModel(serving, q, 'standards-refine', {
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 8000,
-      }, { engagementId: req.params.id });
-      const revised = unwrapFence(extractModelText(response));
+      const response = await invokeModel(
+        'planning',
+        { messages: [{ role: 'user', content: prompt }], maxTokens: 8000 },
+        { flow: 'standards-refine', engagementId: req.params.id },
+      );
+      const revised = unwrapFence(response.text);
       if (!revised) throw new Error('empty model response');
       res.json({ content: revised });
     } catch (err) {

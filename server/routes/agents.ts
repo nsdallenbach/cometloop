@@ -6,6 +6,7 @@ import { AGENT_SECURITY_SCHEMA_SQL, type AgentSecuritySettings, baselineSecurity
 import { accessibleProjectIds } from './project-access';
 import { usageByAgent, type UsageTotals } from './token-usage';
 import { resolveAttachments, validAttachments, type RegistryMcpServer, type RegistrySkill } from './registry';
+import { fetchEndpointState, workspaceCredentialsConfigured, type ServingState } from '../llm/providers/databricks';
 
 /**
  * Project agents: the entities behind the /agents architecture map. Three
@@ -235,112 +236,11 @@ export const HARNESS_PROVIDER: Record<string, string> = {
 /** The planning agent IS this endpoint; its name comes from the app resource env. */
 const SERVING_ENDPOINT = process.env.DATABRICKS_SERVING_ENDPOINT_NAME ?? '';
 
-export interface ServingState {
-  ready: boolean;
-  configUpdate: string;
-  task: string | null;
-  servedModel: string | null;
-  /** Set when the endpoint could not be read — surfaced on the node so a
-   *  missing CAN_QUERY grant looks like a permission problem, not a dead agent. */
-  error?: string;
-}
-
-const servingCache = new Map<string, { at: number; state: ServingState | null }>();
-const SERVING_CACHE_MS = 60_000;
-
-function workspaceBase(): string | null {
-  const host = process.env.DATABRICKS_HOST;
-  if (!host) return null;
-  return host.startsWith('http') ? host.replace(/\/+$/, '') : `https://${host.replace(/\/+$/, '')}`;
-}
-
-/** Host + service-principal pair present — the only way this process can call the workspace. */
-export function workspaceCredentialsConfigured(): boolean {
-  return Boolean(workspaceBase() && process.env.DATABRICKS_CLIENT_ID && process.env.DATABRICKS_CLIENT_SECRET);
-}
-
-let loggedNoWorkspace = false;
-function noteNoWorkspace(): void {
-  if (loggedNoWorkspace) return;
-  loggedNoWorkspace = true;
-  console.log('[agents] DATABRICKS_HOST / DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET not set — serving endpoint state and endpoint agents are off');
-}
-
-/** M2M token for the app's service principal (Databricks Apps inject the OAuth pair). */
-export async function workspaceToken(): Promise<string | null> {
-  const base = workspaceBase();
-  const id = process.env.DATABRICKS_CLIENT_ID;
-  const secret = process.env.DATABRICKS_CLIENT_SECRET;
-  if (!base || !id || !secret) return null;
-  const resp = await fetch(`${base}/oidc/v1/token`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${id}:${secret}`).toString('base64')}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: 'grant_type=client_credentials&scope=all-apis',
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!resp.ok) return null;
-  const data = (await resp.json()) as { access_token?: string };
-  return data.access_token ?? null;
-}
-
-/**
- * Live state for any workspace serving endpoint — the planning endpoint, an
- * AgentBricks agent, anything registered on the map. Cached ~60s per endpoint;
- * null means "could not read it" (no credentials, no such endpoint, or the app
- * service principal lacks CAN_QUERY).
- */
-export async function fetchEndpointState(endpoint: string): Promise<ServingState | null> {
-  if (!endpoint) return null;
-  const hit = servingCache.get(endpoint);
-  if (hit && Date.now() - hit.at < SERVING_CACHE_MS) return hit.state;
-  if (!workspaceCredentialsConfigured()) {
-    // Outside Databricks (or a local dev shell without the SP pair) there is
-    // nothing to ask; say so once instead of a warning per endpoint per minute.
-    noteNoWorkspace();
-    servingCache.set(endpoint, { at: Date.now(), state: null });
-    return null;
-  }
-  try {
-    const base = workspaceBase();
-    const token = await workspaceToken();
-    if (!base || !token) throw new Error('workspace credentials unavailable');
-    const resp = await fetch(`${base}/api/2.0/serving-endpoints/${encodeURIComponent(endpoint)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!resp.ok) {
-      const state: ServingState = {
-        ready: false,
-        configUpdate: 'UNKNOWN',
-        task: null,
-        servedModel: null,
-        error: resp.status === 403 || resp.status === 401 ? 'no access — grant the app service principal CAN_QUERY' : `serving api returned ${resp.status}`,
-      };
-      servingCache.set(endpoint, { at: Date.now(), state });
-      return state;
-    }
-    const d = (await resp.json()) as {
-      state?: { ready?: string; config_update?: string };
-      task?: string;
-      config?: { served_entities?: { entity_name?: string; name?: string }[] };
-    };
-    const state: ServingState = {
-      ready: d.state?.ready === 'READY',
-      configUpdate: d.state?.config_update ?? 'UNKNOWN',
-      task: d.task ?? null,
-      servedModel: d.config?.served_entities?.[0]?.entity_name ?? d.config?.served_entities?.[0]?.name ?? null,
-    };
-    servingCache.set(endpoint, { at: Date.now(), state });
-    return state;
-  } catch (err) {
-    console.warn(`[agents] serving endpoint '${endpoint}' state fetch failed:`, (err as Error).message);
-    servingCache.set(endpoint, { at: Date.now(), state: null });
-    return null;
-  }
-}
+// The workspace calls themselves — SP token, endpoint state, invocations —
+// live in the Databricks provider adapter (server/llm/providers/databricks.ts):
+// one code path for the planning endpoint, the Agents page and the PR
+// reviewer. Re-exported so the agent map keeps its import.
+export { fetchEndpointState, workspaceCredentialsConfigured, type ServingState };
 
 /**
  * Persist the map into app.project_agents so agents are stored records, not
@@ -445,42 +345,6 @@ export async function syncProjectAgents(q: Query): Promise<void> {
     );
   }
 }
-
-/**
- * Invoke a workspace serving endpoint (an AgentBricks agent, a custom model)
- * with the app's service principal. AgentBricks agents differ in request
- * schema — chat-style `messages` for supervisor/custom-LLM agents, responses
- * style `input` for others — so a schema rejection retries the other shape
- * before giving up. Returns the raw JSON body; extraction is the caller's job.
- */
-export async function invokeAgentEndpoint(endpoint: string, prompt: string): Promise<unknown> {
-  const base = workspaceBase();
-  const token = await workspaceToken();
-  if (!base || !token) throw new Error('workspace credentials unavailable — cannot reach the agent endpoint');
-  const url = `${base}/serving-endpoints/${encodeURIComponent(endpoint)}/invocations`;
-  const shapes: Record<string, unknown>[] = [
-    { messages: [{ role: 'user', content: prompt }] },
-    { input: [{ role: 'user', content: prompt }] },
-  ];
-  let lastError = 'agent endpoint call failed';
-  for (const body of shapes) {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(AGENT_INVOKE_TIMEOUT_MS),
-    });
-    if (resp.ok) return await resp.json();
-    const text = (await resp.text().catch(() => '')).slice(0, 400);
-    lastError = `endpoint returned ${resp.status}${text ? `: ${text}` : ''}`;
-    // Only a schema complaint is worth retrying with the other request shape.
-    if (resp.status !== 400 && resp.status !== 422) break;
-  }
-  throw new Error(lastError);
-}
-
-/** Agent turns are long — a reviewer reads a diff and may call MCP tools. */
-const AGENT_INVOKE_TIMEOUT_MS = 300_000;
 
 /** READY → active, reachable-but-not-ready → idle, unreadable → 'unreachable'. */
 function endpointStatus(state: ServingState | null): string {

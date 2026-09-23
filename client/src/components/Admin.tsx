@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ApiError, api } from '../api';
 import type { AdminData } from '../types';
 import { HEALTH_COLOR, initials, mono } from '../util';
+import { ModelProviders } from './ModelProviders';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -179,8 +180,10 @@ export function Admin({
       </button>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 18 }}>
         <h1 style={{ margin: 0, fontSize: 19, fontWeight: 600, letterSpacing: '-.01em' }}>Admin</h1>
-        <span style={{ ...mono(400, 11), color: 'var(--tx3)' }}>STAFFING · PROJECT LIFECYCLE</span>
+        <span style={{ ...mono(400, 11), color: 'var(--tx3)' }}>STAFFING · PROJECT LIFECYCLE · MODEL PROVIDERS</span>
       </div>
+
+      {data && <ModelProviders toast={toast} />}
 
       {!data && !loadError && <div style={{ color: 'var(--tx3)', ...mono(400, 11) }}>LOADING…</div>}
       {loadError && loadError.status === 403 && (

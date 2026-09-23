@@ -198,6 +198,25 @@ const AZURE_MARK = (size: number): ReactNode => (
   </svg>
 );
 
+/** AWS: the smile arrow under three letters' worth of width, in the brand orange. */
+const AWS_MARK = (size: number): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    <rect x="3.5" y="5" width="4.2" height="7" rx="1.2" fill="var(--tx)" />
+    <rect x="9.9" y="5" width="4.2" height="7" rx="1.2" fill="var(--tx)" />
+    <rect x="16.3" y="5" width="4.2" height="7" rx="1.2" fill="var(--tx)" />
+    <path d="M3 15.5c4.6 3.6 13.4 3.6 18 0" fill="none" stroke="#FF9900" strokeWidth={2.2} strokeLinecap="round" />
+    <path d="M18.2 14.2 21 15.5l-1.6 2.6" fill="none" stroke="#FF9900" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+/** Neon: the brand's rounded-square N in its green. */
+const NEON_MARK = (size: number): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+    <rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="none" stroke="#00E599" strokeWidth={2.2} />
+    <path d="M8 16.5v-9l8 9v-9" fill="none" stroke="#00E599" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
 /** Azure DevOps' blue chevron badge. */
 const ADO_MARK = (size: number): ReactNode => (
   <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
@@ -292,3 +311,33 @@ export const HARNESS_OPTIONS = Object.entries(HARNESSES).map(([id, b]) => ({ id,
 
 /** Selectable model providers for the deploy form, in display order. */
 export const PROVIDER_OPTIONS = Object.entries(PROVIDERS).map(([id, b]) => ({ id, label: b.label }));
+
+export interface ModelProviderPreset extends AgentBrand {
+  /** The server adapter kind (server/llm/provider.ts PROVIDER_KINDS) the preset configures. */
+  kind: 'anthropic' | 'openai-compatible' | 'databricks' | 'bedrock' | 'vertex';
+}
+
+/**
+ * The providers a workspace can bring for the control plane (the site's
+ * model-providers page), in the order the Add-provider wizard shows them.
+ * A preset is a logo + a server kind; the kind decides the wire format, the
+ * preset only decides the defaults and the mark.
+ */
+export const MODEL_PROVIDER_PRESETS: Record<string, ModelProviderPreset> = {
+  anthropic: { kind: 'anthropic', label: 'Anthropic', mark: ANTHROPIC_MARK },
+  openai: { kind: 'openai-compatible', label: 'OpenAI', mark: OPENAI_MARK },
+  'azure-openai': { kind: 'openai-compatible', label: 'Azure OpenAI', mark: AZURE_MARK },
+  databricks: { kind: 'databricks', label: 'Databricks Model Serving', mark: DATABRICKS_MARK },
+  neon: { kind: 'openai-compatible', label: 'Neon AI Gateway', mark: NEON_MARK },
+  bedrock: { kind: 'bedrock', label: 'AWS Bedrock', mark: AWS_MARK },
+  vertex: { kind: 'vertex', label: 'Vertex AI', mark: GOOGLE_MARK },
+  custom: { kind: 'openai-compatible', label: 'OpenAI-compatible', mark: OPENAI_MARK },
+};
+
+/** Brand for a stored provider row: its preset when it has one, else its kind's. */
+export function modelProviderBrand(preset: string | null | undefined, kind: string): AgentBrand {
+  const byPreset = preset ? MODEL_PROVIDER_PRESETS[norm(preset)] : undefined;
+  if (byPreset) return byPreset;
+  const byKind = Object.values(MODEL_PROVIDER_PRESETS).find((p) => p.kind === kind);
+  return byKind ?? { label: kind, mark: OPENAI_MARK };
+}

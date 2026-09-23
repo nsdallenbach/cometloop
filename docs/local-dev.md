@@ -70,8 +70,11 @@ has a `HEALTHCHECK` on `/healthz`. Default command `node dist/main.js` (api);
 | `DEMO_MOCK_RUNNER` | `1` starts the in-process mock runner | Demo only. |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET` | optional | Without them repo sync, PR linking and git-credential vending are off (logged once). |
 | `VITE_DEV` | `0` disables Vite middleware in development | Then `client/dist` is served if built, else API only. |
-| `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET` | optional | Only used for the serving-endpoint list on the Agents page and endpoint-agent state; absent → static catalog, logged once. |
-| `DATABRICKS_SERVING_ENDPOINT_NAME` | ignored | Model calls outside Databricks wait for the provider registry (phase 3). |
+| `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET` | optional | The serving-endpoint list on the Agents page, endpoint-agent state, and the SP the `databricks` provider kind calls with; absent → static catalog, logged once. |
+| `DATABRICKS_SERVING_ENDPOINT_NAME` | optional | With the SP pair and no `ANTHROPIC_API_KEY`, a workspace with no provider gets this endpoint auto-registered as its model provider. |
+| `ANTHROPIC_API_KEY` | optional | A workspace with no provider gets an Anthropic provider registered on first use, every role mapped (planning/review → `claude-sonnet-5`, estimate/draft → `claude-haiku-4-5-20251001`). One variable = a working install. |
+| `AZURE_KEY_VAULT_URL` | optional | Provider credential names not found in the environment are read from this vault (`DefaultAzureCredential`). |
+| `AI_GATEWAY_URL` | optional | Route provider calls through Cloudflare AI Gateway (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>`). |
 | `DATABRICKS_VOLUME_*`, `LAKEBASE_ENDPOINT`, `PG*` | ignored | Databricks-path only. |
 
 Identity: without the Apps OAuth proxy every request is `local-dev` with the

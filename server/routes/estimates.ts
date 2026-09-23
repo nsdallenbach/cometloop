@@ -21,7 +21,6 @@ import { invokeModel } from './llm-health';
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
 
-type Serving = (alias: string) => { invoke(body: unknown): Promise<unknown> };
 
 export const ESTIMATE_SCHEMA_SQL = [
   `CREATE TABLE IF NOT EXISTS app.ticket_estimates (
@@ -181,28 +180,6 @@ export function agentHoursFromRuns(runs: AgentRun[], now: Date = new Date()): nu
 
 // ---------- model invocation ----------
 
-/** Same ExecutionResult unwrapping as the planning endpoints in api.ts. */
-function extractModelText(response: unknown): string {
-  let payload = response;
-  if (payload && typeof payload === 'object' && 'ok' in payload) {
-    const wrapper = payload as { ok: boolean; data?: unknown; message?: string };
-    if (!wrapper.ok) throw new Error(wrapper.message ?? 'model invocation failed');
-    payload = wrapper.data;
-  }
-  const r = payload as { choices?: { message?: { content?: unknown } }[] };
-  const content = r?.choices?.[0]?.message?.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((c: unknown) => {
-        const part = c as { type?: string; text?: string };
-        return part?.type === 'text' && typeof part.text === 'string' ? part.text : '';
-      })
-      .join('');
-  }
-  return '';
-}
-
 const num = (v: unknown): number | null => {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
   return Number.isFinite(n) ? n : null;
@@ -224,12 +201,7 @@ export interface EstimateInput {
  * Failures log and return null — estimation is best-effort and must never
  * block ticket creation.
  */
-export async function estimateTicket(
-  q: Query,
-  serving: Serving,
-  input: EstimateInput,
-  kind: 'initial' | 'revised'
-): Promise<number | null> {
+export async function estimateTicket(q: Query, input: EstimateInput, kind: 'initial' | 'revised'): Promise<number | null> {
   try {
     const engagement = (await q('SELECT client, name, phase FROM app.engagements WHERE id = $1', [input.engagementId]))
       .rows[0];
@@ -276,11 +248,12 @@ export async function estimateTicket(
       .filter(Boolean)
       .join('\n\n');
 
-    const response = await invokeModel(serving, q, 'estimate', {
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 800,
-    }, { engagementId: input.engagementId, ticketKey: input.key });
-    const parsed = parseEstimateOutput(extractModelText(response));
+    const response = await invokeModel(
+      'estimate',
+      { messages: [{ role: 'user', content: prompt }], maxTokens: 800, json: true },
+      { flow: 'estimate', engagementId: input.engagementId, ticketKey: input.key },
+    );
+    const parsed = parseEstimateOutput(response.text);
     if (!parsed) {
       console.warn(`[estimate] ${input.key}: model response held no usable estimate`);
       return null;
@@ -363,7 +336,6 @@ export async function recordActualHours(q: Query, ticketKey: string, source: str
 export function setupEstimateRoutes(
   app: express.Application,
   q: Query,
-  serving?: Serving,
   requireLead?: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<unknown>,
 ) {
   /**
@@ -373,7 +345,7 @@ export function setupEstimateRoutes(
    * the background (sequential model calls); progress lands in the server
    * log and a feed item announces the result.
    */
-  if (serving && requireLead) {
+  if (requireLead) {
     app.post('/api/engagements/:id/estimates/backfill', async (req, res) => {
       try {
         const engagementId = req.params.id;
@@ -401,12 +373,7 @@ export function setupEstimateRoutes(
                 return [];
               }
             })();
-            const est = await estimateTicket(
-              q,
-              serving,
-              { key: txt(r.key), engagementId, title: txt(r.title), description: txt(r.description), ac },
-              'revised',
-            );
+            const est = await estimateTicket(q, { key: txt(r.key), engagementId, title: txt(r.title), description: txt(r.description), ac }, 'revised');
             if (est !== null) done++;
           }
           console.log(`[estimate] backfill for ${engagementId}: ${done}/${rows.length} tickets re-estimated`);

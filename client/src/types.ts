@@ -606,12 +606,80 @@ export interface UsageTotals {
   costUsd: number | null;
 }
 
-/** A ticket's token usage across every agent run, per model (DAT-260). */
+/** A ticket's token usage across every agent run and every control-plane call, per model (DAT-260, phase 3). */
 export interface TicketUsage {
   runs: number;
+  /** Planning / estimate / review / draft calls the server made for the ticket. */
+  controlPlaneCalls: number;
   total: UsageTotals;
   /** Largest first; model is '' for usage recorded before models were tracked. */
-  models: (UsageTotals & { model: string; runs: number })[];
+  models: (UsageTotals & { model: string; provider: string; runs: number })[];
+  bySource: { harness: UsageTotals; controlPlane: UsageTotals };
+}
+
+// ---- workspace model providers (platform-architecture §6) ----
+
+export type ModelProviderKind = 'anthropic' | 'openai-compatible' | 'databricks' | 'bedrock' | 'vertex';
+export type ModelRole = 'planning' | 'estimate' | 'review' | 'draft';
+
+export interface ModelProvider {
+  id: number;
+  name: string;
+  kind: ModelProviderKind;
+  /** False for kinds declared but not wired in this build (bedrock, vertex). */
+  live: boolean;
+  baseUrl: string | null;
+  /** The NAME of the credential (env var / Key Vault secret) — never the value. */
+  credentialRef: string;
+  credential: 'env' | 'key-vault' | 'missing';
+  defaultModel: string;
+  extra: Record<string, unknown>;
+  roles: { role: ModelRole; model: string }[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface ModelProviderInput {
+  name: string;
+  kind: ModelProviderKind;
+  baseUrl: string | null;
+  credentialRef: string;
+  defaultModel: string;
+  extra: Record<string, unknown>;
+}
+
+export interface ModelProvidersData {
+  providers: ModelProvider[];
+  kinds: { kind: ModelProviderKind; live: boolean }[];
+  gateway: boolean;
+  keyVault: boolean;
+}
+
+export interface ModelRoleMapping {
+  role: ModelRole;
+  label: string;
+  usedFor: string;
+  contract: { json: boolean; tools: boolean; contextTokens: number };
+  providerId: number | null;
+  model: string;
+  /** Why the mapping cannot meet the role's contract, when it cannot. */
+  gap: string | null;
+}
+
+export interface ProviderProbe {
+  ok: boolean;
+  latencyMs: number;
+  model: string | null;
+  error: string | null;
+  provider?: string;
+  requestedModel?: string;
+}
+
+export interface LlmHealth {
+  ok: boolean;
+  configured: boolean;
+  error: string | null;
+  roles: Record<ModelRole, { configured: boolean; provider: { id: number; name: string; kind: string } | null; model: string | null; contractGap: string | null; probe: (ProviderProbe & { at: string; cached: boolean }) | null }>;
 }
 
 export interface TicketRejection {

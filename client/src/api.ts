@@ -23,7 +23,13 @@ import type {
   EscalationStage,
   FeedItem,
   FleetStatus,
+  LlmHealth,
   Me,
+  ModelProvider,
+  ModelProviderInput,
+  ModelProvidersData,
+  ModelRole,
+  ModelRoleMapping,
   Notification,
   NudgeSettings,
   ParsedPlan,
@@ -34,6 +40,7 @@ import type {
   PrReview,
   ProjectRunnerConfig,
   ProjectStandards,
+  ProviderProbe,
   Registry,
   RegistryMcpServer,
   RegistrySkill,
@@ -527,6 +534,38 @@ export const api = {
   /** What the ticket has cost across every agent run, per model (DAT-260). */
   ticketUsage(key: string): Promise<TicketUsage> {
     return http<TicketUsage>(`/api/tickets/${encodeURIComponent(key)}/usage`);
+  },
+
+  // ---- workspace model providers (admin) ----
+
+  modelProviders(): Promise<ModelProvidersData> {
+    return http<ModelProvidersData>('/api/settings/providers');
+  },
+  createModelProvider(input: ModelProviderInput): Promise<ModelProvider> {
+    return http<ModelProvider>('/api/settings/providers', { method: 'POST', ...json(input) });
+  },
+  updateModelProvider(id: number, input: ModelProviderInput): Promise<ModelProvider> {
+    return http<ModelProvider>(`/api/settings/providers/${id}`, { method: 'PUT', ...json(input) });
+  },
+  deleteModelProvider(id: number): Promise<{ ok: boolean; remaining: number }> {
+    return http(`/api/settings/providers/${id}`, { method: 'DELETE' });
+  },
+  /** One tiny call at a saved provider (or an unsaved draft when no id): latency + the model that answered. A failed probe throws an ApiError carrying the reason. */
+  testModelProvider(target: { id: number; model?: string } | { draft: ModelProviderInput }): Promise<ProviderProbe> {
+    return 'draft' in target
+      ? http<ProviderProbe>('/api/settings/providers/test', { method: 'POST', ...json(target.draft) })
+      : http<ProviderProbe>(`/api/settings/providers/${target.id}/test`, { method: 'POST', ...json({ model: target.model }) });
+  },
+  modelRoles(): Promise<{ roles: ModelRoleMapping[] }> {
+    return http('/api/settings/model-roles');
+  },
+  saveModelRoles(roles: { role: ModelRole; providerId: number | null; model: string }[]): Promise<{ roles: ModelRoleMapping[] }> {
+    return http('/api/settings/model-roles', { method: 'PUT', ...json({ roles }) });
+  },
+  /** Per-role live health; the body is returned even on 503 (a configured role that does not answer). */
+  async llmHealth(): Promise<LlmHealth> {
+    const res = await fetch('/api/llm/health');
+    return (await res.json()) as LlmHealth;
   },
 
   saveRoadmapSettings(engId: string, settings: RoadmapSettings): Promise<RoadmapSettings> {

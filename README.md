@@ -58,7 +58,9 @@ app uses. Every value is derivable:
 |---|---|
 | `DATABRICKS_HOST` | your workspace URL (the `targets.default.workspace.host` in `databricks.yml`) |
 | `DATABRICKS_VOLUME_FILES`, `DATABRICKS_VOLUME_TELEMETRY` | the two volume paths in `databricks.yml` (`/Volumes/sandbox/engagement_console/{sow_docs,agent_telemetry}`) |
-| `DATABRICKS_SERVING_ENDPOINT_NAME` | `serving_endpoint_name` in `databricks.yml` |
+| `DATABRICKS_SERVING_ENDPOINT_NAME` | `serving_endpoint_name` in `databricks.yml` — with the SP pair it is auto-registered as a workspace's model provider when none is configured |
+| `ANTHROPIC_API_KEY` | optional — one variable makes a fresh install plan, estimate, review and draft: a workspace with no provider gets an Anthropic provider registered with every role mapped. Providers are managed per workspace under Admin → Model providers (`docs/platform-architecture.md` §6). |
+| `AZURE_KEY_VAULT_URL`, `AI_GATEWAY_URL` | optional — provider credential names not in the environment are read from Key Vault; provider calls route through Cloudflare AI Gateway when the gateway URL is set |
 | `LAKEBASE_ENDPOINT` | `projects/engagement-console/branches/production/endpoints/primary` |
 | `PGHOST` | `databricks postgres get-endpoint <LAKEBASE_ENDPOINT> -o json` → `.status.hosts.host` |
 | `PGDATABASE` | `databricks_postgres` (`databricks postgres list-databases projects/engagement-console/branches/production`) |

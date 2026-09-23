@@ -1,9 +1,10 @@
 # LLM-hours estimation (DAT-120, DAT-175, DAT-195, DAT-207)
 
 Every ticket gets an estimate of **actual LLM working time in hours** (one
-decimal place, e.g. `2.5h`). Model-produced estimates come from the Databricks
-model serving endpoint the console already uses for planning
-(`serving('default')`, bound to `DATABRICKS_SERVING_ENDPOINT_NAME`).
+decimal place, e.g. `2.5h`). Model-produced estimates come from the model the
+workspace mapped to the `estimate` role (Admin → Model providers;
+`invokeModel('estimate', …)`, docs/platform-architecture.md §6) — by default
+a small, fast model.
 
 Both `tickets.est_hours` and `tickets.human_est_hours` are **mandatory on the
 row** (`NOT NULL` since DAT-195) but **not on the caller**: since DAT-207 the

@@ -29,7 +29,6 @@ import { estimateTicket } from './estimates';
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
 
-type Serving = (alias: string) => { invoke(body: unknown): Promise<unknown> };
 
 /**
  * Visible flag for a ticket whose hours the agent has not produced yet.
@@ -130,7 +129,6 @@ export interface HoursCheckResult {
  */
 export async function ensureTicketHours(
   q: Query,
-  serving: Serving,
   input: HoursCheckInput,
   kind: 'initial' | 'revised' = 'initial',
 ): Promise<HoursCheckResult> {
@@ -151,7 +149,7 @@ export async function ensureTicketHours(
   // and appends the app.ticket_estimates row. Best-effort by contract: it
   // returns null (never throws) when the model is down or answers with
   // nothing usable.
-  const agentHours = await estimateTicket(q, serving, input, kind);
+  const agentHours = await estimateTicket(q, input, kind);
 
   // Recheck needs BOTH signals. The return value proves the agent actually
   // produced a figure; the row read proves it persisted and is what the board
@@ -228,7 +226,6 @@ const MISSING_HOURS_SQL = `SELECT key, title, description, ac, est_hours, human_
 export function setupTicketHoursRoutes(
   app: express.Application,
   q: Query,
-  serving?: Serving,
   requireLead?: (req: express.Request, res: express.Response, engagementId: string | null) => Promise<unknown>,
 ) {
   /**
@@ -261,7 +258,7 @@ export function setupTicketHoursRoutes(
    * immediately and runs the model calls sequentially in the background,
    * matching the DAT-197 estimate backfill.
    */
-  if (serving && requireLead) {
+  if (requireLead) {
     app.post('/api/engagements/:id/tickets/missing-hours/backfill', async (req, res) => {
       try {
         const engagementId = req.params.id;
@@ -274,7 +271,6 @@ export function setupTicketHoursRoutes(
           for (const r of rows) {
             const result = await ensureTicketHours(
               q,
-              serving,
               {
                 key: txt(r.key),
                 engagementId,

@@ -4,7 +4,6 @@ import express from 'express';
 import { setupApiRoutes } from './routes/api';
 import { createPortableDb } from './portable/db';
 import { localFiles } from './portable/files';
-import { unconfiguredServing } from './portable/serving';
 import { githubAppConfigured } from './routes/github-app';
 
 /**
@@ -21,8 +20,10 @@ import { githubAppConfigured } from './routes/github-app';
  * - `server.extend`  → the Express app, with AppKit's global JSON parser
  *                      mirrored so the UTF-8 recovery middleware splices in.
  * - `files(alias)`   → a directory per alias under `FILES_DIR`.
- * - `serving`        → a stub until phase 3's provider registry; every model
- *                      call takes its deterministic fallback.
+ * Model calls need no service here: the provider registry
+ * (server/llm/, phase 3) reads each workspace's provider rows and calls the
+ * vendor directly; with no provider configured every model call takes its
+ * deterministic fallback.
  *
  * Every Databricks-only feature is off with one log line: workspace endpoint
  * listing (`DATABRICKS_HOST`), the planning-agent endpoint row
@@ -86,12 +87,15 @@ export async function startPortableServer(): Promise<void> {
   const filesDir = path.resolve(process.env.FILES_DIR ?? 'data/files');
   console.log(`${LOG} Files on local disk under ${filesDir}`);
 
-  const servingEndpoint = process.env.DATABRICKS_SERVING_ENDPOINT_NAME;
-  console.log(
-    servingEndpoint
-      ? `${LOG} DATABRICKS_SERVING_ENDPOINT_NAME=${servingEndpoint} is ignored outside Databricks until the provider registry lands — model calls use their deterministic fallbacks`
-      : `${LOG} No model provider configured — model calls use their deterministic fallbacks`
-  );
+  if (process.env.ANTHROPIC_API_KEY) {
+    console.log(`${LOG} ANTHROPIC_API_KEY present — workspaces with no provider get an Anthropic provider registered on first use`);
+  } else if (process.env.DATABRICKS_SERVING_ENDPOINT_NAME && process.env.DATABRICKS_CLIENT_ID) {
+    console.log(`${LOG} DATABRICKS_SERVING_ENDPOINT_NAME=${process.env.DATABRICKS_SERVING_ENDPOINT_NAME} — workspaces with no provider get it registered on first use`);
+  } else {
+    console.log(`${LOG} No model provider in the environment — configure one per workspace under Admin → Model providers; until then model calls use their deterministic fallbacks`);
+  }
+  if (process.env.AI_GATEWAY_URL) console.log(`${LOG} Provider calls route through Cloudflare AI Gateway at ${process.env.AI_GATEWAY_URL}`);
+  if (process.env.AZURE_KEY_VAULT_URL) console.log(`${LOG} Provider credentials resolve from Key Vault ${process.env.AZURE_KEY_VAULT_URL} when not in the environment`);
   if (!process.env.DATABRICKS_HOST) {
     console.log(`${LOG} DATABRICKS_HOST not set — workspace endpoint listing off; /api/agents/models serves the static catalog`);
   }
@@ -116,9 +120,6 @@ export async function startPortableServer(): Promise<void> {
     lakebase: { query: db.query, adminQuery: db.adminQuery, tenantIsolation: true },
     server: { extend: (fn) => fn(app) },
     files: (alias) => localFiles(path.join(filesDir, alias)),
-    serving: unconfiguredServing(
-      servingEndpoint ? 'model serving is not reachable outside Databricks yet' : 'no provider set'
-    ),
   });
 
   await serveClient(app);

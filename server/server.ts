@@ -15,7 +15,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { createApp, files, lakebase, server, serving } = await import('@databricks/appkit');
+  const { createApp, files, lakebase, server } = await import('@databricks/appkit');
   await createApp({
     plugins: [
       files({
@@ -31,14 +31,12 @@ async function main(): Promise<void> {
       }),
       lakebase(),
       server(),
-      serving(),
     ],
     async onPluginsReady(appkit) {
       await setupApiRoutes({
         lakebase: appkit.lakebase,
         server: appkit.server,
         files: appkit.files,
-        serving: appkit.serving,
       });
     },
   });

@@ -41,6 +41,10 @@ const MIGRATIONS = [
   { sql: `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_state TEXT` },
   { sql: `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_url TEXT` },
   { sql: `ALTER TABLE app.repo_prs ADD COLUMN IF NOT EXISTS deploy_started_at TIMESTAMPTZ` },
+  // Phase 3 (model providers): the PR reviewer became a registry skill that
+  // runs under a model role and declares the JSON it answers with.
+  { sql: `ALTER TABLE app.registry_skills ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT ''` },
+  { sql: `ALTER TABLE app.registry_skills ADD COLUMN IF NOT EXISTS output_schema JSONB` },
   // --- feature-PR columns on dev-owned tables (merge train, Aug 2026) ---
   { sql: `ALTER TABLE app.tickets ADD COLUMN IF NOT EXISTS roadmap_item TEXT` },
   { sql: `ALTER TABLE app.engagements ADD COLUMN IF NOT EXISTS roadmap_settings JSONB` },

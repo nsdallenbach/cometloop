@@ -11,8 +11,9 @@ the context handed to agent runners.
 - **App**: Databricks App (AppKit, Node/Express + React/Vite), one process
   serving `/api/*` and the static client, behind the workspace OAuth proxy.
 - **Data**: Lakebase Postgres (`app.*` schema, migrations at boot), UC volume
-  for files (`context/`, `standards/` per engagement), model serving endpoint
-  (`databricks-claude-sonnet-5`) for all LLM calls.
+  for files (`context/`, `standards/` per engagement), and the workspace's
+  configured model providers (Admin → Model providers; `server/llm/`) for
+  all LLM calls — the Databricks serving endpoint is one provider kind.
 - **Git**: GitHub (`datavail-solutions/engagement-console`), GitHub App for
   repo auth (installation tokens, no PATs at rest), CI deploy on merge.
 - **Agents**: work queue in Postgres; runners long-poll, claim atomically,
@@ -117,8 +118,11 @@ with `--dry-run`) rather than editing the tab by hand.
 
 ## LLM calls
 
-- Everything goes through `appkit.serving('default')` — the workspace model
-  serving endpoint. No other model paths, no API keys in code.
+- Everything goes through `invokeModel('<role>', request, ctx)` and the
+  workspace's configured provider (`server/llm/`, platform-architecture §6).
+  No other model paths, no vendor SDK calls, no API keys in code or in the
+  database — a provider row names its credential, the value lives in the
+  environment or Key Vault.
 - Prompts live in the server code, versioned with the app — prompt changes
   are deploys, not fleet updates. The claim work package carries the rendered
   runner prompt for the same reason.
@@ -133,11 +137,14 @@ with `--dry-run`) rather than editing the tab by hand.
   the model's output *is* the comment, `commentStyleBrief()` when the comment
   is one field of a JSON contract. Do not restate the rules inline; they drift.
 - Model calls go through `invokeModel()` (`server/routes/llm-health.ts`),
-  never `serving('default').invoke` directly — that is what retries transient
-  errors, counts failures per flow, and posts the ⚠ feed item when a call
-  fails (DAT-180: a model outage must never be silent). Fallback behavior per
-  flow is documented in `docs/llm-fallbacks.md`; endpoint health is
-  `GET /api/llm/health`.
+  never an adapter directly — that is what resolves the role to the
+  workspace's provider, refuses a model that cannot meet the role's contract,
+  retries transient errors, counts failures per flow, posts the ⚠ feed item
+  when a call fails (DAT-180: a model outage must never be silent) and
+  records the call's tokens. Say `json: true` when the prompt asks for JSON,
+  and pass `ticketKey` when you have one so usage lands on the ticket.
+  Fallback behavior per flow is documented in `docs/llm-fallbacks.md`;
+  per-role health is `GET /api/llm/health`.
 
 ## Client code
 

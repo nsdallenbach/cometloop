@@ -52,6 +52,7 @@ the same PR as the change it describes.
 | Identity (Databricks OAuth, gh/az/ADO device flows, MCP secrets) | ➖ | ✅ | Platform-exclusive | 2026-08-26 | Local keychain by design. |
 | Managed file sync | ➖ | 🟡 | Platform-exclusive | 2026-08-26 | Desktop placeholder ("coming in a later phase"); manifest editing is planned to live in the console. Revisit the classification when it lands. |
 | Portfolio, roadmap, analytics, standards, admin | ✅ | ✅ | By construction | 2026-08-26 | Via the embedded console. |
+| Model providers + role → model map (Admin, phase 3) | ✅ | ✅ | By construction | 2026-09-23 | Web Admin section reached through the embedded console; a workspace/lead setting for the control plane, never runner configuration. Provider logos (`MODEL_PROVIDER_PRESETS`) live in `shared/design/AgentLogos.tsx` next to the agent marks. |
 
 ## Known gaps (seeded by the initial audit, 2026-08-26)
 

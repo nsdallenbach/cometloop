@@ -2,7 +2,7 @@ import { z } from 'zod';
 import express, { Application } from 'express';
 import { extractSowText } from './extract-text';
 import { callerOf, resolveCaller, type Caller } from './roles';
-import { requestAuthor, requireSignIn, setTenantDirectory } from '../identity';
+import { identityOf, requestAuthor, requireSignIn, setTenantDirectory } from '../identity';
 import { tenancySchemaSql } from '../db/tenancy';
 import { startPerTenant } from '../db/tenant-loops';
 import { REPO_SCHEMA_SQL, setupRepoRoutes, startRepoPolling } from './repos';
@@ -37,7 +37,10 @@ import {
   ensureTicketHours,
   setupTicketHoursRoutes,
 } from './ticket-hours';
-import { invokeModel, setupLlmHealthRoutes } from './llm-health';
+import { invokeModel, setLlmQuery, setupLlmHealthRoutes } from './llm-health';
+import { MODEL_CONFIG_SCHEMA_SQL, ensureTenantLlmDefaults } from '../llm/config';
+import { setupModelSettingsRoutes } from './model-settings';
+import { ensurePrReviewSkill } from './pr-review-skill';
 import { normalizeTags } from './ticket-tags';
 import { REPO_CONNECTED_JOIN, doneBlockedReason, gateInputFromRow, loadDeployGates } from './deploy-gate';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
@@ -45,7 +48,7 @@ import { WORKFLOWS_SCHEMA_SQL, setupWorkflowRoutes } from './workflows';
 import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes } from './ticket-consolidate';
 import { commentStyleBrief } from './comment-style';
 import { setupMcpRoutes } from './mcp';
-import { extractText, refinePlan, refineTicketWithBoard, type RefinedPlan, type ScopingAction } from './scoping-agent';
+import { refinePlan, refineTicketWithBoard, type RefinedPlan, type ScopingAction } from './scoping-agent';
 import {
   PLANNING_REVIEW_COLUMNS_SQL,
   PLANNING_REVIEW_SCHEMA_SQL,
@@ -99,9 +102,6 @@ interface AppKitServices {
       directoryPath?: string
     ): Promise<{ name?: string; path?: string; is_directory?: boolean; file_size?: number; last_modified?: number }[]>;
     delete(filePath: string): Promise<void>;
-  };
-  serving(alias: string): {
-    invoke(body: unknown): Promise<unknown>;
   };
 }
 
@@ -255,6 +255,7 @@ export function bootSchemaSql(opts: { isolation: boolean }): string[] {
     ...TICKET_ACTIVITY_SCHEMA_SQL,
     ...LINKS_SCHEMA_SQL,
     ...WORKFLOWS_SCHEMA_SQL,
+    ...MODEL_CONFIG_SCHEMA_SQL,
     ...ESTIMATE_SCHEMA_SQL,
     ...ATTACHMENT_SCHEMA_SQL,
     ...FILE_LIBRARY_SCHEMA_SQL,
@@ -520,7 +521,7 @@ export async function applyCommentFeedback(
   await setTicketActivity(q, key, 'planning_response_in_progress');
   try {
     await withPlanningReview(q, { key, engagementId: String(t.engagement_id), flow: 'comment-rework' }, () =>
-      reworkFromComment(q, appkit, t, key, author, feedback),
+      reworkFromComment(q, t, key, author, feedback),
     );
   } finally {
     await clearTicketActivity(q, key, 'planning_response_in_progress');
@@ -530,7 +531,6 @@ export async function applyCommentFeedback(
 /** The model round-trip and write-back behind {@link applyCommentFeedback}. */
 async function reworkFromComment(
   q: (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>,
-  appkit: AppKitServices,
   t: Record<string, unknown>,
   key: string,
   author: string,
@@ -546,7 +546,7 @@ async function reworkFromComment(
     }
   })();
 
-  const response = await invokeModel(appkit.serving.bind(appkit), q, 'comment-rework', {
+  const response = await invokeModel('planning', {
     messages: [
       {
         role: 'user',
@@ -572,9 +572,10 @@ async function reworkFromComment(
         ].join('\n\n'),
       },
     ],
-    max_tokens: 2000,
-  }, { engagementId: String(t.engagement_id), ticketKey: key });
-  const text = extractText(response);
+    maxTokens: 2000,
+    json: true,
+  }, { flow: 'comment-rework', engagementId: String(t.engagement_id), ticketKey: key });
+  const text = response.text;
   const jsonMatch = /\{[\s\S]*\}/.exec(text);
   if (!jsonMatch) return;
   const plan = JSON.parse(jsonMatch[0]) as {
@@ -801,6 +802,10 @@ export async function setupApiRoutes(appkit: AppKitServices) {
 
   const q = appkit.lakebase.query.bind(appkit.lakebase);
   const adminQ = adminQueryOf(appkit);
+  // The model layer reads the tenant's provider rows and writes usage / feed
+  // items through the same tenant-scoped query (the tenant comes from the
+  // async context, so one function serves every workspace).
+  setLlmQuery(q);
 
   // Better Auth identities without an organization claim find their tenant
   // by email in the (global) directory — read on the owner connection, since
@@ -1305,7 +1310,6 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         console.log(`[api] refining ticket ${key} via the scoping agent (${content.length} chars of context)`);
         const engRow = (await q('SELECT phases FROM app.engagements WHERE id = $1', [String(t.engagement_id)])).rows[0];
         const roadmapItems = roadmapItemNames(engRow?.phases);
-        const serving = appkit.serving.bind(appkit);
         // Board-aware tool-calling agent first; single-shot refinement as the
         // fallback so a tool-loop failure degrades, never breaks, the action.
         // DAT-218: the ticket carries the "agent reviewing" flag for the whole
@@ -1315,16 +1319,14 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           q,
           { key, engagementId: String(t.engagement_id), flow: 'refine' },
           async () => {
-            const agentic = await refineTicketWithBoard(serving, q, {
+            const agentic = await refineTicketWithBoard(q, {
               key,
               engagementId: String(t.engagement_id),
               content,
               roadmapItems,
               author: requestAuthor(req),
             });
-            const plan =
-              agentic?.plan ??
-              (await refinePlan(serving, content, roadmapItems, q, { engagementId: String(t.engagement_id), ticketKey: key }));
+            const plan = agentic?.plan ?? (await refinePlan(content, roadmapItems, { engagementId: String(t.engagement_id), ticketKey: key }));
             return { agentic, plan };
           },
         );
@@ -1369,7 +1371,6 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         // The plan (and so the scope) changed — re-estimate in the background.
         void estimateTicket(
           q,
-          serving,
           {
             key,
             engagementId: String(t.engagement_id),
@@ -1494,9 +1495,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
             // content as the last resort — refinement never fails creation.
             const content = description;
             const roadmapItems = roadmapItemNames(eng.phases);
-            const serving = appkit.serving.bind(appkit);
-            const agentic = await refineTicketWithBoard(serving, q, { key, engagementId: engId, content, roadmapItems, author });
-            const plan = agentic?.plan ?? (await refinePlan(serving, content, roadmapItems, q, { engagementId: engId, ticketKey: key }));
+            const agentic = await refineTicketWithBoard(q, { key, engagementId: engId, content, roadmapItems, author });
+            const plan = agentic?.plan ?? (await refinePlan(content, roadmapItems, { engagementId: engId, ticketKey: key }));
             if (plan) {
               if (plan.title) title = plan.title;
               roadmapItem = plan.roadmapItem;
@@ -1529,7 +1529,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           // chatbox refine so the estimate sees the planned scope, not the raw
           // request. Never throws: a model outage leaves the ticket flagged.
           if (agentEstimates) {
-            const hours = await ensureTicketHours(q, appkit.serving.bind(appkit), {
+            const hours = await ensureTicketHours(q, {
               key,
               engagementId: engId,
               title: title.trim(),
@@ -1749,16 +1749,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           `Next: <1-2 sentences>`,
         ].join('\n\n');
         const response = await invokeModel(
-          appkit.serving.bind(appkit),
-          q,
-          'status-draft',
-          {
-            messages: [{ role: 'user', content: prompt }],
-            max_tokens: 400,
-          },
-          { engagementId: id }
+          'draft',
+          { messages: [{ role: 'user', content: prompt }], maxTokens: 400 },
+          { flow: 'status-draft', engagementId: id },
         );
-        const text = extractText(response).trim();
+        const text = response.text.trim();
         if (!text) throw new Error('empty model response');
         console.log(`[api] weekly draft generated for ${id} (${text.length} chars)`);
         await q('UPDATE app.engagements SET composer = $2, pushed = false WHERE id = $1', [id, text]);
@@ -1890,11 +1885,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         ].join('\n\n');
         // No engagement exists yet at SOW-parse time, so there is no feed to
         // surface a failure on — the 502 with the failure reason is the signal.
-        const response = await invokeModel(appkit.serving.bind(appkit), null, 'sow-parse', {
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 8000,
-        });
-        const planJson = parseJsonBlock(extractText(response));
+        const response = await invokeModel('planning', { messages: [{ role: 'user', content: prompt }], maxTokens: 8000, json: true }, { flow: 'sow-parse' });
+        const planJson = parseJsonBlock(response.text);
         const validated = ProposalPlanSchema.safeParse(planJson);
         if (!validated.success) {
           const issue = validated.error.issues[0];
@@ -2262,17 +2254,18 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupTicketReviewRoutes(app, q, requireLead);
     setupPrReviewRoutes(app, q, requireLead);
     setupPrEscalationRoutes(app, q, requireLead);
-    setupEstimateRoutes(app, q, appkit.serving.bind(appkit), requireLead);
-    setupTicketHoursRoutes(app, q, appkit.serving.bind(appkit), requireLead);
+    setupEstimateRoutes(app, q, requireLead);
+    setupTicketHoursRoutes(app, q, requireLead);
     setupContextFileRoutes(app, q, appkit.files('files'), requireLead);
     const refineFromFile = (key: string, feedback: string) =>
       applyCommentFeedback(appkit, key, 'Files automation', feedback);
     setupTicketAttachmentRoutes(app, q, appkit.files('files'), requireLead, refineFromFile);
     setupFileLibraryRoutes(app, q, appkit.files('files'), requireLead, refineFromFile);
-    setupStandardsRoutes(app, q, appkit.files('files'), appkit.serving.bind(appkit), requireLead);
+    setupStandardsRoutes(app, q, appkit.files('files'), requireLead);
     setupProjectConfigRoutes(app, q, requireLead);
     setupStaleNudgeRoutes(app, q, requireLead);
-    setupLlmHealthRoutes(app, appkit.serving.bind(appkit));
+    setupLlmHealthRoutes(app, q, (req) => identityOf(req)?.tenantId ?? '');
+    setupModelSettingsRoutes(app, q, requireAdmin);
 
     app.post('/api/tickets/:key/comments', async (req, res) => {
       const parsed = CommentBody.safeParse(req.body);
@@ -2338,6 +2331,12 @@ export async function setupApiRoutes(appkit: AppKitServices) {
   // Tenants created after boot pick theirs up on the next directory scan.
   startPerTenant(adminQ, (tenantId) => {
     console.log(`[api] background loops started for tenant ${tenantId}`);
+    // Phase 3 defaults, once per tenant: the one-env-var provider and the
+    // pr-review skill template. Both are idempotent and never throw.
+    void ensureTenantLlmDefaults(q).then((seeded) => {
+      if (seeded) console.log(`[api] tenant ${tenantId}: auto-registered the ${seeded} model provider`);
+    });
+    void ensurePrReviewSkill(q).catch((err: unknown) => console.warn(`[api] tenant ${tenantId}: could not seed the pr-review skill:`, (err as Error).message));
     // Idle repos sync every 90s; connections with an open linked PR or an
     // in-flight deploy drop to a 30s cadence so an external merge reflects on
     // the ticket in under a minute while webhooks can't reach the app

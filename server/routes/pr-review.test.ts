@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
+import { MODEL_CONFIG_SCHEMA_SQL } from '../llm/config';
+import { tenancyTestSql } from '../db/tenancy';
 import {
   DIFF_CHAR_LIMIT,
   extractText,
@@ -192,7 +194,8 @@ async function memDb(): Promise<Query> {
   const q: Query = (text: string, params?: unknown[]) => pool.query(text, params);
   await q('CREATE SCHEMA IF NOT EXISTS app');
   await q(AGENTS_SQL);
-  for (const sql of PR_REVIEW_SCHEMA_SQL) await q(sql);
+  for (const sql of [...PR_REVIEW_SCHEMA_SQL, ...MODEL_CONFIG_SCHEMA_SQL]) await q(sql);
+  for (const sql of tenancyTestSql(MODEL_CONFIG_SCHEMA_SQL)) await q(sql);
   return q;
 }
 
@@ -219,11 +222,11 @@ describe('findReviewer', () => {
 });
 
 describe('runPrReview', () => {
-  it('skips (never approves) when no reviewer is registered', async () => {
+  it('skips (never approves) when no model is mapped to the review role', async () => {
     const q = await memDb();
     const result = await runPrReview(q, 'eng-a', 'DAT-42', 7, 'pr-opened');
     expect(result.state).toBe('skipped');
-    expect(result.reason).toContain('no pr-reviewer agent');
+    expect(result.reason).toContain('no model is mapped to the review role');
     // Nothing recorded, nothing posted.
     expect((await q('SELECT * FROM app.pr_reviews')).rows).toHaveLength(0);
   });
