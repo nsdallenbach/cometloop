@@ -45,9 +45,13 @@ a {
 
 /* ---- form controls: the console's look, not Chromium's ---------------- */
 
-/* Native form popups (select menus) follow the dark theme. */
+/* Native form popups (select menus) follow the active theme (the title bar
+   toggles data-theme on <html>; the embedded console follows the same key). */
 :root {
   color-scheme: dark;
+}
+:root[data-theme='light'] {
+  color-scheme: light;
 }
 
 /* Button labels sit dead centre. Buttons that lay themselves out (sidebar,

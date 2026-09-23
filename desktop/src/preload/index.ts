@@ -49,6 +49,10 @@ const bridge = {
   registrySaveSkill: (id: number | null, payload: unknown) => ipcRenderer.invoke('registry:save-skill', id, payload),
   registryDeleteSkill: (id: number) => ipcRenderer.invoke('registry:delete-skill', id),
   consoleMe: () => ipcRenderer.invoke('console:me'),
+  // Title-bar bell: notifications as the dev, through the console client.
+  consoleNotifications: () => ipcRenderer.invoke('console:notifications'),
+  consoleNotificationRead: (id: number) => ipcRenderer.invoke('console:notification-read', id),
+  consoleNotificationsReadAll: () => ipcRenderer.invoke('console:notifications-read-all'),
   agentsStart: (id: string) => ipcRenderer.invoke('agents:start', id),
   agentsStop: (id: string) => ipcRenderer.invoke('agents:stop', id),
   agentsKill: (id: string) => ipcRenderer.invoke('agents:kill', id),

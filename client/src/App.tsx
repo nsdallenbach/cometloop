@@ -183,6 +183,17 @@ export default function App() {
     localStorage.setItem('eec-theme', theme);
   }, [theme]);
 
+  // Follow the key when something else writes it: another browser tab, or
+  // the desktop title bar's toggle, which writes it into this webview and
+  // dispatches the storage event itself (a page never gets its own writes).
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'eec-theme' && (e.newValue === 'dark' || e.newValue === 'light')) setTheme(e.newValue);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   const openEngagement = useCallback(
     (id: string, toTab: Tab = 'board') => {
       setNewTicket(false);

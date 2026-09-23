@@ -40,6 +40,18 @@ interface AgentTaskRow {
   created_at: string;
 }
 
+/** One of the caller's console notifications (the web bar's bell), camel-cased by the shared client. */
+interface NotificationRow {
+  id: number;
+  type: string;
+  title: string;
+  message: string;
+  ticketKey: string | null;
+  engagementId: string | null;
+  read: boolean;
+  createdAt: string;
+}
+
 interface BoardTicketRow {
   key: string;
   title: string;
@@ -100,8 +112,13 @@ interface DesktopBridge {
     payload: SkillPayload,
   ) => Promise<{ ok: true; entry: RegistrySkillRow } | { ok: false; error: string }>;
   registryDeleteSkill: (id: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  consoleNotifications: () => Promise<
+    { ok: true; notifications: NotificationRow[]; unread: number } | { ok: false; error: string; signInRequired?: boolean }
+  >;
+  consoleNotificationRead: (id: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  consoleNotificationsReadAll: () => Promise<{ ok: true } | { ok: false; error: string }>;
   consoleMe: () => Promise<
-    { ok: true; me: { email: string; role: string; leadOf: string[]; memberOf: string[] } } | { ok: false; error: string }
+    { ok: true; me: { email: string; role: string; leadOf: string[]; memberOf: string[] } } | { ok: false; error: string; signInRequired?: boolean }
   >;
   consoleModels: () => Promise<
     | { ok: true; models: { source: string; harnessModels: Record<string, { id: string; label: string; default?: boolean }[]> } }

@@ -79,6 +79,33 @@ export class ConsoleClient {
     return this.request<Me>('/api/me');
   }
 
+  /** The caller's notifications (newest first) and unread count — what the web bar's bell shows. */
+  async notifications(): Promise<{ notifications: ConsoleNotification[]; unread: number }> {
+    const d = await this.request<{ notifications?: Record<string, unknown>[]; unread?: number }>('/api/notifications');
+    const s = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
+    return {
+      unread: Number(d.unread ?? 0),
+      notifications: (d.notifications ?? []).map((r) => ({
+        id: Number(r.id),
+        type: s(r.type),
+        title: s(r.title),
+        message: s(r.message),
+        ticketKey: r.ticket_key == null ? null : s(r.ticket_key),
+        engagementId: r.engagement_id == null ? null : s(r.engagement_id),
+        read: r.read === true,
+        createdAt: s(r.created_at),
+      })),
+    };
+  }
+
+  markNotificationRead(id: number): Promise<unknown> {
+    return this.request(`/api/notifications/${encodeURIComponent(String(id))}/read`, { method: 'PATCH', body: '{}' });
+  }
+
+  markAllNotificationsRead(): Promise<unknown> {
+    return this.request('/api/notifications/read-all', { method: 'POST', body: '{}' });
+  }
+
   /** Board slice of an engagement: tickets, roster, and active agent runs. */
   async engagementBoard(id: string): Promise<EngagementBoard> {
     const d = await this.request<{
@@ -248,6 +275,18 @@ export interface AgentModelCatalog {
   source: 'workspace' | 'static';
   servingEndpoints: { name: string; servedModel: string | null; task: string | null; provider: string | null; ready: boolean }[];
   harnessModels: Record<string, { id: string; label: string; provider: string; default?: boolean }[]>;
+}
+
+/** One row of /api/notifications, camel-cased. */
+export interface ConsoleNotification {
+  id: number;
+  type: string;
+  title: string;
+  message: string;
+  ticketKey: string | null;
+  engagementId: string | null;
+  read: boolean;
+  createdAt: string;
 }
 
 export interface Me {

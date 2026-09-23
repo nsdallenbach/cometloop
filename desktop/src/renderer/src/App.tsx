@@ -6,6 +6,7 @@ import { ToolsView } from './ToolsView';
 import { AgentWizard } from './AgentWizard';
 import { harnessBrand, providerBrand } from '../../../../shared/design/AgentLogos';
 import { Wordmark } from '../../../../shared/design/Brand';
+import { TitleBarTools, type Theme } from './TitleBarTools';
 
 // Console client conventions: inline styles + theme tokens + mono() — see
 // docs/development-standards.md "Client code". mono() mirrors client/src/util.ts.
@@ -31,7 +32,7 @@ const NAV_FOOTER = [{ id: 'settings', label: 'Settings', icon: <Settings {...NAV
 
 type NavId = (typeof NAV)[number]['id'] | (typeof NAV_FOOTER)[number]['id'];
 
-function TitleBar() {
+function TitleBar({ theme, onToggleTheme, onOpenTicket }: { theme: Theme; onToggleTheme: () => void; onOpenTicket: (key: string) => void }) {
   const btn: CSSProperties = {
     width: 44,
     height: 34,
@@ -58,6 +59,7 @@ function TitleBar() {
       <Wordmark size={18} color="var(--tx2)" />
       <span style={{ ...mono(400, 10), color: 'var(--tx3)' }}>desktop</span>
       <div style={{ flex: 1 }} />
+      <TitleBarTools theme={theme} onToggleTheme={onToggleTheme} onOpenTicket={onOpenTicket} />
       <button style={btn} onClick={() => window.desktopBridge.windowControl('minimize')}>
         —
       </button>
@@ -133,12 +135,18 @@ function ConsoleView({
   section,
   onSectionChange,
   reloadToken,
+  theme,
+  ticketRequest,
 }: {
   section: ConsoleSection;
   /** The console moved on its own (palette command, link) — keep the sidebar lit accordingly. */
   onSectionChange: (section: ConsoleSection) => void;
   /** Bumped by the sidebar's ↻; each change reloads the webview. */
   reloadToken: number;
+  /** The shell's theme; pushed into the console so both switch together. */
+  theme: Theme;
+  /** A ticket to open in the console (title-bar bell); `seq` makes repeats distinct. */
+  ticketRequest: { key: string; seq: number } | null;
 }) {
   const [cfg, setCfg] = useState<Awaited<ReturnType<DesktopBridge['getConfig']>> | null>(null);
   const [auth, setAuth] = useState<AuthMode | null>(null);
@@ -199,6 +207,33 @@ function ConsoleView({
       // The webview is not ready yet; the next sidebar click tries again.
     }
   }, [section, cfg, auth]);
+
+  // Theme: the console reads `eec-theme` from its own localStorage at boot
+  // and listens for storage events on that key, so writing it and firing
+  // the event switches the running page at once; dom-ready re-applies it
+  // after a reload or a fresh start.
+  useEffect(() => {
+    const wv = viewRef.current as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
+    if (!wv || !cfg) return;
+    const push = () => {
+      void wv
+        .executeJavaScript?.(
+          `localStorage.setItem('eec-theme', ${JSON.stringify(theme)}); dispatchEvent(new StorageEvent('storage', { key: 'eec-theme', newValue: ${JSON.stringify(theme)} }));`,
+        )
+        .catch(() => undefined);
+    };
+    push();
+    wv.addEventListener('dom-ready', push);
+    return () => wv.removeEventListener('dom-ready', push);
+  }, [theme, cfg, auth]);
+
+  // Title-bar bell → the ticket's drawer, inside the running SPA.
+  useEffect(() => {
+    const wv = viewRef.current as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
+    if (!wv || !cfg || !ticketRequest || auth === 'signed-out') return;
+    const to = `/tickets/${encodeURIComponent(ticketRequest.key)}`;
+    void wv.executeJavaScript?.(`history.pushState({}, '', ${JSON.stringify(to)}); dispatchEvent(new PopStateEvent('popstate'));`).catch(() => undefined);
+  }, [ticketRequest, cfg, auth]);
 
   // ↻ lives in the sidebar footer now that the console has no bar of its own.
   useEffect(() => {
@@ -1100,6 +1135,28 @@ export function App() {
   const [consoleSection, setConsoleSection] = useState<ConsoleSection>('projects');
   const [reloadToken, setReloadToken] = useState(0);
   const [agentsActive, setAgentsActive] = useState(false);
+  // Same key and values as the web console, so one choice covers both.
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      return localStorage.getItem('eec-theme') === 'light' ? 'light' : 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem('eec-theme', theme);
+    } catch {
+      // storage unavailable — the choice lasts for this run
+    }
+  }, [theme]);
+  const [ticketRequest, setTicketRequest] = useState<{ key: string; seq: number } | null>(null);
+  const openTicket = useCallback((key: string) => {
+    setNav('projects');
+    setConsoleSection('projects');
+    setTicketRequest((r) => ({ key, seq: (r?.seq ?? 0) + 1 }));
+  }, []);
   const go = (id: NavId) => {
     setNav(id);
     if (isConsoleSection(id)) setConsoleSection(id);
@@ -1168,7 +1225,7 @@ export function App() {
   );
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <TitleBar />
+      <TitleBar theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onOpenTicket={openTicket} />
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <nav
           style={{
@@ -1208,7 +1265,13 @@ export function App() {
               visibility: isConsoleSection(nav) ? 'visible' : 'hidden',
             }}
           >
-            <ConsoleView section={consoleSection} onSectionChange={onSectionChange} reloadToken={reloadToken} />
+            <ConsoleView
+              section={consoleSection}
+              onSectionChange={onSectionChange}
+              reloadToken={reloadToken}
+              theme={theme}
+              ticketRequest={ticketRequest}
+            />
           </div>
           {overlay && (
             <div style={{ position: 'absolute', inset: 0, overflowY: 'auto', background: 'var(--bg)' }}>
