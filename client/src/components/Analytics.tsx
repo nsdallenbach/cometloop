@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { CommitDay, Engagement, EngagementDetail, VelocityReport } from '../types';
 import { api } from '../api';
 import { deliveredByDay } from '../lib/delivered-by-day';
-import { fmtDuration, mono } from '../util';
+import { fmtHours, mono } from '../util';
 import { AreaChart } from './charts/area-chart';
 import { Area } from './charts/area';
 import { Grid } from './charts/grid';
@@ -41,7 +41,7 @@ function Card({ title, caption, children }: { title: string; caption?: string; c
   );
 }
 
-function LegendRow({ items }: { items: { label: string; color: string; n?: number }[] }) {
+function LegendRow({ items }: { items: { label: string; color: string; n?: string | number }[] }) {
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 4 }}>
       {items.map((it) => (
@@ -108,12 +108,12 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
           caption={
             deliveredTotals.tickets === 0
               ? 'No tickets done in this window yet.'
-              : `${fmtDuration(deliveredTotals.hours)} of agent time across ${deliveredTotals.tickets} done ticket${deliveredTotals.tickets === 1 ? '' : 's'}`
+              : `${fmtHours(deliveredTotals.hours)} of agent time across ${deliveredTotals.tickets} done ticket${deliveredTotals.tickets === 1 ? '' : 's'}`
           }
         >
           <LegendRow
             items={[
-              { label: 'AGENT HOURS', color: HOURS_COLOR, n: deliveredTotals.hours },
+              { label: 'AGENT HOURS', color: HOURS_COLOR, n: fmtHours(deliveredTotals.hours) },
               { label: 'TICKETS DONE', color: TICKETS_COLOR, n: deliveredTotals.tickets },
             ]}
           />
@@ -122,7 +122,12 @@ export function Analytics({ eng, detail }: { eng: Engagement; detail: Engagement
             <Area dataKey="hours" fill={HOURS_COLOR} fillOpacity={0.25} />
             <Area dataKey="tickets" fill={TICKETS_COLOR} fillOpacity={0.25} />
             <XAxis numTicks={5} />
-            <ChartTooltip />
+            <ChartTooltip
+              rows={(p) => [
+                { color: HOURS_COLOR, label: 'Agent hours', value: fmtHours(Number(p.hours ?? 0)) },
+                { color: TICKETS_COLOR, label: 'Tickets done', value: Number(p.tickets ?? 0) },
+              ]}
+            />
           </AreaChart>
         </Card>
       </div>
@@ -308,8 +313,8 @@ function ContributionGrid({ weeks, maxDay }: { weeks: { date: string; commits: n
 
 // ---------- org velocity (DAT-193) ----------
 
-/** Durations render as h/m (2d 4h beyond two days) via the shared formatter. */
-const fmtHrs = (h: number | null): string => fmtDuration(h);
+/** Every hour figure on this tab is hours, never days (36m, 18.7h, 505.7h, 1,240h). */
+const fmtHrs = (h: number | null | undefined): string => fmtHours(h);
 
 /** Lower-is-better delta caption vs the prior window. */
 function trendSub(m: { current: number | null; previous: number | null }, windowDays: number): { sub: string; color?: string } {
@@ -388,8 +393,8 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
         <VKpi label="DECISION TIME (IN REVIEW)" display={fmtHrs(report.decisionTimeHrs.current)} sub={decision.sub} color={decision.color} />
         <VKpi
           label="HUMAN DEV TIME SAVED"
-          display={fmtDuration(report.humanHoursSaved.window)}
-          sub={`${fmtDuration(report.humanHoursSaved.total).toUpperCase()} ALL-TIME · ${fmtDuration(report.humanHoursSaved.agentHoursSpent).toUpperCase()} AGENT TIME SPENT`}
+          display={fmtHrs(report.humanHoursSaved.window)}
+          sub={`${fmtHrs(report.humanHoursSaved.total).toUpperCase()} ALL-TIME · ${fmtHrs(report.humanHoursSaved.agentHoursSpent).toUpperCase()} AGENT TIME SPENT`}
           color="var(--ok)"
         />
       </div>
@@ -416,7 +421,12 @@ function VelocitySection({ engId, ticketCount }: { engId: string; ticketCount: n
                 <Area dataKey="leadTimeHrs" fill="var(--chart-1)" fillOpacity={0.25} />
                 <Area dataKey="cycleTimeHrs" fill="var(--chart-2)" fillOpacity={0.25} />
                 <XAxis numTicks={Math.min(8, report.weekly.length)} />
-                <ChartTooltip />
+                <ChartTooltip
+                  rows={(p) => [
+                    { color: 'var(--chart-1)', label: 'Idea → done', value: fmtHrs(Number(p.leadTimeHrs ?? 0)) },
+                    { color: 'var(--chart-2)', label: 'Cycle', value: fmtHrs(Number(p.cycleTimeHrs ?? 0)) },
+                  ]}
+                />
               </AreaChart>
             </>
           ) : (
@@ -513,7 +523,7 @@ function WeekOverWeekCard({ report }: { report: VelocityReport }) {
                       </td>
                       <td style={cell}>{w.doneCount}</td>
                       <td style={cell}>{fmtHrs(w.leadTimeHrs)}</td>
-                      <td style={cell}>{fmtDuration(w.humanHoursSaved)}</td>
+                      <td style={cell}>{fmtHrs(w.humanHoursSaved)}</td>
                     </tr>
                   );
                 })}

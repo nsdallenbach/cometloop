@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Engagement, MetricsRange, MetricsReport } from '../types';
 import { api } from '../api';
-import { fmtDuration, HEALTH_COLOR, HEALTH_LABEL, mono } from '../util';
+import { fmtHours, HEALTH_COLOR, HEALTH_LABEL, mono } from '../util';
 import { fmtCost } from '../lib/usage-format';
 import { AreaChart } from './charts/area-chart';
 import { Area } from './charts/area';
@@ -47,7 +47,8 @@ const CHART_GRID = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, min
 const weekLabel = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const dayLabel = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const pctLabel = (ratio: number | null) => (ratio == null ? '—' : `${(ratio * 100).toFixed(ratio >= 0.999 ? 3 : 1)}%`);
-const hrs = (h: number | null | undefined) => (h == null ? '—' : fmtDuration(h));
+/** Every hour figure on this page is hours, never days (36m, 18.7h, 505.7h, 1,240h). */
+const hrs = (h: number | null | undefined) => fmtHours(h);
 /** Area charts parse `date` with `new Date()`; noon UTC keeps the calendar day stable in every timezone. */
 const noon = (iso: string) => `${iso}T12:00:00Z`;
 
@@ -253,8 +254,8 @@ function VelocitySection({ report, now, range }: { report: MetricsReport | null;
                 <XAxis numTicks={Math.min(6, Math.max(2, cycleWeeks.length))} />
                 <ChartTooltip
                   rows={(p) => [
-                    { color: C_AGENT, label: 'Median', value: fmtDuration(Number(p.median ?? 0)) },
-                    { color: C_NEUTRAL, label: 'p90', value: fmtDuration(Number(p.p90 ?? 0)) },
+                    { color: C_AGENT, label: 'Median', value: hrs(Number(p.median ?? 0)) },
+                    { color: C_NEUTRAL, label: 'p90', value: hrs(Number(p.p90 ?? 0)) },
                     { color: 'var(--tx3)', label: 'Samples', value: Number(p.samples ?? 0) },
                   ]}
                 />
@@ -550,14 +551,14 @@ function EfficiencySection({ report, now }: { report: MetricsReport | null; now:
         <Kpi
           big
           label="HEADLINE"
-          value={loading ? '—' : hasWork ? `${fmtDuration(Math.max(0, saved))} saved · ${cost == null ? 'no spend reported' : `${fmtCost(cost)} model spend`} · ${lev == null ? '—' : `${lev}×`} leverage` : 'No agent-delivered tickets in this window'}
+          value={loading ? '—' : hasWork ? `${hrs(Math.max(0, saved))} saved · ${cost == null ? 'no spend reported' : `${fmtCost(cost)} model spend`} · ${lev == null ? '—' : `${lev}×`} leverage` : 'No agent-delivered tickets in this window'}
           sub={e ? `${e.totals.tickets} DONE TICKET${e.totals.tickets === 1 ? '' : 'S'} WITH AN AGENT RUN · ${e.totals.withActual} WITH MEASURED AGENT TIME, ${e.totals.tickets - e.totals.withActual} ON THE AGENT ESTIMATE` : undefined}
           color="var(--ok)"
         />
       </div>
       <div style={KPI_GRID}>
-        <Kpi label="HOURS SAVED" value={loading ? '—' : hasWork ? fmtDuration(Math.max(0, saved)) : '—'} sub={e ? `HUMAN EST ${fmtDuration(e.totals.humanHrs).toUpperCase()} − AGENT ${fmtDuration(e.totals.agentHrs).toUpperCase()}` : undefined} color="var(--ok)" />
-        <Kpi label="AGENT HOURS" value={loading ? '—' : hasWork ? fmtDuration(e?.totals.agentHrs) : '—'} sub="ACTUAL RUN TIME, ELSE THE AGENT ESTIMATE" />
+        <Kpi label="HOURS SAVED" value={loading ? '—' : hasWork ? hrs(Math.max(0, saved)) : '—'} sub={e ? `HUMAN EST ${hrs(e.totals.humanHrs).toUpperCase()} − AGENT ${hrs(e.totals.agentHrs).toUpperCase()}` : undefined} color="var(--ok)" />
+        <Kpi label="AGENT HOURS" value={loading ? '—' : hasWork ? hrs(e?.totals.agentHrs) : '—'} sub="ACTUAL RUN TIME, ELSE THE AGENT ESTIMATE" />
         <Kpi label="LEVERAGE" value={loading ? '—' : lev == null ? '—' : `${lev}×`} sub="HUMAN HOURS ÷ AGENT HOURS" />
         <Kpi label="COST PER SAVED HOUR" value={loading ? '—' : perHour == null ? '—' : fmtCost(perHour)} sub={cost == null ? 'NO MODEL SPEND REPORTED IN RANGE' : 'MODEL SPEND ÷ HOURS SAVED'} />
       </div>
@@ -568,8 +569,8 @@ function EfficiencySection({ report, now }: { report: MetricsReport | null; now:
             <>
               <LegendRow
                 items={[
-                  { label: 'AGENT HOURS', color: C_AGENT, n: e ? fmtDuration(e.totals.agentHrs) : undefined },
-                  { label: 'HUMAN ESTIMATE', color: C_NEUTRAL, n: e ? fmtDuration(e.totals.humanHrs) : undefined },
+                  { label: 'AGENT HOURS', color: C_AGENT, n: e ? hrs(e.totals.agentHrs) : undefined },
+                  { label: 'HUMAN ESTIMATE', color: C_NEUTRAL, n: e ? hrs(e.totals.humanHrs) : undefined },
                 ]}
               />
               <BarChart data={cumulative} xDataKey="label" aspectRatio="2.6 / 1" barGap={0.3} margin={MARGIN} status={loading ? 'loading' : 'ready'}>
@@ -581,9 +582,9 @@ function EfficiencySection({ report, now }: { report: MetricsReport | null; now:
                   showDatePill={false}
                   showCrosshair={false}
                   rows={(p) => [
-                    { color: C_AGENT, label: 'Agent', value: fmtDuration(Number(p.agentHrs ?? 0)) },
-                    { color: C_NEUTRAL, label: 'Human est', value: fmtDuration(Number(p.humanHrs ?? 0)) },
-                    { color: 'var(--ok)', label: 'Saved', value: fmtDuration(Math.max(0, Number(p.savedHrs ?? 0))) },
+                    { color: C_AGENT, label: 'Agent', value: hrs(Number(p.agentHrs ?? 0)) },
+                    { color: C_NEUTRAL, label: 'Human est', value: hrs(Number(p.humanHrs ?? 0)) },
+                    { color: 'var(--ok)', label: 'Saved', value: hrs(Math.max(0, Number(p.savedHrs ?? 0))) },
                     { color: 'var(--tx3)', label: 'Tickets', value: Number(p.tickets ?? 0) },
                   ]}
                 />
@@ -600,7 +601,7 @@ function EfficiencySection({ report, now }: { report: MetricsReport | null; now:
               <Grid horizontal numTicksRows={4} />
               <Area dataKey="cumulativeSaved" fill="var(--ok)" fillOpacity={0.22} />
               <XAxis numTicks={Math.min(6, Math.max(2, cumulative.length))} />
-              <ChartTooltip rows={(p) => [{ color: 'var(--ok)', label: 'Saved to date', value: fmtDuration(Number(p.cumulativeSaved ?? 0)) }]} />
+              <ChartTooltip rows={(p) => [{ color: 'var(--ok)', label: 'Saved to date', value: hrs(Number(p.cumulativeSaved ?? 0)) }]} />
             </AreaChart>
           ) : (
             <Empty>NOTHING SAVED YET IN THIS WINDOW</Empty>
