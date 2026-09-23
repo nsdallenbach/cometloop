@@ -290,9 +290,40 @@ server at a time, warm: the detail route (9 statements) went from
 2.5–3.3 s (6 s cold) with a transaction per sequential statement to a
 median of ~1.1 s pinned and fanned out (~1.7 s fanned out but still per
 statement on the pooler); a single-ticket read is one round trip plus its
-own execution. What is left in the detail route is data, not latency:
-`feed_items` alone is 1,254 rows / 372 KB for the existing board and the
-ticket rows another 344 KB — capping or paging the feed is the next lever.
+own execution. What was left in the detail route was data, not latency, and the
+follow-up took the data levers:
+
+- **Feed capped.** The detail payload carries the latest `FEED_PAGE_SIZE`
+  (200) feed items, newest first (`ORDER BY created_at DESC, id DESC`);
+  the Status Feed tab pages further back through
+  `GET /api/engagements/:id/feed?before=<id>&limit=200` ("Load older" at
+  the bottom of the list). On the existing board that took the feed from
+  1,254 rows / 385 KB to 66 KB. `agent_tasks` was already capped at 50;
+  nothing else in the payload is unbounded (ticket events and
+  notifications have their own routes, not the detail payload). The
+  tickets list itself stays whole — the board needs every card — and is
+  the payload's remaining bulk (354 KB, 60% of it `description`).
+- **Indexes for the composite key shape** (`PERFORMANCE_INDEXES` in
+  `tenancy.ts`): `feed_items (tenant_id, engagement_id, created_at DESC,
+  id DESC)` for the feed page and its cursor, and `repo_prs (tenant_id,
+  ticket_key)` for the detail query's two repo_prs LATERALs (13 ms → 5 ms
+  on 177 tickets). Candidates on `tickets (tenant_id, engagement_id,
+  status | seq)`, `branch_activity`, `pr_review_escalations`,
+  `ticket_links` and `agent_tasks` were tried under EXPLAIN (ANALYZE,
+  BUFFERS) on a copy of production and the planner never chose them at
+  this data size — they were not added. Execution time was never the
+  problem (the whole tickets query runs in ~13 ms); bytes on the wire
+  were, at roughly 0.7 MB/s from a laptop to the compute.
+- The seven independent reads already fan out (`Promise.all` + spill-over);
+  verified on the route — nothing is awaited sequentially.
+
+Measured on a Neon branch of production from a laptop, both servers up at
+once and requests interleaved so link variance hits both, 7 warm runs
+each: the detail route went from a median of 0.81 s / 921 KB to 0.60 s /
+604 KB; a single-ticket read is unchanged at ~0.14 s. What remains is the
+tickets list on the critical path (354 KB, 60% of it `description`, which
+the drawer reads from the board's rows) — moving the description to a
+per-ticket fetch on drawer open is the next lever, and a client change.
 
 With no tenant in the context the statement still runs as `cometloop_app`
 with the setting unset and the policies match nothing — reads return no
