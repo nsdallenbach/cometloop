@@ -14,6 +14,12 @@ const ConfigSchema = z.object({
     .url()
     .default('https://delivery-console-7474645607548631.aws.databricksapps.com'),
   databricksHost: z.string().url().default('https://dbc-96494b8f-6b86.cloud.databricks.com'),
+  /**
+   * How the console authenticates the desktop: 'databricks' = workspace OAuth
+   * token through the Apps proxy; 'none' = the console handles sign-in itself
+   * (local dev, Cometloop Cloud). Unset, a localhost consoleUrl means 'none'.
+   */
+  consoleAuth: z.enum(['databricks', 'none']).optional(),
   /** Databricks CLI profile for token minting; omit to use the CLI default. */
   databricksProfile: z.string().optional(),
   /** Databricks CLI binary. */
@@ -100,6 +106,7 @@ export function loadConfig(): DesktopConfig {
 
   const envValues: Record<string, unknown> = {};
   if (process.env.APP_URL) envValues.consoleUrl = process.env.APP_URL;
+  if (process.env.CONSOLE_AUTH === 'none' || process.env.CONSOLE_AUTH === 'databricks') envValues.consoleAuth = process.env.CONSOLE_AUTH;
   if (process.env.DATABRICKS_HOST) envValues.databricksHost = process.env.DATABRICKS_HOST;
   if (process.env.DATABRICKS_PROFILE) envValues.databricksProfile = process.env.DATABRICKS_PROFILE;
   if (process.env.DATABRICKS_CLI) envValues.databricksCli = process.env.DATABRICKS_CLI;

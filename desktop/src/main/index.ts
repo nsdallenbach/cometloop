@@ -477,7 +477,8 @@ void app.whenReady().then(async () => {
       .getToken()
       .catch(() => new Promise<void>((resolve) => setTimeout(resolve, 750)).then(() => creds.getToken()))
       .then((token) => {
-        callback({ requestHeaders: { ...details.requestHeaders, Authorization: `Bearer ${token}` } });
+        // An empty token means the console is not behind the Apps proxy.
+        callback({ requestHeaders: token ? { ...details.requestHeaders, Authorization: `Bearer ${token}` } : details.requestHeaders });
       })
       .catch(() => callback({ requestHeaders: details.requestHeaders }));
   });

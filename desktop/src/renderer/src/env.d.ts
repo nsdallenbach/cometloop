@@ -8,7 +8,7 @@ interface EngagementRow {
   health: string;
 }
 
-type AuthMode = 'dev-token' | 'oauth' | 'cli' | 'signed-out';
+type AuthMode = 'dev-token' | 'oauth' | 'cli' | 'signed-out' | 'local';
 
 type IdentityProvider = 'github' | 'azure' | 'ado';
 

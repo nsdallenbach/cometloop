@@ -47,6 +47,8 @@ affordances the web top bar used to carry (tooltips name them):
 - **Shield** (only when shown) — the console could not verify your role,
   so admin/lead actions inside it are hidden; click to retry.
 
+**Console sign-in.** When the console is not behind the Databricks Apps proxy (a localhost `APP_URL`, or `consoleAuth: "none"` / `CONSOLE_AUTH=none`), the desktop needs no workspace token — the console handles sign-in itself and the Identity page shows the mode as **local**. Set `consoleAuth: "databricks"` to force the token flow for a localhost URL.
+
 ## Run it
 
 ```bash

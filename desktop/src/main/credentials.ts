@@ -24,7 +24,23 @@ const EXPIRY_MARGIN_MS = 2 * 60 * 1000;
 
 export const SIGN_IN_REQUIRED = 'SIGN_IN_REQUIRED';
 
-export type AuthMode = 'dev-token' | 'oauth' | 'cli' | 'signed-out';
+export type AuthMode = 'dev-token' | 'oauth' | 'cli' | 'signed-out' | 'local';
+
+/**
+ * A console that is not behind the Databricks Apps proxy (a local dev server,
+ * or any deployment configured with consoleAuth 'none') needs no workspace
+ * token: identity comes from the console itself. Treat it as signed in.
+ */
+export function consoleNeedsNoToken(cfg: DesktopConfig): boolean {
+  if (cfg.consoleAuth === 'none') return true;
+  if (cfg.consoleAuth === 'databricks') return false;
+  try {
+    const host = new URL(cfg.consoleUrl).hostname;
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
+  }
+}
 
 interface CachedToken {
   token: string;
@@ -37,7 +53,8 @@ export class CredentialManager {
   private mode: AuthMode = 'signed-out';
 
   constructor(private readonly cfg: DesktopConfig) {
-    if (cfg.devToken) this.mode = 'dev-token';
+    if (consoleNeedsNoToken(cfg)) this.mode = 'local';
+    else if (cfg.devToken) this.mode = 'dev-token';
     else if (this.readRefreshToken()) this.mode = 'oauth';
   }
 
@@ -61,12 +78,15 @@ export class CredentialManager {
       // best-effort — worst case the encrypted blob lingers until next sign-in
     }
     this.cached = null;
-    this.mode = this.cfg.devToken ? 'dev-token' : 'signed-out';
+    this.mode = consoleNeedsNoToken(this.cfg) ? 'local' : this.cfg.devToken ? 'dev-token' : 'signed-out';
     return { mode: this.mode };
   }
 
   /** Get a workspace bearer token, minting/refreshing as needed. */
   async getToken(opts?: { forceRefresh?: boolean }): Promise<string> {
+    // No proxy in front of the console: no bearer token to send (callers skip
+    // the Authorization header when this is empty).
+    if (this.mode === 'local') return '';
     if (this.cfg.devToken) return this.cfg.devToken;
 
     const now = Date.now();
