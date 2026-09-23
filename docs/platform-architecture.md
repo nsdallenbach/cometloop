@@ -678,3 +678,89 @@ their own model key.
 7. **Data residency**: Neon region and ACA region per tenant is the
    DB-per-tenant door; not needed for launch, but the region should be a
    tenant attribute from phase 2 so it is not a migration later.
+
+## 10. Dedicated deployments (a customer's own Azure subscription)
+
+Some customers will run Cometloop inside their own Azure tenant rather than
+on Cometloop Cloud. The design above already makes that a packaging and
+release exercise, not a fork: **one codebase, one image, one Terraform
+module, one tenant row.** Dedicated installs run the same tenancy code with a
+single tenant (`t_<customer>`), RLS on, so every fix ships to both shapes.
+
+### The distribution unit
+
+A release is three versioned things, and nothing else:
+
+| Artefact | Where it is published | How a customer references it |
+|---|---|---|
+| Container image (`api` and `worker` entrypoints) | `ghcr.io/nsdallenbach/cometloop:<version>` (GitHub Container Registry, pull-token per customer when gated) | `image` variable of the Terraform module |
+| Infra module | `infra/azure` at the release tag | `source = "github.com/nsdallenbach/cometloop//infra/azure?ref=v<version>"` |
+| Release manifest | `https://cometloop.ai/releases.json` (version, image digest, module ref, notes, minimum schema version) | polled by the update job and shown in the console |
+
+Everything a customer configures — provider keys, SSO, branding, integrations —
+lives in their Key Vault and in the `tenants` / settings tables, never in the
+image or in per-release Terraform variables. An update is therefore purely a
+new image tag, which is what makes it safe to automate.
+
+### What a dedicated install consists of
+
+The same `infra/azure` module applied in the customer's subscription with
+`deployment_mode = "dedicated"`: resource group, Log Analytics, Container Apps
+environment, `api` + `worker`, Key Vault, managed identity, custom domain.
+Differences from Cometloop Cloud, all switched by that one variable:
+
+- **Postgres**: a Neon project in the customer's Neon org, or Azure Database
+  for PostgreSQL Flexible Server in their subscription — the app only needs
+  `DATABASE_URL` (phase 0). Boot-time migrations run unchanged.
+- **Identity**: Neon Auth, or the customer's Entra ID through Better Auth's
+  OIDC/SAML plugin; the identity module's verifiers are already pluggable
+  (phase 1). Their organisation maps to the single tenant row.
+- **Models**: their keys and endpoints (Azure OpenAI is the common case)
+  through the per-tenant provider registry; Cloudflare AI Gateway is optional
+  and off by default in dedicated mode.
+- **Registry pulls**: GHCR credentials in Key Vault, referenced by the
+  Container Apps registry block.
+- **Licence**: a signed licence file (customer id, seats, expiry) in Key
+  Vault, checked at boot — the only genuinely new component.
+
+### How updates reach the customer
+
+Cometloop **publishes; the customer's tenant pulls.** No Cometloop credential
+ever has write access to a customer subscription.
+
+1. **Release**: on a `v*` tag the release workflow builds the image once,
+   pushes `ghcr.io/…:<version>` (and `:latest`), attaches `infra/` to the
+   GitHub Release, and updates `releases.json`. Cometloop Cloud's `deploy.yml`
+   is simply the first consumer of that release.
+2. **Pull policy, chosen by the customer** — three tiers, all supported:
+   - *Managed*: an update job in their tenant (a Container Apps job, or the
+     `deploy.yml` template run in a repo they own with OIDC to their
+     subscription) polls `releases.json`, runs `az containerapp update` for
+     `api` then `worker`, checks `/healthz`, and rolls back to the previous
+     revision on failure.
+   - *Notified*: the console shows "v1.4.2 available" (from `GET /api/version`
+     against `releases.json`); an admin clicks **Update**, which triggers
+     their job.
+   - *Manual*: they pin a tag and apply on their own schedule. Regulated
+     customers will choose this.
+3. **Migrations are boot-time and forward-only** (the existing rule, and it
+   matters most here): the new image must start against the previous schema
+   and migrate it itself; there is no separate migration step a customer can
+   skip or run out of order. A `schema_version` row makes the app refuse to
+   start against a *newer* schema than it knows, so an image rollback after a
+   migration fails loudly instead of corrupting data.
+4. **Heartbeat** (opt-in): each install reports version, uptime and migration
+   state to a Cometloop endpoint — no customer data — so support knows who is
+   on what before anything is deprecated. Release notes flag the minimum
+   version an upgrade can start from.
+
+### Code that has to exist for this
+
+- `RELEASE` workflow (tag → image → GHCR → release assets → `releases.json`).
+- `deployment_mode`, `registry_credentials` and `licence_secret_name`
+  variables in `infra/azure`; dedicated mode skips AI Gateway wiring and the
+  multi-tenant loop iteration.
+- `GET /api/version`, the `schema_version` guard, the licence check, and the
+  heartbeat client.
+- A customer-facing runbook (install, update, back up, restore) published on
+  cometloop.ai/docs.
