@@ -63,9 +63,10 @@ has a `HEALTHCHECK` on `/healthz`. Default command `node dist/main.js` (api);
 | Variable | Portable runtime | Notes |
 |---|---|---|
 | `DATABASE_URL` | **required** — selects the runtime | SSL on unless the URL says `sslmode=disable` (compose) or `sslmode=no-verify`. The `sslmode` parameter is stripped before `pg` sees the URL. |
+| `DATABASE_URL_UNPOOLED` | strongly recommended on Neon | The direct endpoint (`DATABASE_URL` with `-pooler` removed from the host). With it each request pins one connection and sets the tenant session once; without it every statement scopes itself in its own transaction (three round trips each — the server warns). A `DATABASE_URL` that is already direct needs nothing extra. |
 | `PORT` | default `8000` | `DATABRICKS_APP_PORT` is honoured as a fallback. `HOST` defaults to `0.0.0.0`. |
 | `FILES_DIR` | default `data/files` (`/data/files` in the image) | One subdirectory per volume alias (`files/`, `telemetry/`). |
-| `PG_POOL_MAX` | default `10` | Pool size. Neon's pooled endpoint is fine at the default. |
+| `PG_POOL_MAX` | default `20` | Pool size. A request holds one connection for its duration in pinned mode; the runner long-poll opts out, so the default covers a busy board. |
 | `EEC_SEED_DEMO` | `1` seeds the demo portfolio into an empty database | Never seeds a non-empty one. |
 | `DEMO_MOCK_RUNNER` | `1` starts the in-process mock runner | Demo only. |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET` | optional | Without them repo sync, PR linking and git-credential vending are off (logged once). |

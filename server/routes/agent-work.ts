@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type express from 'express';
 import { resolveCaller, type Caller } from './roles';
+import { markLongLived } from '../db/tenant-context';
 import { createNotification } from './notifications';
 import { listContextFiles, type FilesVolume } from './context-files';
 import { listTicketAttachments } from './ticket-attachments';
@@ -556,6 +557,9 @@ export function setupAgentRoutes(
    * without a single extra request.
    */
   app.get('/api/agent/work/wait', async (req, res) => {
+    // Holds the request open for ~55s: scope each statement on its own rather
+    // than pinning a pool connection for the whole wait.
+    markLongLived();
     try {
       const scope = engagementScope(req.query as Record<string, unknown>);
       const agent = typeof req.query.agent === 'string' ? req.query.agent : null;

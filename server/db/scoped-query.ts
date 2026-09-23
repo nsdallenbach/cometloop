@@ -1,52 +1,75 @@
 import { APP_ROLE } from './tenancy';
-import { currentTenantId, isValidTenantId, TENANT_SETTING } from './tenant-context';
+import {
+  currentTenantStore,
+  isValidTenantId,
+  TENANT_SETTING,
+  type PinnedConnection,
+  type ScopedPoolClient,
+  type TenantStore,
+} from './tenant-context';
 
 /**
  * The tenant-scoped `Query` the portable runtime hands to every route module
- * (platform-architecture phase 2).
+ * (platform-architecture phase 2). Two modes, chosen per statement from the
+ * tenant context (`tenant-context.ts`) and the pool's capabilities:
  *
- * Each call checks a client out of the pool and runs the statement inside its
- * own short transaction:
+ * **Pinned** — the fast path; needs a direct connection (`DATABASE_URL_UNPOOLED`).
+ * The first statement in a request checks one client out of the pool and
+ * runs, once, at session level:
  *
- *     BEGIN; SET LOCAL ROLE cometloop_app; SELECT set_config('app.tenant_id', <tenant>, true);
+ *     SET ROLE cometloop_app; SELECT set_config('app.tenant_id', '<tenant>', false)
+ *
+ * Every later statement in the same context goes straight to that client:
+ * one round trip each. There is no transaction, so a failing statement does
+ * not poison the ones after it. A statement issued while the pinned client
+ * is still busy — a `Promise.all` fan-out of independent reads — spills over
+ * to the per-statement path on another checkout instead of queueing, so
+ * fan-outs stay as parallel as they were. When the context ends (response finished or
+ * closed) the client runs `RESET ROLE; RESET app.tenant_id` and goes back to
+ * the pool; if that reset fails the client is destroyed, never returned —
+ * a pooled connection can never carry one tenant's role or setting into the
+ * next checkout. Session-level `SET` only sticks on a direct connection:
+ * behind PgBouncer in transaction mode every statement may land on a
+ * different backend, which is why this mode is off unless the pool was built
+ * on the unpooled URL.
+ *
+ * **Per statement** — the fallback, and what long-lived handlers and the
+ * background loops always use. Each statement takes its own short
+ * transaction on a fresh checkout:
+ *
+ *     BEGIN; SET LOCAL ROLE cometloop_app; SELECT set_config('app.tenant_id', '<tenant>', true);
  *     <the statement>;
  *     COMMIT;
  *
- * `SET LOCAL` and a transaction-scoped `set_config` are undone by the COMMIT /
- * ROLLBACK, so a pooled connection can never leak one request's tenant (or
- * the app role) into the next — even if the process is interrupted between
- * statements, the client is released with the transaction ended. One
- * transaction *per statement*, not per request, on purpose: route handlers
- * catch and continue past individual query errors, the runner long-poll holds
- * a request open for ~55s, and both would break inside one request-long
- * transaction (an aborted transaction rejects everything after the first
- * error; a long one pins a pool client and its row locks).
+ * Three round trips, but nothing is held between statements — right for the
+ * ~55 s runner long-poll (`markLongLived()`), the loop ticks, and any pool
+ * that goes through a transaction-mode pooler.
  *
- * Fail closed: with no tenant in the async context the statement still runs
- * as `cometloop_app` with the setting unset, and the RLS policies then match
- * nothing — a read returns no rows, a write is rejected. That is deliberate;
- * a code path that reaches the database outside `runWithTenant` is a bug
- * this makes visible (it is logged once per statement shape) rather than a
- * data leak. Boot migrations and the tenant directory use the owner query
- * (`PortableDb.adminQuery`) instead.
- *
- * Cost: two extra round trips per statement (the preamble is one
- * multi-statement message; COMMIT is the other). Fine at this scale; the
- * phase-4 worker split is the point to revisit it if it ever shows.
+ * Fail closed either way: with no tenant in the async context the statement
+ * runs as `cometloop_app` with the setting unset, and the RLS policies match
+ * nothing — a read returns no rows, a write is rejected. A code path that
+ * reaches the database outside a tenant context is a bug this makes visible
+ * (logged once per statement shape), never a leak. Boot migrations and the
+ * tenant directory use the owner query (`PortableDb.adminQuery`) instead.
  */
 
 export type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
 
-/** The slice of `pg.Pool` / `pg.PoolClient` this needs — narrow so tests can fake it. */
-export interface ScopedPoolClient {
-  query(text: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
-  release(destroy?: boolean | Error): void;
-}
+export type { ScopedPoolClient };
 export interface ScopedPool {
   connect(): Promise<ScopedPoolClient>;
 }
 
-/** `BEGIN` plus the role switch and, when a tenant is set, the setting. Tenant ids are validated, never free text. */
+export interface ScopedQueryOptions {
+  /**
+   * Allow pinned mode. True only when the pool sits on a direct connection;
+   * false makes every statement take the per-statement path whatever the
+   * context's mode says.
+   */
+  pinning: boolean;
+}
+
+/** The per-statement transaction preamble. Tenant ids are validated, never free text. */
 export function scopePreamble(tenantId: string | null): string {
   const parts = ['BEGIN', `SET LOCAL ROLE ${APP_ROLE}`];
   if (tenantId !== null) {
@@ -55,6 +78,15 @@ export function scopePreamble(tenantId: string | null): string {
   }
   return parts.join('; ');
 }
+
+/** The session-level preamble a pinned client runs once. */
+export function sessionPreamble(tenantId: string): string {
+  if (!isValidTenantId(tenantId)) throw new Error(`invalid tenant id: ${JSON.stringify(tenantId)}`);
+  return `SET ROLE ${APP_ROLE}; SELECT set_config('${TENANT_SETTING}', '${tenantId}', false)`;
+}
+
+/** What a pinned client runs before going back to the pool. */
+export const SESSION_RESET = `RESET ROLE; RESET ${TENANT_SETTING}`;
 
 const warned = new Set<string>();
 function warnUnscoped(text: string): void {
@@ -69,26 +101,89 @@ export function resetUnscopedWarnings(): void {
   warned.clear();
 }
 
-export function scopedQuery(pool: ScopedPool): Query {
-  return async (text, params) => {
-    const tenantId = currentTenantId();
-    if (tenantId === null) warnUnscoped(text);
-    const client = await pool.connect();
+async function perStatement(pool: ScopedPool, tenantId: string | null, text: string, params?: unknown[]) {
+  const client = await pool.connect();
+  try {
+    await client.query(scopePreamble(tenantId));
+    const result = await client.query(text, params);
+    await client.query('COMMIT');
+    client.release();
+    return { rows: result.rows as Record<string, unknown>[] };
+  } catch (err) {
     try {
-      await client.query(scopePreamble(tenantId));
-      const result = await client.query(text, params);
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       client.release();
-      return { rows: result.rows as Record<string, unknown>[] };
+    } catch {
+      // The connection itself is broken; destroy it rather than return it to the pool.
+      client.release(true);
+    }
+    throw err;
+  }
+}
+
+/** Statements in flight on each pinned client — a busy pin makes a concurrent statement spill over. */
+const inFlight = new WeakMap<PinnedConnection, number>();
+
+/** The context's pinned client, checking one out and setting the session on first use. */
+function pinnedClient(pool: ScopedPool, store: TenantStore): Promise<ScopedPoolClient> {
+  if (store.pin) return store.pin.client;
+  const client = (async () => {
+    const c = await pool.connect();
+    try {
+      await c.query(sessionPreamble(store.tenantId));
     } catch (err) {
-      try {
-        await client.query('ROLLBACK');
-        client.release();
-      } catch {
-        // The connection itself is broken; destroy it rather than return it to the pool.
-        client.release(true);
-      }
+      c.release(true);
       throw err;
+    }
+    return c;
+  })();
+  const pin = {
+    client,
+    async release() {
+      let c: ScopedPoolClient;
+      try {
+        c = await client;
+      } catch {
+        return; // never got a session; that checkout was already destroyed
+      }
+      try {
+        await c.query(SESSION_RESET);
+        c.release();
+      } catch (err) {
+        console.warn('[db] session reset failed, destroying the connection:', (err as Error).message);
+        c.release(true);
+      }
+    },
+  };
+  store.pin = pin;
+  // A failed checkout must not wedge the context: forget the pin so the next statement retries.
+  client.catch(() => {
+    if (store.pin === pin) store.pin = null;
+  });
+  return client;
+}
+
+export function scopedQuery(pool: ScopedPool, opts: ScopedQueryOptions = { pinning: true }): Query {
+  return async (text, params) => {
+    const store = currentTenantStore();
+    if (!store) {
+      warnUnscoped(text);
+      return perStatement(pool, null, text, params);
+    }
+    if (!opts.pinning || store.mode !== 'pinned' || store.ended) return perStatement(pool, store.tenantId, text, params);
+    // A statement issued while the pinned client is busy (a `Promise.all`
+    // fan-out) would only queue behind it, so it spills over to the
+    // per-statement path on another checkout and the fan-out stays parallel.
+    if (store.pin && (inFlight.get(store.pin) ?? 0) > 0) return perStatement(pool, store.tenantId, text, params);
+    const clientPromise = pinnedClient(pool, store);
+    const pin = store.pin as PinnedConnection;
+    inFlight.set(pin, (inFlight.get(pin) ?? 0) + 1);
+    try {
+      const client = await clientPromise;
+      const result = await client.query(text, params);
+      return { rows: result.rows as Record<string, unknown>[] };
+    } finally {
+      inFlight.set(pin, (inFlight.get(pin) ?? 1) - 1);
     }
   };
 }

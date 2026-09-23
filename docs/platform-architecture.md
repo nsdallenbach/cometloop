@@ -236,7 +236,36 @@ covered too.
 `runWithTenant(tenantId, fn)` is the only way in. `requireSignIn` runs the
 rest of the middleware chain inside it, so every route module keeps calling
 its `q` with no signature change — the portable runtime's `q`
-(`server/db/scoped-query.ts`) reads the context and runs each statement as
+(`server/db/scoped-query.ts`) reads the context and scopes the statement in
+one of two modes.
+
+**Pinned** (the fast path — the default on a direct connection). The
+first statement of a request checks one client out of the pool and runs,
+once, at session level:
+
+```
+SET ROLE cometloop_app; SELECT set_config('app.tenant_id', <tenant>, false)
+```
+
+Every later statement in that request goes straight to the same client:
+one round trip each. There is no transaction, so a failing statement does
+not poison the ones after it. When the response finishes or the socket
+closes (`runWithTenantRequest` hooks both) the client runs
+`RESET ROLE; RESET app.tenant_id` and goes back to the pool; if the reset
+fails the client is destroyed, never returned — so a pooled connection can
+never carry one tenant's role or setting into the next checkout. Statements
+issued after the response ended (a fire-and-forget refinement) take the
+per-statement path rather than pinning a connection nobody would release.
+Session-level `SET` only sticks on a **direct** connection — behind
+PgBouncer in transaction mode each statement may land on a different
+backend — so the pool is built on `DATABASE_URL_UNPOOLED` (Neon's direct
+endpoint: `DATABASE_URL` without `-pooler` in the host) when it is set, or
+on a `DATABASE_URL` that is itself direct (docker-compose). The default
+`PG_POOL_MAX` is 20, since a busy request holds its client for its whole
+duration.
+
+**Per statement** (the fallback, and always for long-lived work). Each
+statement takes its own short transaction on a fresh checkout:
 
 ```
 BEGIN; SET LOCAL ROLE cometloop_app; SELECT set_config('app.tenant_id', <tenant>, true);
@@ -244,18 +273,32 @@ BEGIN; SET LOCAL ROLE cometloop_app; SELECT set_config('app.tenant_id', <tenant>
 COMMIT;
 ```
 
-`SET LOCAL` and a transaction-scoped `set_config` are undone by COMMIT or
-ROLLBACK, so a pooled connection cannot leak one request's tenant or the
-app role into the next. It is one transaction **per statement**, not per
-request, on purpose: handlers catch and continue past individual query
-errors (an aborted request-long transaction would reject everything after
-the first), and the runner long-poll holds a request open for ~55 s (a
-request-long transaction would pin a pool client and its row locks). Cost is
-two extra round trips per statement. With no tenant in the context the
-statement still runs as `cometloop_app` with the setting unset and the
-policies match nothing — reads return no rows, writes are rejected — and the
-statement shape is logged once, so a code path that reaches the database
-outside `runWithTenant` is a visible bug, never a leak.
+Three round trips, nothing held between statements. This is what the
+server uses when `DATABASE_URL` points at the pooler and
+`DATABASE_URL_UNPOOLED` is unset (it warns at boot), what the background
+loops always use (a tick has no request end to release a pin on), and what
+a handler gets after calling `markLongLived()` — the runner long-poll
+(`/api/agent/work/wait`, ~55 s) does, so it never sits on a pool client
+while it waits.
+
+Concurrency: a statement issued while the pinned client is busy — a
+`Promise.all` fan-out — spills over to the per-statement path on another
+checkout rather than queueing, so fan-outs stay parallel. The engagement
+detail route issues its seven independent reads that way. Measured on a
+Neon branch of production from a laptop with ~70 ms to the compute, one
+server at a time, warm: the detail route (9 statements) went from
+2.5–3.3 s (6 s cold) with a transaction per sequential statement to a
+median of ~1.1 s pinned and fanned out (~1.7 s fanned out but still per
+statement on the pooler); a single-ticket read is one round trip plus its
+own execution. What is left in the detail route is data, not latency:
+`feed_items` alone is 1,254 rows / 372 KB for the existing board and the
+ticket rows another 344 KB — capping or paging the feed is the next lever.
+
+With no tenant in the context the statement still runs as `cometloop_app`
+with the setting unset and the policies match nothing — reads return no
+rows, writes are rejected — and the statement shape is logged once, so a
+code path that reaches the database outside a tenant context is a visible
+bug, never a leak.
 
 The AppKit (Databricks) runtime has no per-query client (`lakebase.query`
 is a bare pool), so `tenantIsolation` is false there: the columns and
@@ -318,8 +361,9 @@ is back to the owner with no tenant set.
    the first migration to keys and policies), and a tenant-delete path.
 5. AppKit runtime: either a per-query client so `tenantIsolation` can be
    true there too, or retire the runtime (section 7).
-6. Revisit the per-statement transaction cost with the phase-4 worker split
-   (a request-scoped client with SAVEPOINTs is the obvious next step).
+6. Per-statement mode stays as the fallback behind transaction-mode
+   poolers; once every deployment runs on a direct endpoint it can go, along
+   with `PortableDb.mode`.
 
 DB-per-tenant later: because every query already runs inside
 `runWithTenant`, a tenant → `DATABASE_URL` map in the scoped query layer is
