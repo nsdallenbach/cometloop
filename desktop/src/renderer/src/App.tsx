@@ -215,12 +215,18 @@ function ConsoleView({
   useEffect(() => {
     const wv = viewRef.current as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
     if (!wv || !cfg) return;
+    // executeJavaScript throws synchronously until the guest page's dom-ready
+    // has fired; the listener below covers that case, so a throw here is fine.
     const push = () => {
-      void wv
-        .executeJavaScript?.(
-          `localStorage.setItem('eec-theme', ${JSON.stringify(theme)}); dispatchEvent(new StorageEvent('storage', { key: 'eec-theme', newValue: ${JSON.stringify(theme)} }));`,
-        )
-        .catch(() => undefined);
+      try {
+        void wv
+          .executeJavaScript?.(
+            `localStorage.setItem('eec-theme', ${JSON.stringify(theme)}); dispatchEvent(new StorageEvent('storage', { key: 'eec-theme', newValue: ${JSON.stringify(theme)} }));`,
+          )
+          .catch(() => undefined);
+      } catch {
+        /* not attached or not ready yet — dom-ready re-runs this */
+      }
     };
     push();
     wv.addEventListener('dom-ready', push);

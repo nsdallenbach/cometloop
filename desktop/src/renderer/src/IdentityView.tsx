@@ -21,6 +21,7 @@ const AUTH_TEXT: Record<AuthMode, { text: string; tone: 'ok' | 'warn' | 'muted' 
   cli: { text: 'Signed in · Databricks CLI', tone: 'ok' },
   'dev-token': { text: 'Dev token from env', tone: 'warn' },
   'signed-out': { text: 'Not signed in', tone: 'muted' },
+  local: { text: 'Console sign-in · no workspace token needed', tone: 'ok' },
 };
 
 const PROVIDER_NOTE: Record<IdentityProvider, string> = {

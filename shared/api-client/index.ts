@@ -48,7 +48,8 @@ export class ConsoleClient {
         ...init,
         headers: {
           ...(init?.headers ?? {}),
-          Authorization: `Bearer ${token}`,
+          // An empty token means the console is not behind a token-checking proxy.
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
         },
       });
