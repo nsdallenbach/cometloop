@@ -131,6 +131,34 @@ const sectionOfPath = (pathname: string): ConsoleSection =>
         ? 'settings'
         : 'projects';
 
+type WebviewEl = HTMLElement & {
+  executeJavaScript?: (code: string) => Promise<unknown>;
+  getURL?: () => string;
+  loadURL?: (url: string) => Promise<void>;
+  reload?: () => void;
+};
+
+/**
+ * Run a snippet in the embedded console. executeJavaScript throws
+ * synchronously until the guest's dom-ready has fired and rejects on a
+ * crashed or error page; both mean "nothing to do right now", never an
+ * error for the shell.
+ */
+const runInConsole = (wv: HTMLElement | null, code: string): void => {
+  try {
+    void (wv as WebviewEl | null)?.executeJavaScript?.(code).catch(() => undefined);
+  } catch {
+    /* not attached or not ready yet */
+  }
+};
+
+/** Reload backoff after the console fails to load: 1.5s, 3s, 6s, then every 10s, giving up after 2 min. */
+const RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
+const RETRY_STEADY_MS = 10_000;
+const RETRY_CAP_MS = 120_000;
+/** Errors that are not a failure to reach the console: -3 ERR_ABORTED (a navigation superseded by another). */
+const IGNORED_LOAD_ERRORS = new Set([-3]);
+
 function ConsoleView({
   section,
   onSectionChange,
@@ -153,6 +181,9 @@ function ConsoleView({
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState('');
   const viewRef = useRef<HTMLElement | null>(null);
+  // The console failed to load (dev server restarting, network gone): what
+  // the pill over the webview says, or null while it is reachable.
+  const [unreachable, setUnreachable] = useState<string | null>(null);
 
   useEffect(() => {
     void window.desktopBridge.getConfig().then(setCfg);
@@ -193,7 +224,7 @@ function ConsoleView({
   // listens to) instead of reloading it: Projects keeps its place while you
   // look at Workflows or Settings, and comes back exactly where it was.
   useEffect(() => {
-    const wv = viewRef.current as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown>; getURL?: () => string }) | null;
+    const wv = viewRef.current as WebviewEl | null;
     if (!wv || !cfg || auth === 'signed-out' || sectionRef.current === section) return;
     try {
       const current = wv.getURL ? new URL(wv.getURL()) : null;
@@ -201,7 +232,7 @@ function ConsoleView({
         projectsPath.current = current.pathname + current.search;
       }
       const to = section === 'projects' ? projectsPath.current : CONSOLE_PATHS[section];
-      void wv.executeJavaScript?.(`history.pushState({}, '', ${JSON.stringify(to)}); dispatchEvent(new PopStateEvent('popstate'));`);
+      runInConsole(wv, `history.pushState({}, '', ${JSON.stringify(to)}); dispatchEvent(new PopStateEvent('popstate'));`);
       sectionRef.current = section;
     } catch {
       // The webview is not ready yet; the next sidebar click tries again.
@@ -213,21 +244,14 @@ function ConsoleView({
   // the event switches the running page at once; dom-ready re-applies it
   // after a reload or a fresh start.
   useEffect(() => {
-    const wv = viewRef.current as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
+    const wv = viewRef.current;
     if (!wv || !cfg) return;
-    // executeJavaScript throws synchronously until the guest page's dom-ready
-    // has fired; the listener below covers that case, so a throw here is fine.
-    const push = () => {
-      try {
-        void wv
-          .executeJavaScript?.(
-            `localStorage.setItem('eec-theme', ${JSON.stringify(theme)}); dispatchEvent(new StorageEvent('storage', { key: 'eec-theme', newValue: ${JSON.stringify(theme)} }));`,
-          )
-          .catch(() => undefined);
-      } catch {
-        /* not attached or not ready yet — dom-ready re-runs this */
-      }
-    };
+    // Before the guest's dom-ready this is a no-op; the listener below re-runs it.
+    const push = () =>
+      runInConsole(
+        wv,
+        `localStorage.setItem('eec-theme', ${JSON.stringify(theme)}); dispatchEvent(new StorageEvent('storage', { key: 'eec-theme', newValue: ${JSON.stringify(theme)} }));`,
+      );
     push();
     wv.addEventListener('dom-ready', push);
     return () => wv.removeEventListener('dom-ready', push);
@@ -235,17 +259,11 @@ function ConsoleView({
 
   // Title-bar bell → the ticket's drawer, inside the running SPA.
   useEffect(() => {
-    const wv = viewRef.current as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
+    const wv = viewRef.current;
     if (!wv || !cfg || !ticketRequest || auth === 'signed-out') return;
     const to = `/tickets/${encodeURIComponent(ticketRequest.key)}`;
-    void wv.executeJavaScript?.(`history.pushState({}, '', ${JSON.stringify(to)}); dispatchEvent(new PopStateEvent('popstate'));`).catch(() => undefined);
+    runInConsole(wv, `history.pushState({}, '', ${JSON.stringify(to)}); dispatchEvent(new PopStateEvent('popstate'));`);
   }, [ticketRequest, cfg, auth]);
-
-  // ↻ lives in the sidebar footer now that the console has no bar of its own.
-  useEffect(() => {
-    if (reloadToken === 0) return;
-    (viewRef.current as unknown as { reload?: () => void } | null)?.reload?.();
-  }, [reloadToken]);
 
   const initialUrl = (() => {
     if (!cfg) return '';
@@ -256,6 +274,83 @@ function ConsoleView({
       return cfg.consoleUrl;
     }
   })();
+
+  // A failed load (ERR_CONNECTION_REFUSED while the dev server restarts, the
+  // network dropping) would otherwise sit on Chromium's error page until
+  // someone clicks ↻. Retry the URL that failed with backoff until a load
+  // finishes, and say so over the webview meanwhile.
+  const retry = useRef<{ attempt: number; since: number; timer: ReturnType<typeof setTimeout> | null }>({ attempt: 0, since: 0, timer: null });
+  useEffect(() => {
+    const wv = viewRef.current as WebviewEl | null;
+    if (!wv || !cfg) return;
+    const state = retry.current;
+    const clear = () => {
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = null;
+    };
+    const onFail = (e: Event) => {
+      const { errorCode, errorDescription, validatedURL, isMainFrame } = e as unknown as {
+        errorCode?: number;
+        errorDescription?: string;
+        validatedURL?: string;
+        isMainFrame?: boolean;
+      };
+      if (isMainFrame === false || (typeof errorCode === 'number' && IGNORED_LOAD_ERRORS.has(errorCode))) return;
+      const now = Date.now();
+      if (state.attempt === 0) state.since = now;
+      clear();
+      if (now - state.since > RETRY_CAP_MS) {
+        setUnreachable('CONSOLE UNREACHABLE — PRESS ↻ TO RETRY');
+        return;
+      }
+      setUnreachable(`CONSOLE UNREACHABLE${errorDescription ? ` (${errorDescription})` : ''} — RETRYING…`);
+      const delay = RETRY_DELAYS_MS[state.attempt] ?? RETRY_STEADY_MS;
+      state.attempt += 1;
+      const url = validatedURL && validatedURL.startsWith(cfg.consoleUrl) ? validatedURL : initialUrl || cfg.consoleUrl;
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        try {
+          void wv.loadURL?.(url).catch(() => undefined); // failure fires did-fail-load again
+        } catch {
+          /* not attached — the next did-fail-load reschedules */
+        }
+      }, delay);
+    };
+    const onLoaded = () => {
+      // Chromium's own error page also finishes loading; that is not a success.
+      let url = '';
+      try {
+        url = wv.getURL?.() ?? '';
+      } catch {
+        /* not attached */
+      }
+      if (url.startsWith('chrome-error://')) return;
+      clear();
+      state.attempt = 0;
+      setUnreachable(null);
+    };
+    wv.addEventListener('did-fail-load', onFail);
+    wv.addEventListener('did-finish-load', onLoaded);
+    return () => {
+      clear();
+      wv.removeEventListener('did-fail-load', onFail);
+      wv.removeEventListener('did-finish-load', onLoaded);
+    };
+  }, [cfg, auth, initialUrl]);
+
+  // ↻ lives in the sidebar footer now that the console has no bar of its own.
+  // It also starts a fresh retry cycle after the backoff gave up.
+  useEffect(() => {
+    if (reloadToken === 0) return;
+    retry.current.attempt = 0;
+    if (retry.current.timer) clearTimeout(retry.current.timer);
+    retry.current.timer = null;
+    try {
+      (viewRef.current as WebviewEl | null)?.reload?.();
+    } catch {
+      /* not attached */
+    }
+  }, [reloadToken]);
 
   const signIn = async () => {
     setSigningIn(true);
@@ -301,14 +396,42 @@ function ConsoleView({
   }
 
   return (
-    <webview
-      ref={(el: HTMLElement | null) => {
-        viewRef.current = el;
-      }}
-      src={initialUrl}
-      partition="persist:console"
-      style={{ flex: 1, minHeight: 0 }}
-    />
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', position: 'relative' }}>
+      <webview
+        ref={(el: HTMLElement | null) => {
+          viewRef.current = el;
+        }}
+        src={initialUrl}
+        partition="persist:console"
+        style={{ flex: 1, minHeight: 0 }}
+      />
+      {unreachable && (
+        <div
+          role="status"
+          style={{
+            position: 'absolute',
+            top: 12,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 12px',
+            borderRadius: 4,
+            background: 'var(--bg3)',
+            border: '1px solid var(--line2)',
+            color: 'var(--warn)',
+            boxShadow: '0 8px 30px rgba(0,0,0,.4)',
+            ...mono(500, 10),
+            letterSpacing: '.08em',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--warn)', animation: 'eec-pulse 2.4s infinite' }} />
+          {unreachable}
+        </div>
+      )}
+    </div>
   );
 }
 
