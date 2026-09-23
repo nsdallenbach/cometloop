@@ -1,7 +1,12 @@
 import type express from 'express';
+import { MODEL_ROLES, ROLE_CONTRACTS, checkContract, requestNeeds, resolveModel, resolveRole, type ModelRole } from '../llm/config';
+import { providerFor } from '../llm/providers';
+import { ProviderError, ProviderNotAvailableError, type ChatRequest, type ChatResponse, type ProviderConfig } from '../llm/provider';
+import { recordControlPlaneUsage } from './token-usage';
 
 /**
- * Shared reliability layer for every serving-endpoint (LLM) call (DAT-180).
+ * Shared reliability layer for every model (LLM) call (DAT-180), now over
+ * the provider registry (platform-architecture §6, phase 3).
  *
  * Born from the 2026-08-11 planning-model outage: every flow called
  * `serving('default').invoke` exactly once, and background flows swallowed
@@ -9,21 +14,26 @@ import type express from 'express';
  * tickets, unanswered comment feedback and missing estimates. This module is
  * the single choke point that makes those failures visible and survivable:
  *
- * - `invokeModel` wraps every call with one retry on transient errors
- *   (network, 408/429/5xx), categorizes the failure (auth / rate-limit /
- *   server / payload / network), keeps per-flow counters, and surfaces a
+ * - `invokeModel(role, request)` resolves the role to the current tenant's
+ *   provider + model (server/llm/config.ts), checks the role's capability
+ *   contract, calls the adapter, wraps the call with one retry on transient
+ *   errors (network, 408/429/5xx), categorizes the failure (auth / rate-limit
+ *   / server / payload / network), keeps per-flow counters, surfaces a
  *   feed item on the engagement when a call fails (throttled per flow so a
- *   sustained outage doesn't flood the feed).
- * - `GET /api/llm/health` live-probes the endpoint and reports per-flow
- *   status, so "is the planning model up?" is one curl instead of a log dive.
+ *   sustained outage doesn't flood the feed), and records the tokens the
+ *   call spent in `app.run_token_usage` as a control-plane row.
+ * - `GET /api/llm/health` live-probes each configured role and reports
+ *   per-role and per-flow status, so "is the planning model up?" is one
+ *   curl instead of a log dive.
  *
  * Callers keep their existing deterministic fallbacks (documented in
  * docs/llm-fallbacks.md) — this layer only adds detection and resilience,
- * it never changes what degrades.
+ * it never changes what degrades. No provider configured for a role is not
+ * an outage: the call is skipped without retry or feed item and the same
+ * fallback applies.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
-type Serving = (alias: string) => { invoke(body: unknown): Promise<unknown> };
 
 export type LlmFlow =
   | 'ticket-refine'
@@ -32,6 +42,7 @@ export type LlmFlow =
   | 'status-draft'
   | 'sow-parse'
   | 'standards-refine'
+  | 'pr-review'
   | 'health-probe';
 
 const FLOW_LABELS: Record<LlmFlow, string> = {
@@ -41,16 +52,38 @@ const FLOW_LABELS: Record<LlmFlow, string> = {
   'status-draft': 'weekly status draft',
   'sow-parse': 'SOW plan extraction',
   'standards-refine': 'standards refine',
+  'pr-review': 'PR review',
   'health-probe': 'health probe',
+};
+
+/** Which role each flow runs under — the table in docs/llm-fallbacks.md. */
+export const FLOW_ROLES: Record<LlmFlow, ModelRole> = {
+  'ticket-refine': 'planning',
+  'comment-rework': 'planning',
+  'sow-parse': 'planning',
+  'standards-refine': 'planning',
+  estimate: 'estimate',
+  'status-draft': 'draft',
+  'pr-review': 'review',
+  'health-probe': 'planning',
+};
+
+/** The flow a call is attributed to when the caller names none. */
+const ROLE_DEFAULT_FLOW: Record<ModelRole, LlmFlow> = {
+  planning: 'ticket-refine',
+  estimate: 'estimate',
+  review: 'pr-review',
+  draft: 'status-draft',
 };
 
 export type FailureCategory = 'auth' | 'rate-limit' | 'server' | 'payload' | 'network';
 
 /**
- * Thrown by a `serving` implementation that has no model behind it (the
- * portable runtime without a provider). Not an outage: `invokeModel` neither
- * retries nor posts the ⚠ feed item — it rethrows at once so the caller's
- * deterministic fallback applies, and `/api/llm/health` reports it plainly.
+ * Thrown when a role has no model behind it (no provider row for the
+ * tenant, or the mapped adapter is a stub in this build). Not an outage:
+ * `invokeModel` neither retries nor posts the ⚠ feed item — it rethrows at
+ * once so the caller's deterministic fallback applies, and
+ * `/api/llm/health` reports it plainly.
  */
 export class ModelNotConfiguredError extends Error {
   constructor(reason: string) {
@@ -87,8 +120,9 @@ export function categorizeFailure(status: number | undefined): FailureCategory {
 }
 
 /**
- * ExecutionResult-style failure from a programmatic serving invoke:
+ * ExecutionResult-style failure wrapper from a programmatic invoke:
  * { ok: false, status?, message? }. Success and non-wrapper payloads → null.
+ * Kept for callers that still unwrap raw serving payloads (the MCP tool path).
  */
 export function invokeError(response: unknown): { message: string; status?: number } | null {
   if (!response || typeof response !== 'object' || !('ok' in response)) return null;
@@ -127,6 +161,18 @@ const PROBE_CACHE_MS = 30_000;
 const flowStatuses = new Map<LlmFlow, FlowStatus>();
 const feedThrottle = new FeedThrottle(FEED_THROTTLE_MS);
 
+/**
+ * The tenant-scoped query the invoke layer reads configuration with and
+ * writes feed items / usage rows through. It reads the tenant from the
+ * async context (server/db/tenant-context.ts), so one function serves every
+ * tenant. Set once by `setupApiRoutes`; tests set a pg-mem query.
+ */
+let llmQuery: Query | null = null;
+
+export function setLlmQuery(q: Query | null): void {
+  llmQuery = q;
+}
+
 function statusFor(flow: LlmFlow): FlowStatus {
   let s = flowStatuses.get(flow);
   if (!s) {
@@ -152,23 +198,28 @@ export function llmFlowStatuses(): Record<string, FlowStatus> {
 export function resetLlmHealthState(): void {
   flowStatuses.clear();
   feedThrottle.reset();
-  probeCache = null;
+  probeCache.clear();
 }
 
 // ---------- model invocation ----------
 
 export interface InvokeContext {
+  /** The flow the call is counted under; defaults to the role's main flow. */
+  flow?: LlmFlow;
   engagementId?: string;
   ticketKey?: string;
+  /** Pin the model on the role's provider (the PR reviewer's registered endpoint). */
+  modelOverride?: string;
 }
 
-async function surfaceFailure(
-  q: Query | null,
-  flow: LlmFlow,
-  error: { message: string; status?: number },
-  ctx: InvokeContext,
-): Promise<void> {
-  const category = categorizeFailure(error.status);
+interface InvokeFailure {
+  message: string;
+  status?: number;
+  category?: FailureCategory;
+}
+
+async function surfaceFailure(q: Query | null, flow: LlmFlow, error: InvokeFailure, ctx: InvokeContext): Promise<void> {
+  const category = error.category ?? categorizeFailure(error.status);
   const s = statusFor(flow);
   s.failures++;
   s.consecutiveFailures++;
@@ -199,46 +250,84 @@ async function surfaceFailure(
   }
 }
 
+const skipped = (flow: LlmFlow, reason: string): Error =>
+  new Error(`planning model call skipped (${FLOW_LABELS[flow]}): no model configured — ${reason} — deterministic fallback applies`);
+
 /**
- * Invoke the serving endpoint with failure accounting and one retry on
- * transient errors. Returns the raw invoke response on success (callers keep
- * their own extractText/parse logic). Throws on failure — callers' existing
- * catch blocks provide the deterministic fallback. Pass `q: null` when there
- * is no engagement to surface a feed item on (e.g. SOW parse pre-engagement).
+ * Call the model behind a role with failure accounting and one retry on
+ * transient errors. Returns the adapter's {@link ChatResponse} (text, tool
+ * calls, usage). Throws on failure — callers' existing catch blocks provide
+ * the deterministic fallback. Configuration gaps (no provider for the role,
+ * a stub adapter, a model that cannot meet the role's contract) throw
+ * without retrying.
  */
 export async function invokeModel(
-  serving: Serving,
-  q: Query | null,
-  flow: LlmFlow,
-  body: unknown,
+  role: ModelRole,
+  request: ChatRequest,
   ctx: InvokeContext = {},
   retryDelayMs: number = RETRY_DELAY_MS,
-): Promise<unknown> {
+): Promise<ChatResponse> {
+  const flow = ctx.flow ?? ROLE_DEFAULT_FLOW[role];
+  const q = llmQuery;
+  if (!q) throw skipped(flow, 'the model layer has no database connection');
+
+  const resolved = await resolveRole(q, role, { modelOverride: ctx.modelOverride });
+  if (!resolved) throw skipped(flow, `no provider is mapped to the ${role} role for this workspace`);
+  const label = `${resolved.config.name} / ${resolved.model}`;
+
   const s = statusFor(flow);
+  // A model that cannot meet the role's contract is refused up front — the
+  // call would fail or, worse, return something the caller cannot parse.
+  const gap = checkContract(role, requestNeeds(role, request), resolved.capabilities, label);
+  if (gap) {
+    await surfaceFailure(q, flow, { message: gap, category: 'payload' }, ctx);
+    throw new Error(`planning model call refused (${FLOW_LABELS[flow]}): ${gap}`);
+  }
+
+  const model = await resolveModel(resolved.config, resolved.model, {
+    role,
+    flow,
+    ...(ctx.ticketKey ? { ticket: ctx.ticketKey } : {}),
+    ...(ctx.engagementId ? { project: ctx.engagementId } : {}),
+  });
+
   s.calls++;
-  let lastError: { message: string; status?: number } = { message: 'model invocation failed' };
+  let lastError: InvokeFailure = { message: 'model invocation failed' };
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) {
       console.warn(`[llm] ${FLOW_LABELS[flow]}: transient model error (${lastError.message}) — retrying once`);
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
     try {
-      const response = await serving('default').invoke(body);
-      const error = invokeError(response);
-      if (!error) {
-        s.consecutiveFailures = 0;
-        s.lastSuccessAt = new Date().toISOString();
-        return response;
+      const response = await resolved.adapter.chat(request, model);
+      s.consecutiveFailures = 0;
+      s.lastSuccessAt = new Date().toISOString();
+      if (flow !== 'health-probe') {
+        // Usage is telemetry: losing a row costs accuracy, never the call.
+        void recordControlPlaneUsage(q, {
+          role,
+          flow,
+          provider: response.provider,
+          model: response.model,
+          ticketKey: ctx.ticketKey ?? '',
+          engagementId: ctx.engagementId ?? '',
+          usage: response.usage,
+        }).catch((err: unknown) => console.warn('[llm] could not record control-plane usage:', (err as Error).message));
       }
-      lastError = error;
-      if (!isTransientStatus(error.status)) break; // auth/payload — retrying can't help
+      return response;
     } catch (err) {
-      if (err instanceof ModelNotConfiguredError) {
+      if (err instanceof ProviderNotAvailableError) {
         // Configuration, not an incident: no retry, no feed item, no counters.
         s.calls--;
-        throw new Error(`planning model call skipped (${FLOW_LABELS[flow]}): ${err.message} — deterministic fallback applies`);
+        throw skipped(flow, err.message);
       }
-      lastError = { message: (err as Error).message || 'model invocation threw' };
+      if (err instanceof ModelNotConfiguredError) {
+        s.calls--;
+        throw skipped(flow, err.message);
+      }
+      lastError =
+        err instanceof ProviderError ? { message: err.message, status: err.status } : { message: (err as Error).message || 'model invocation threw' };
+      if (!isTransientStatus(lastError.status)) break; // auth/payload — retrying can't help
     }
   }
   await surfaceFailure(q, flow, lastError, ctx);
@@ -248,49 +337,109 @@ export async function invokeModel(
   );
 }
 
-// ---------- health endpoint ----------
+// ---------- probes ----------
 
-let probeCache: { at: number; ok: boolean; latencyMs: number; error: string | null } | null = null;
+const PROBE_REQUEST: ChatRequest = { messages: [{ role: 'user', content: 'Reply with the single word OK.' }], maxTokens: 8 };
 
-async function probeEndpoint(serving: Serving): Promise<{ ok: boolean; latencyMs: number; error: string | null }> {
+export interface ProbeResult {
+  ok: boolean;
+  latencyMs: number;
+  model: string | null;
+  error: string | null;
+}
+
+const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`probe timed out after ${ms}ms`)), ms))]);
+
+/** One tiny call straight at a provider row + model (the settings page's Test button). Bypasses roles and counters. */
+export async function probeModel(config: ProviderConfig, modelId: string): Promise<ProbeResult> {
   const started = Date.now();
   try {
-    await Promise.race([
-      invokeModel(serving, null, 'health-probe', {
-        messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
-        max_tokens: 8,
-      }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`probe timed out after ${PROBE_TIMEOUT_MS}ms`)), PROBE_TIMEOUT_MS)),
-    ]);
-    return { ok: true, latencyMs: Date.now() - started, error: null };
+    const model = await resolveModel(config, modelId, { flow: 'health-probe', role: 'test' });
+    const response = await withTimeout(providerFor(config.kind).chat(PROBE_REQUEST, model), PROBE_TIMEOUT_MS);
+    return { ok: true, latencyMs: Date.now() - started, model: response.model, error: null };
   } catch (err) {
-    return { ok: false, latencyMs: Date.now() - started, error: (err as Error).message };
+    return { ok: false, latencyMs: Date.now() - started, model: null, error: (err as Error).message };
   }
 }
 
-/**
- * GET /api/llm/health — live health of the serving endpoint plus per-flow
- * failure counters. 200 when the probe succeeds, 503 when it fails. Probe
- * results are cached briefly so pollers can't hammer the endpoint.
- */
-export function setupLlmHealthRoutes(app: express.Application, serving: Serving): void {
-  app.get('/api/llm/health', async (_req, res) => {
+const probeCache = new Map<string, { at: number; result: ProbeResult }>();
+
+async function probeRole(role: ModelRole): Promise<ProbeResult> {
+  const started = Date.now();
+  try {
+    const response = await withTimeout(invokeModel(role, PROBE_REQUEST, { flow: 'health-probe' }), PROBE_TIMEOUT_MS);
+    return { ok: true, latencyMs: Date.now() - started, model: response.model, error: null };
+  } catch (err) {
+    return { ok: false, latencyMs: Date.now() - started, model: null, error: (err as Error).message };
+  }
+}
+
+export interface RoleHealth {
+  configured: boolean;
+  provider: { id: number; name: string; kind: string } | null;
+  model: string | null;
+  contract: { json: boolean; tools: boolean; contextTokens: number };
+  /** Why the mapping cannot meet the contract, when it cannot. */
+  contractGap: string | null;
+  probe: (ProbeResult & { at: string; cached: boolean }) | null;
+}
+
+/** Every role's mapping and, for the configured ones, a cached live probe. */
+export async function rolesHealth(q: Query, tenantKey: string): Promise<Record<ModelRole, RoleHealth>> {
+  const out = {} as Record<ModelRole, RoleHealth>;
+  for (const role of MODEL_ROLES) {
+    const c = ROLE_CONTRACTS[role];
+    const contract = { json: c.json, tools: c.tools, contextTokens: c.contextTokens };
+    const resolved = await resolveRole(q, role);
+    if (!resolved) {
+      out[role] = { configured: false, provider: null, model: null, contract, contractGap: null, probe: null };
+      continue;
+    }
+    const gap = checkContract(role, contract, resolved.capabilities, `${resolved.config.name} / ${resolved.model}`);
+    const key = `${tenantKey}:${role}`;
     const now = Date.now();
     let cached = true;
-    if (!probeCache || now - probeCache.at >= PROBE_CACHE_MS) {
+    let hit = probeCache.get(key);
+    if (!hit || now - hit.at >= PROBE_CACHE_MS) {
       cached = false;
-      probeCache = { at: now, ...(await probeEndpoint(serving)) };
+      hit = { at: now, result: await probeRole(role) };
+      probeCache.set(key, hit);
     }
-    res.status(probeCache.ok ? 200 : 503).json({
-      ok: probeCache.ok,
-      endpoint: 'default',
-      probe: {
-        latencyMs: probeCache.latencyMs,
-        at: new Date(probeCache.at).toISOString(),
-        cached,
-        error: probeCache.error,
-      },
-      flows: llmFlowStatuses(),
-    });
+    out[role] = {
+      configured: true,
+      provider: { id: resolved.config.id, name: resolved.config.name, kind: resolved.config.kind },
+      model: resolved.model,
+      contract,
+      contractGap: gap,
+      probe: { ...hit.result, at: new Date(hit.at).toISOString(), cached },
+    };
+  }
+  return out;
+}
+
+/**
+ * GET /api/llm/health — per-role live health for the caller's workspace plus
+ * per-flow failure counters. 200 when every configured role answers (and at
+ * least one is configured), 503 otherwise. Probe results are cached briefly
+ * per role so pollers can't hammer the providers.
+ */
+export function setupLlmHealthRoutes(app: express.Application, q: Query, tenantKeyOf: (req: express.Request) => string): void {
+  app.get('/api/llm/health', async (req, res) => {
+    try {
+      const roles = await rolesHealth(q, tenantKeyOf(req));
+      const configured = MODEL_ROLES.filter((r) => roles[r].configured);
+      const ok = configured.length > 0 && configured.every((r) => roles[r].probe?.ok === true && roles[r].contractGap === null);
+      res.status(ok ? 200 : 503).json({
+        ok,
+        configured: configured.length > 0,
+        error: configured.length === 0 ? 'no model provider configured for this workspace' : null,
+        roles,
+        flows: llmFlowStatuses(),
+      });
+    } catch (err) {
+      console.error('llm health failed:', err);
+      res.status(500).json({ ok: false, error: 'Failed to read model health' });
+    }
   });
 }

@@ -34,6 +34,8 @@
   "license": "Unlicensed",
   "description": "Cometloop - delivery execution console: portfolio, board, roadmap, sources, team, status feed",
   "dependencies": {
+    "@azure/identity": "^4.13.3",
+    "@azure/keyvault-secrets": "^4.11.2",
     "@databricks/appkit": "0.38.1",
     "@databricks/appkit-ui": "0.38.1",
     "@databricks/sdk-experimental": "0.17.0",

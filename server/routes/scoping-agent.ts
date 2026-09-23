@@ -1,24 +1,29 @@
 import { SCOPING_TOOL_LIMIT, executeScopingTool, scopingToolDefs, type ScopingToolContext } from './scoping-tools';
 import { invokeModel, type InvokeContext } from './llm-health';
+import type { ChatMessage } from '../llm/provider';
 import { clipText } from './utf8-body';
 
 /**
- * Ticket scoping via the model serving endpoint (DAT-173).
+ * Ticket scoping through the planning role (DAT-173; provider registry since
+ * phase 3).
  *
  * Two paths, same output contract:
  *  - refinePlan: the original single-shot completion — no board visibility.
  *    Kept as the deterministic-ish fallback so a tool-loop failure can never
  *    make ticket creation worse than it was before this module existed.
- *  - refineTicketWithBoard: a tool-calling agent loop. The same serving
- *    endpoint is invoked with the delivery-console scoping tools
+ *  - refineTicketWithBoard: a tool-calling agent loop. The planning model is
+ *    invoked with the delivery-console scoping tools
  *    (search_tickets / get_ticket / link_tickets / consolidate_tickets — the
  *    board tools also exposed over MCP at POST /api/mcp), so while planning it
  *    can pull context from other tickets on the board, link related work, and
  *    consolidate duplicates into the ticket being scoped.
+ *
+ * Both talk to the model through `invokeModel('planning', …)` and read the
+ * provider-neutral reply (`text`, `toolCalls`) — the adapter owns the wire
+ * format, so this module no longer guesses at response shapes.
  */
 
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
-type Serving = (alias: string) => { invoke(body: unknown): Promise<unknown> };
 
 export interface RefinedPlan {
   title: string;
@@ -34,42 +39,6 @@ export interface ScopingAction {
   tool: string;
   summary: string;
   ok: boolean;
-}
-
-/** Unwrap the appkit serving ExecutionResult wrapper: { ok, data } | { ok: false, message }. */
-function unwrap(response: unknown): unknown {
-  if (response && typeof response === 'object' && 'ok' in response) {
-    const wrapper = response as { ok: boolean; data?: unknown; message?: string };
-    if (!wrapper.ok) throw new Error(wrapper.message ?? 'model invocation failed');
-    return wrapper.data;
-  }
-  return response;
-}
-
-/** choices[0].message from a chat-completions response, or null. */
-function extractMessage(response: unknown): Record<string, unknown> | null {
-  const r = unwrap(response) as { choices?: { message?: unknown }[] };
-  const message = r?.choices?.[0]?.message;
-  return message && typeof message === 'object' ? (message as Record<string, unknown>) : null;
-}
-
-/** Text content of a chat message (string or typed-parts array). */
-function messageText(message: Record<string, unknown> | null): string {
-  const content = message?.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((c: unknown) => {
-        const part = c as { type?: string; text?: string };
-        return part?.type === 'text' && typeof part.text === 'string' ? part.text : '';
-      })
-      .join('');
-  }
-  return '';
-}
-
-export function extractText(response: unknown): string {
-  return messageText(extractMessage(response));
 }
 
 /** The JSON contract both refinement paths ask the model for. */
@@ -133,31 +102,30 @@ export function parsePlan(text: string, roadmapItems: string[] = []): RefinedPla
  * is unavailable or the response holds no usable JSON — callers fall back to
  * the raw content.
  */
-export async function refinePlan(
-  serving: Serving,
-  content: string,
-  roadmapItems: string[] = [],
-  q: Query | null = null,
-  ictx: InvokeContext = {},
-): Promise<RefinedPlan | null> {
+export async function refinePlan(content: string, roadmapItems: string[] = [], ictx: InvokeContext = {}): Promise<RefinedPlan | null> {
   try {
     // Through the DAT-180 reliability wrapper: retry-once on transients,
     // per-flow failure counters, throttled ⚠ feed item on failure.
-    const response = await invokeModel(serving, q, 'ticket-refine', {
-      messages: [
-        {
-          role: 'user',
-          content: [
-            'You are the delivery-planning agent for a consulting delivery board. A team member typed a work request into a chat box. Turn it into a well-formed delivery ticket.',
-            ...planContractLines(roadmapItems),
-            'Work request:',
-            content,
-          ].join('\n\n'),
-        },
-      ],
-      max_tokens: 2000,
-    }, ictx);
-    return parsePlan(extractText(response), roadmapItems);
+    const response = await invokeModel(
+      'planning',
+      {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              'You are the delivery-planning agent for a consulting delivery board. A team member typed a work request into a chat box. Turn it into a well-formed delivery ticket.',
+              ...planContractLines(roadmapItems),
+              'Work request:',
+              content,
+            ].join('\n\n'),
+          },
+        ],
+        maxTokens: 2000,
+        json: true,
+      },
+      { flow: 'ticket-refine', ...ictx },
+    );
+    return parsePlan(response.text, roadmapItems);
   } catch (err) {
     console.warn('[scoping] ticket refinement failed:', (err as Error).message);
     return null;
@@ -167,11 +135,6 @@ export async function refinePlan(
 /** Tool-call rounds before the loop gives up and the caller falls back. */
 const MAX_TOOL_ROUNDS = 8;
 
-interface ServingToolCall {
-  id?: unknown;
-  function?: { name?: unknown; arguments?: unknown };
-}
-
 /**
  * Tool-calling refinement: the ticket already exists (raw), and the model may
  * search the board, read other tickets, link related work and consolidate
@@ -180,7 +143,6 @@ interface ServingToolCall {
  * refinePlan — a tool-loop failure must never fail the user's action).
  */
 export async function refineTicketWithBoard(
-  serving: Serving,
   q: Query,
   opts: { key: string; engagementId: string; content: string; roadmapItems?: string[]; author?: string },
 ): Promise<{ plan: RefinedPlan; actions: ScopingAction[] } | null> {
@@ -192,7 +154,7 @@ export async function refineTicketWithBoard(
     author: opts.author ?? 'Planning Agent',
     feedActor: 'AGENT',
   };
-  const tools = scopingToolDefs({ selfKey: opts.key }).map((d) => ({ type: 'function', function: d }));
+  const tools = scopingToolDefs({ selfKey: opts.key });
   const prompt = [
     `You are the delivery-planning agent for a consulting delivery board. A team member typed a work request into a chat box; it has been captured as ticket ${opts.key}. Turn it into a well-formed delivery ticket.`,
     [
@@ -208,43 +170,33 @@ export async function refineTicketWithBoard(
     opts.content,
   ].join('\n\n');
 
-  const messages: unknown[] = [{ role: 'user', content: prompt }];
+  const messages: ChatMessage[] = [{ role: 'user', content: prompt }];
   const actions: ScopingAction[] = [];
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = await invokeModel(serving, q, 'ticket-refine', { messages, tools, max_tokens: 3000 }, {
-        engagementId: opts.engagementId,
-        ticketKey: opts.key,
-      });
-      const message = extractMessage(response);
-      if (!message) return null;
-      const toolCalls = Array.isArray(message.tool_calls) ? (message.tool_calls as ServingToolCall[]) : [];
-      if (toolCalls.length === 0) {
-        const plan = parsePlan(messageText(message), roadmapItems);
+      const response = await invokeModel(
+        'planning',
+        { messages, tools, maxTokens: 3000, json: true },
+        { flow: 'ticket-refine', engagementId: opts.engagementId, ticketKey: opts.key },
+      );
+      if (response.toolCalls.length === 0) {
+        const plan = parsePlan(response.text, roadmapItems);
         return plan ? { plan, actions } : null;
       }
-      // Echo the assistant turn verbatim (content + tool_calls), then answer
-      // every call — the endpoint rejects dangling tool_call ids.
-      messages.push({ role: 'assistant', content: message.content ?? null, tool_calls: message.tool_calls });
-      for (const tc of toolCalls.slice(0, SCOPING_TOOL_LIMIT)) {
-        const name = typeof tc.function?.name === 'string' ? tc.function.name : '';
-        let args: Record<string, unknown> = {};
-        try {
-          const parsed: unknown = JSON.parse(typeof tc.function?.arguments === 'string' && tc.function.arguments ? tc.function.arguments : '{}');
-          if (parsed && typeof parsed === 'object') args = parsed as Record<string, unknown>;
-        } catch {
-          /* malformed arguments — run the tool with none and let it complain */
-        }
-        const result = await executeScopingTool(ctx, name, args);
-        actions.push({ tool: name, summary: result.summary, ok: result.ok });
-        messages.push({
-          role: 'tool',
-          tool_call_id: typeof tc.id === 'string' ? tc.id : '',
-          content: JSON.stringify(result.ok ? result.data : { error: result.error }),
-        });
+      // Echo the assistant turn verbatim (text + tool calls), then answer
+      // every call — providers reject dangling tool-call ids.
+      messages.push({ role: 'assistant', content: response.text, toolCalls: response.toolCalls });
+      for (const tc of response.toolCalls.slice(0, SCOPING_TOOL_LIMIT)) {
+        const result = await executeScopingTool(ctx, tc.name, tc.arguments);
+        actions.push({ tool: tc.name, summary: result.summary, ok: result.ok });
+        messages.push({ role: 'tool', toolCallId: tc.id, content: JSON.stringify(result.ok ? result.data : { error: result.error }) });
+      }
+      // A runaway turn is truncated, not obeyed — but every call still gets an answer so the transcript stays well-formed.
+      for (const tc of response.toolCalls.slice(SCOPING_TOOL_LIMIT)) {
+        messages.push({ role: 'tool', toolCallId: tc.id, content: JSON.stringify({ error: `tool call limit of ${String(SCOPING_TOOL_LIMIT)} per turn reached` }) });
       }
     }
-    console.warn(`[scoping] ${opts.key}: tool loop exceeded ${MAX_TOOL_ROUNDS} rounds without a final plan`);
+    console.warn(`[scoping] ${opts.key}: tool loop exceeded ${String(MAX_TOOL_ROUNDS)} rounds without a final plan`);
     return null;
   } catch (err) {
     console.warn(`[scoping] ${opts.key}: board-aware refinement failed:`, (err as Error).message);

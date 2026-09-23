@@ -60,15 +60,19 @@ export function TicketUsagePanel({ ticketKey, live }: { ticketKey: string; live:
               {cost && <span style={{ ...mono(500, 11), color: 'var(--tx2)' }}>{cost}</span>}
               <span style={{ ...mono(400, 10), color: 'var(--tx3)', marginLeft: 'auto' }}>
                 {usage.runs} RUN{usage.runs === 1 ? '' : 'S'}
+                {usage.controlPlaneCalls > 0 ? ` · ${usage.controlPlaneCalls} PLANNING CALL${usage.controlPlaneCalls === 1 ? '' : 'S'}` : ''}
               </span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
               {usage.models.map((m) => {
                 const tokens = usageTokens(m);
                 return (
-                  <div key={m.model || 'unknown'} title={breakdown(m)}>
+                  <div key={`${m.provider}:${m.model || 'unknown'}`} title={breakdown(m)}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
                       <span style={{ ...mono(500, 10.5), color: m.model ? 'var(--agent)' : 'var(--tx3)' }}>{m.model || 'Unknown model'}</span>
+                      {m.provider && m.runs === 0 && (
+                        <span style={{ ...mono(400, 9.5), color: 'var(--tx3)', letterSpacing: '.06em' }}>CONTROL PLANE · {m.provider.toUpperCase()}</span>
+                      )}
                       <span style={{ ...mono(400, 10.5), color: 'var(--tx2)', marginLeft: 'auto' }}>
                         {fmtTokens(tokens)}
                         {m.costUsd != null ? ` · ${fmtCost(m.costUsd)}` : ''}

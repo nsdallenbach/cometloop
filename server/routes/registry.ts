@@ -64,6 +64,12 @@ export const REGISTRY_SCHEMA_SQL = [
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
   // Same per-scope slug rule: registry_skills_tenant_scope_slug in server/db/tenancy.ts.
+  // Phase 3: a skill may run on the control plane under a model role
+  // (`role`, one of server/llm/config.ts MODEL_ROLES) and declare the JSON it
+  // answers with. Harness skills leave both empty. Mirrored in
+  // scripts/dev-migrate.cjs for the developer-owned Lakebase copy.
+  `ALTER TABLE app.registry_skills ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE app.registry_skills ADD COLUMN IF NOT EXISTS output_schema JSONB`,
 ];
 
 export const MCP_TRANSPORTS = ['stdio', 'http'] as const;
@@ -159,6 +165,8 @@ export interface RegistrySkill {
   description: string;
   content: string;
   harnesses: string[];
+  /** Control-plane skills: the model role they run under (server/llm/config.ts); '' for harness skills. */
+  role: string;
   status: string;
   createdBy: string;
   updatedBy: string;
@@ -212,6 +220,7 @@ export function toSkill(r: Record<string, unknown>): RegistrySkill {
     description: txt(r.description),
     content: txt(r.content),
     harnesses: jsonArr(r.harnesses),
+    role: txt(r.role),
     status: txt(r.status) || 'published',
     createdBy: txt(r.created_by),
     updatedBy: txt(r.updated_by),

@@ -32,7 +32,7 @@ flowchart LR
         lakebase[("Lakebase Postgres\napp.* schema")]
         sow[["UC volume: sow_docs\n(SOW uploads, context files)"]]
         telemetry[["UC volume: agent_telemetry\n(tool-call NDJSON archives)"]]
-        servingep["Model serving endpoint\ndatabricks-claude-sonnet-5"]
+        servingep["Model providers (per workspace)\nAnthropic / OpenAI / Azure / Databricks …"]
     end
 
     subgraph agents["Agent runners (devboxes / local emulation)"]
@@ -124,7 +124,7 @@ what is shared by design versus by construction:
 
 | Store | Contents |
 |---|---|
-| Postgres (`app.*` — Neon on the portable runtime, Lakebase on Databricks) | engagements, tickets (+events/links/tags/attachments/estimates/rejections), comments, feed, notifications, team, agent_tasks (+assignee, reclaims, token usage), runner_polls, project_agents (+security settings), coordination_messages, repo connections/PRs/commits, PR requeues and review-SLA escalations, in-flight planning reviews, deploy events, stale-nudge config, project config/standards, workflows — every one of them with a `tenant_id`; plus the tenant directory `tenants` / `tenant_members` |
+| Postgres (`app.*` — Neon on the portable runtime, Lakebase on Databricks) | engagements, tickets (+events/links/tags/attachments/estimates/rejections), comments, feed, notifications, team, agent_tasks (+assignee, reclaims, token usage), runner_polls, project_agents (+security settings), coordination_messages, repo connections/PRs/commits, PR requeues and review-SLA escalations, in-flight planning reviews, deploy events, stale-nudge config, project config/standards, workflows, model providers and role→model map (`model_providers`, `model_roles`) — every one of them with a `tenant_id`; plus the tenant directory `tenants` / `tenant_members` |
 | UC volume `sow_docs` | uploaded SOW/SOP documents, per-engagement context files, standards docs |
 | UC volume `agent_telemetry` | per-run tool-call logs archived as NDJSON under `tool-calls/<engagement>/<ticket>/` |
 
@@ -163,13 +163,17 @@ is set, which phase 3 removes.
 - `agent-work.ts` — runner queue: wait/claim/heartbeat/flag/complete, work packages, rendered prompts
 - `fleet.ts` — runner liveness: poll stamps, online/offline, the FLEET DOWN board warning
 - `agents.ts` — the Agents page: registered endpoint agents, configured runners, observed runners from task history; create / reconfigure (role, model, harness, provider) / remove
-- `agent-models.ts` — the model catalog behind the picker: the workspace's chat-capable serving endpoints (listed live, static fallback) plus the model ids each coding harness accepts
+- `agent-models.ts` — the model catalog behind the picker: the workspace's chat-capable serving endpoints (listed live through the Databricks adapter, static fallback) plus the model ids each coding harness accepts
+- `model-settings.ts` — workspace model providers (phase 3, admin-only): `GET/POST/PUT/DELETE /api/settings/providers`, `POST /api/settings/providers/:id/test` (one tiny call → latency + model), `GET/PUT /api/settings/model-roles` with the role capability contract enforced on save; credentials are stored by name only
+- `llm-health.ts` — `invokeModel(role, request, ctx)`: resolves the role to the workspace's provider, refuses a model that cannot meet the role's contract, retries transients once, categorizes failures, posts the throttled ⚠ feed item, records the control-plane usage row; `GET /api/llm/health` per role
+- `../llm/` — the provider layer: `provider.ts` (ChatRequest/ChatResponse/ModelProvider), `providers/{anthropic,openai-compatible,databricks,bedrock,vertex}.ts` (one wire format each; Databricks also hosts the SP token, endpoint state and listing), `config.ts` (`model_providers` / `model_roles`, roles and contracts, one-env-var auto-registration), `credentials.ts` (env → Key Vault by name, 5-minute cache), `gateway.ts` (Cloudflare AI Gateway routing + `cf-aig-*` headers)
 - `registry.ts` — the MCP / skills registry (DAT-238): MCP servers and SKILL.md skills, shared or scoped to one project, lead-gated publishing, attached to agents by id and resolved into the work package at claim time; secrets never stored (a server that needs one names the `MCP_AUTH_<SLUG>` env the runner injects)
 - `agent-security.ts` — per-agent security settings: model, validation, the lead-only settings API, and the enforcement check the execution paths call
 - `coordination.ts` — inter-agent messages (announce, request/response, SLAs), mirrored to tickets
 - `repos.ts` — GitHub/ADO providers: PR & commit sync, ticket auto-linking, merge-from-drawer, deploy watch
 - `pr-conflicts.ts` — conflict reports, auto-resolve vs escalate assessment
-- `pr-review.ts` — the PR review gate: case assembly, reviewer prompt, verdict parsing, PR + ticket publication
+- `pr-review.ts` — the PR review gate: case assembly, the `pr-review` skill template rendered and run through `invokeModel('review', …)` on the workspace's review model (a project's registered Databricks endpoint agent pins the model when the review provider is Databricks), verdict parsing, PR + ticket publication
+- `pr-review-skill.ts` — the reviewer prompt as a registry skill template (`{{placeholders}}` for the case data), seeded per workspace as a shared `app.registry_skills` row with `role review` and the verdict JSON schema
 - `pr-requeue.ts` — merge-conflict requeue: classify the review outcome, put the ticket back at the top of the runner queue, cap the retries
 - `pr-escalation.ts` — review-SLA watch: 24h lead ping, 48h PR comment + board flag, lead dismissal resets the timers
 - `ticket-review.ts` — reason-based rejection out of Review: rejection history, requeue, prompt context
@@ -183,7 +187,7 @@ is set, which phase 3 removes.
 - `deploys.ts` — the local deployment queue: desktop clients post ticket-keyed deploy events, the web renders a read-only mirror
 - `deploy-gate.ts` — Done means deployed: a move into Done needs a merged PR with a green deploy (or the `no-deploy` tag)
 - `runner-load-balancing.ts` — spread claims across the online fleet
-- `token-usage.ts` — live token consumption from harness event streams, per task, on the drawer and the agent map; samples may name their `model` and a final sample may split `byModel`, and `GET /api/tickets/:key/usage` folds every run on a ticket into totals per model for the drawer's Token usage panel (DAT-260)
+- `token-usage.ts` — the usage ledger: live token consumption from harness event streams, per task, on the drawer and the agent map (samples may name their `model`, a final sample may split `byModel`), plus one `source = 'control-plane'` row per server-side model call with `provider` and `role`; `GET /api/tickets/:key/usage` folds both sources on a ticket into totals per model for the drawer's Token usage panel (DAT-260, phase 3)
 - `notifications.ts` — the notification centre (mentions, escalations, nudges)
 - `stale-nudges.ts` — business-day sweep that nudges assignees of idle tickets, with digest and config
 - `velocity.ts` — organizational velocity KPIs replayed from the ticket event trail for the Analytics tab
@@ -200,10 +204,13 @@ is set, which phase 3 removes.
 - `roles.ts` — role of a resolved identity (`resolveCaller` / `callerOf`, workspace-group lookup with a 5-minute cache)
 - `context-files.ts`, `extract-text.ts`, `seed-data.ts` — support
 
-Every LLM call goes through `serving('default')` — no other model paths, no
-keys in code. Prompts live server-side and version with the app; every
-LLM-backed flow has a deterministic fallback so a model failure degrades a
-feature, never a user action.
+Every LLM call goes through `invokeModel(role, …)` and the workspace's
+configured provider (`server/llm/`, docs/platform-architecture.md §6) — no
+other model paths, no keys in code or in the database (a provider row names
+its credential; the value lives in the environment or Key Vault). Prompts
+live server-side and version with the app; every LLM-backed flow has a
+deterministic fallback so a model failure degrades a feature, never a user
+action.
 
 ## The agent platform
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
-import { TOKEN_USAGE_SCHEMA_SQL, foldTicketUsage, recordUsageBatch, usageByAgent, usageByTicket } from './token-usage';
+import { TOKEN_USAGE_SCHEMA_SQL, foldTicketUsage, recordControlPlaneUsage, recordUsageBatch, usageByAgent, usageByTicket } from './token-usage';
 
 /**
  * Token-usage rollups (DAT-266) against pg-mem: partial samples accumulate
@@ -92,7 +92,8 @@ describe('usageByTicket (DAT-260)', () => {
 
   it('a ticket with no usage reads as zero, not an error', async () => {
     const u = await usageByTicket(q, 'DAT-999');
-    expect(u).toEqual({ runs: 0, total: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, costUsd: null }, models: [] });
+    const zero = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, costUsd: null };
+    expect(u).toEqual({ runs: 0, controlPlaneCalls: 0, total: zero, models: [], bySource: { harness: zero, controlPlane: zero } });
   });
 
   it('splits a finished run by model and ignores its per-turn rows', async () => {
@@ -128,8 +129,40 @@ describe('usageByTicket (DAT-260)', () => {
   });
 
   it('usage recorded without a model lands under the empty model', () => {
-    const u = foldTicketUsage([{ taskId: 1, model: '', final: true, totals: { input: 10, output: 1, cacheRead: 0, cacheCreate: 0, costUsd: null } }]);
+    const u = foldTicketUsage([
+      { taskId: 1, model: '', provider: '', source: 'harness', final: true, calls: 1, totals: { input: 10, output: 1, cacheRead: 0, cacheCreate: 0, costUsd: null } },
+    ]);
     expect(u.models[0].model).toBe('');
     expect(u.total.costUsd).toBeNull();
+  });
+
+  it('counts control-plane calls for the ticket alongside the harness runs (phase 3)', async () => {
+    await recordUsageBatch(q, TASK, 'a', [{ input: 200, output: 40, cacheRead: 0, cacheCreate: 0, final: true, model: 'claude-opus-5' }]);
+    await recordControlPlaneUsage(q, {
+      role: 'planning', flow: 'ticket-refine', provider: 'anthropic', model: 'claude-sonnet-5', ticketKey: 'DAT-266', engagementId: 'exec',
+      usage: { input: 1000, output: 300, cacheRead: 50, cacheCreate: 0 },
+    });
+    await recordControlPlaneUsage(q, {
+      role: 'estimate', flow: 'estimate', provider: 'anthropic', model: 'claude-haiku-4-5-20251001', ticketKey: 'DAT-266', engagementId: 'exec',
+      usage: { input: 400, output: 60, cacheRead: 0, cacheCreate: 0 },
+    });
+    const u = await usageByTicket(q, 'DAT-266');
+    expect(u.runs).toBe(1);
+    expect(u.controlPlaneCalls).toBe(2);
+    expect(u.total.input).toBe(1600);
+    expect(u.bySource.harness.input).toBe(200);
+    expect(u.bySource.controlPlane.input).toBe(1400);
+    expect(u.models.map((m) => [m.provider, m.model, m.runs])).toEqual([
+      ['anthropic', 'claude-sonnet-5', 0],
+      ['anthropic', 'claude-haiku-4-5-20251001', 0],
+      ['', 'claude-opus-5', 1],
+    ]);
+    // The agent map's per-agent window never shows the control plane as a runner.
+    expect((await usageByAgent(q, 24)).has('control-plane')).toBe(false);
+  });
+
+  it('writes no usage row when the provider reported nothing', async () => {
+    await recordControlPlaneUsage(q, { role: 'draft', flow: 'status-draft', provider: 'anthropic', model: 'm', ticketKey: '', engagementId: 'exec', usage: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 } });
+    expect((await q('SELECT COUNT(*)::int AS n FROM app.run_token_usage')).rows[0].n).toBe(0);
   });
 });

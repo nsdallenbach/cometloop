@@ -132,7 +132,7 @@ what was deliberately left for later.
 
 Every tenant-scoped table in the `app` schema carries
 `tenant_id TEXT NOT NULL`. The list is `TENANT_TABLES` in
-`server/db/tenancy.ts` — 43 tables, one per `CREATE TABLE IF NOT EXISTS` in
+`server/db/tenancy.ts` — 45 tables, one per `CREATE TABLE IF NOT EXISTS` in
 the module `*_SCHEMA_SQL` arrays — and `tenancy.test.ts` fails the build if a
 new array creates a table that is in neither `TENANT_TABLES` nor
 `GLOBAL_TABLES`. The global allowlist is exactly the tenant directory:
@@ -216,7 +216,7 @@ CREATE POLICY tenant_isolation ON app.tickets
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 ```
 
-…for all 43 tables, none on the directory. **Read this before touching the
+…for all 45 tables, none on the directory. **Read this before touching the
 role logic:** on Neon the role in `DATABASE_URL` (`neondb_owner`) owns every
 table *and* carries `BYPASSRLS`. `FORCE` makes an owner subject to its
 policies, but a `BYPASSRLS` role skips them regardless — on Neon, FORCE alone
@@ -392,102 +392,183 @@ to the roster on first sign-in.
 
 ## 6. Model providers
 
-### Today
+**Status: shipped in phase 3** (`server/llm/`, PR "Phase 3: model
+providers"). This section describes what is in the code. The user-facing
+contract is the site's *Model providers* and *Security* pages; the names
+here are theirs.
 
-`invokeModel(serving, q, flow, body, ctx)` in `server/routes/llm-health.ts`
-is the only sanctioned path (standards: "never `serving('default').invoke`
-directly"). It retries once on transient errors (`isTransientStatus`),
-categorizes failures (`categorizeFailure`), keeps per-flow counters
-(`flowStatuses`), and posts a throttled feed item (`FeedThrottle`). Callers
-pass a Databricks-chat body (`{ messages, max_tokens }`) and parse the text
-themselves (`pr-review.ts:191` "the shapes serving endpoints actually
-return"). `LlmFlow` names seven flows. The PR reviewer is the exception:
-`agents.ts` `invokeAgentEndpoint()` calls a named workspace endpoint
-directly.
+### The layer
 
-### Registry
+```
+caller (api.ts, scoping-agent.ts, estimates.ts, standards.ts, pr-review.ts)
+  │  invokeModel(role, ChatRequest, { flow, engagementId, ticketKey, modelOverride? })
+  ▼
+server/routes/llm-health.ts        reliability: retry-once, categorize, per-flow counters, ⚠ feed item
+  │  resolveRole(q, role) → { adapter, config, model, capabilities }   (server/llm/config.ts)
+  │  checkContract(role, needs, capabilities)                            refuse a model that cannot serve the role
+  │  resolveModel(config, model, metadata) → ResolvedModel               credential by NAME (server/llm/credentials.ts)
+  ▼
+server/llm/providers/<kind>.ts     one wire format each, over fetch; returns ChatResponse
+  │
+  └─ recordControlPlaneUsage(...)  → app.run_token_usage (source = 'control-plane')
+```
+
+`ChatRequest` is provider-neutral — `system`, `messages` (user / assistant
+/ tool turns, assistant turns carrying `toolCalls`), `maxTokens`, `json`,
+`tools`, `temperature` — and `ChatResponse` is `{ text, toolCalls, usage:
+{ input, output, cacheRead, cacheCreate }, model, provider }`. Callers no
+longer guess at response shapes: the `unwrap` / `extractText` helpers that
+used to live in four route modules are gone, and the scoping agent's tool
+loop reads `response.toolCalls` directly.
+
+### Registry (`server/llm/provider.ts`, `server/llm/providers/`)
 
 ```ts
-// server/llm/provider.ts
-export interface ChatRequest { system?: string; messages: { role: 'user'|'assistant'; content: string }[]; maxTokens: number; json?: boolean; tools?: ToolDef[]; }
-export interface ChatResponse { text: string; toolCalls?: ToolCall[]; usage: { input: number; output: number; cacheRead?: number }; model: string; }
-export interface ModelProvider { readonly id: 'anthropic'|'openai-compatible'|'databricks'|'bedrock'|'vertex'; chat(req: ChatRequest, cfg: ResolvedModel, signal: AbortSignal): Promise<ChatResponse>; }
+export interface ModelProvider {
+  readonly kind: 'anthropic' | 'openai-compatible' | 'databricks' | 'bedrock' | 'vertex';
+  readonly capabilities: { json: boolean; tools: boolean; contextTokens: number };
+  capabilitiesFor(model: ResolvedModel): ProviderCapabilities;   // per model family, extra.contextTokens override
+  chat(request: ChatRequest, model: ResolvedModel, signal?: AbortSignal): Promise<ChatResponse>;
+}
 ```
 
-Adapters, each one file under `server/llm/providers/`:
+| Adapter | Wire format | Notes |
+|---|---|---|
+| `anthropic` | Messages API, `x-api-key` | `json` → a system-level "reply with a single JSON object" instruction (no prefill, so the callers' first-brace regex keeps working); tools ↔ `tool_use` / `tool_result` blocks, consecutive tool results folded into one user turn. Context: 1M for the 5-family, 200k otherwise. |
+| `openai-compatible` | Chat Completions, bearer key | Covers OpenAI, Neon AI Gateway, Groq, Together, vLLM, Ollama; `json` → `response_format: json_object` with one retry without it when the server rejects it. Azure OpenAI when `extra.apiVersion` is set: `base_url` is the resource, the model is the deployment, `api-key` header. |
+| `databricks` | `/serving-endpoints/<name>/invocations`, SP M2M token | The model id IS the endpoint name. A 400/422 retries the responses-style `input` body (Agent Bricks). This adapter also owns `workspaceToken()`, `fetchEndpointState()` (Agents page) and `listServingEndpoints()` (the model picker), so there is one Databricks code path. |
+| `bedrock`, `vertex` | — | Declared with their row shape (`extra.region` / `extra.project`), throw `ProviderNotAvailableError` ("not configured in this build"); `invokeModel` treats that like an unmapped role — no retry, no feed item, the fallback applies. |
 
-- `anthropic` — Messages API; `json` → prefill or a single forced tool; the default.
-- `openai-compatible` — chat completions with `base_url`; covers OpenAI, Azure OpenAI, Groq, local vLLM.
-- `databricks` — `/serving-endpoints/<name>/invocations` with the tenant's SP client id/secret (today's `workspaceToken()` and `invokeAgentEndpoint()` move here); also hosts `fetchEndpointState()` and the endpoint listing from `agent-models.ts`.
-- `bedrock`, `vertex` — via the Gateway's native routes; thin.
+Adapters throw `ProviderError { status }`; `categorizeFailure` and
+`isTransientStatus` in llm-health.ts key on that status exactly as they
+did on the serving wrapper's.
 
-`invokeModel(q, flow, req, ctx)` keeps everything it does today and adds:
-resolve `ctx.tenantId` → model config → role for `flow` → adapter → call.
-`invokeError()`'s wrapper check is replaced by the adapter throwing a typed
-`ProviderError { status }` so `categorizeFailure` keeps working. Callers
-stop hand-extracting text (`ChatResponse.text`), which deletes the shape
-guessing in `pr-review.ts` and `api.ts`.
-
-### Per-tenant config
+### Per-workspace configuration (`server/llm/config.ts`)
 
 ```sql
-CREATE TABLE app.tenant_model_config (
-  tenant_id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL,                 -- registry id
-  base_url TEXT,                          -- openai-compatible / databricks host
-  secret_ref TEXT NOT NULL,               -- Key Vault secret name, never the key
-  roles JSONB NOT NULL DEFAULT '{}',      -- { "planning": "claude-sonnet-5", "review": "...", "estimate": "...", "draft": "..." }
-  gateway JSONB NOT NULL DEFAULT '{}',    -- { "cacheTtl": 0, "rateLimit": 60 }
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+CREATE TABLE app.model_providers (
+  id SERIAL PRIMARY KEY, name TEXT, kind TEXT, base_url TEXT,
+  credential_ref TEXT,        -- the NAME of an env var / Key Vault secret, never the value
+  default_model TEXT, extra JSONB, created_at, updated_at
+);                            -- + tenant_id and RLS from the phase-2 migration
+CREATE TABLE app.model_roles (role TEXT, provider_id INT REFERENCES app.model_providers(id) ON DELETE CASCADE, model TEXT, updated_at);
+                              -- primary key (tenant_id, role)
 ```
 
-Roles are the capability contract, mapped from `LlmFlow`:
+Roles are the capability contract (`ROLE_CONTRACTS`), with the site's names:
 
 | Role | Flows | Needs |
 |---|---|---|
-| `planning` | `ticket-refine`, `comment-rework`, `sow-parse`, `standards-refine` | JSON output, ≥100k context, tool use for the scoping agent (`scoping-tools.ts`) |
-| `estimate` | `estimate` | JSON output, small; may be a cheaper model |
-| `review` | PR review (`pr-review.ts`) | ≥200k context, JSON verdict |
-| `draft` | `status-draft` | prose |
+| `planning` | `ticket-refine`, `comment-rework`, `sow-parse`, `standards-refine` | JSON, tool use (the board-aware scoping loop), ≥100k context |
+| `estimate` | `estimate` | JSON, ≥16k |
+| `review` | `pr-review` | JSON, ≥100k |
+| `draft` | `status-draft` | prose, ≥16k |
 
-A tenant with no row uses the platform default (Anthropic, Cometloop's own
-key, metered). The admin UI is a settings page in the web app — this is
-governance, not runner configuration, so it does not violate
-"agents are managed on the desktop".
+`checkContract` runs twice: at save time (`PUT /api/settings/model-roles`,
+against the role's declared needs → 422 naming the gap) and at call time
+(against what the request actually carries — `json`, `tools` — plus the
+role's context floor → the call is refused, counted as a `payload`
+failure, and the fallback applies). Tools are only demanded of a model when
+the request carries tools, so a single-shot planning call still works on a
+model without tool use.
 
-### Secrets
+**Defaults.** Nothing is seeded. `ensureTenantLlmDefaults` runs once per
+tenant (at boot in the per-tenant loop start, and lazily on the first
+resolve): a workspace with no provider rows gets an `anthropic` provider
+with `credential_ref = 'ANTHROPIC_API_KEY'` when that variable is present,
+every role mapped (`planning`/`review` → `claude-sonnet-5`,
+`estimate`/`draft` → `claude-haiku-4-5-20251001`); failing that, the
+workspace serving endpoint when `DATABRICKS_SERVING_ENDPOINT_NAME` and the
+SP pair are present (the pre-phase-3 deployment shape, so a Databricks
+deploy keeps working with no configuration). Deleting the last provider
+marks the tenant checked so the row does not come back until a restart.
 
-Provider keys never sit in a row. `secret_ref` names a Key Vault secret
-(`tenant-<id>-llm`); the api reads it through a managed identity, caches
-it in memory for 5 minutes, and never logs it. The Databricks adapter's SP
-secret is stored the same way. Rotation = write a new secret version.
+**Settings API** (`server/routes/model-settings.ts`, admin-only):
+`GET/POST /api/settings/providers`, `PUT/DELETE /api/settings/providers/:id`,
+`POST /api/settings/providers/:id/test` and `POST /api/settings/providers/test`
+(an unsaved draft — the wizard's Test step), `GET/PUT /api/settings/model-roles`.
+The API returns `credentialRef` and where it resolves (`env` /
+`key-vault` / `missing`), never a value; `extra` is allow-listed per key.
+The UI is the *Model providers* section of the web Admin page
+(`client/src/components/ModelProviders.tsx`): provider cards with a status
+dot, an Add-provider wizard (logo grid → details → test → save), and the
+role → model table. Provider logos are `MODEL_PROVIDER_PRESETS` in
+`shared/design/AgentLogos.tsx`.
 
-### Cloudflare AI Gateway
+### Secrets (`server/llm/credentials.ts`)
 
-Every adapter's base URL is
-`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/<provider>/…`; the
-tenant's own key goes in the upstream `Authorization` header (BYO key), and
-`cf-aig-metadata: {"tenant":"<id>","flow":"<flow>","ticket":"<key>"}` tags
-every request so the Gateway's logs and cost view are per tenant without
-any code of ours. Per-tenant caching TTL and rate limits come from the
-`gateway` JSON. The `openai-compatible` adapter with a customer-supplied
-`base_url` can bypass the Gateway when the customer requires it (flag).
+`resolveCredential(ref)` reads `process.env[ref]` first (local, docker,
+dedicated installs that inject secrets as env); otherwise, with
+`AZURE_KEY_VAULT_URL` set, `getSecret(name)` through
+`DefaultAzureCredential` (`@azure/keyvault-secrets` + `@azure/identity`,
+imported lazily), with `_` mapped to `-` for Key Vault's name rules and a
+five-minute cache. A vault error resolves to null, which the adapter turns
+into a 401 → `auth` in the health counters, never a crash. Rotation is a
+new secret version plus the cache window.
 
-### Fallbacks and usage
+### Cloudflare AI Gateway (`server/llm/gateway.ts`)
+
+`AI_GATEWAY_URL` (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>`)
+turns routing on for the whole process. A vendor URL whose host has a native
+gateway route (`api.anthropic.com` → `/anthropic`, `api.openai.com` →
+`/openai`, Groq, Mistral, DeepSeek, Perplexity, OpenRouter; Azure OpenAI →
+`/azure-openai/<resource>/<deployment>`) is rewritten onto the gateway; the
+tenant's own key stays in the upstream auth header. Every gateway call
+carries `cf-aig-metadata: {"tenant","role","flow","ticket","project"}`, and
+`extra.gateway.cacheTtl` / `skipCache` become `cf-aig-cache-ttl` /
+`cf-aig-skip-cache`. A self-hosted OpenAI-compatible endpoint has no native
+route and stays direct; any row can opt out with `extra.bypassGateway`
+(the "per-workspace switch" on the site). Databricks workspace hosts are
+always direct.
+
+### Fallbacks, health and usage
 
 The table in [llm-fallbacks.md](./llm-fallbacks.md) is unchanged: the
 adapter throws, `invokeModel` retries and surfaces, the caller's `catch`
-degrades. `GET /api/llm/health` probes the tenant's configured `planning`
-model.
+degrades. `GET /api/llm/health` now reports **per role** — mapping,
+contract gap, and a cached live probe for each configured role — and is 200
+only when every configured role answers.
 
-Usage attribution: `app.run_token_usage` (`token-usage.ts`) records harness
-runs per `task_id`/`ticket_key`/`engagement_id`/`agent`/`model` with tokens
-and `cost_usd` (the `model` column and `GET /api/tickets/:key/usage` are DAT-260),
-but does not see server-side `invokeModel` calls at all. Add `provider TEXT`,
-`tenant_id`, and a `source TEXT` (`'harness' | 'control-plane'`) and have `invokeModel`
-insert one row per call from `ChatResponse.usage`. That single table then
-answers per-customer cost for both the runner fleet and the planning flows.
+Usage: `app.run_token_usage` gained `source` (`'harness' | 'control-plane'`),
+`provider` and `role`. `invokeModel` inserts one control-plane row per
+successful call (`task_id 0`, `agent 'control-plane'`, never `final`) from
+`ChatResponse.usage`, attributed to the ticket and project the caller
+passed. `usageByTicket` folds both sources (`bySource`, `controlPlaneCalls`,
+per-model rows carry `provider`) and the ticket drawer shows the split;
+`usageByAgent` keeps to harness rows so the agent map never shows the
+control plane as a runner.
+
+### The PR reviewer as a skill
+
+`server/routes/pr-review-skill.ts` seeds a shared `app.registry_skills` row
+per workspace (`slug pr-review`, `role review`, `output_schema` = the
+verdict JSON schema, `harnesses []`) with the reviewer prompt as a template
+(`{{ticket_key}}`, `{{diff}}`, … — the prose is editable, the data blocks
+are the console's). `runPrReview` resolves the `review` role, renders the
+project's or workspace's template, and calls
+`invokeModel('review', …, { modelOverride })`, where the override is a
+project's registered endpoint-backed `pr-reviewer` agent when — and only
+when — the review role's provider is Databricks. That keeps every
+pre-phase-3 deployment reviewing exactly as it did while a workspace on
+Anthropic or OpenAI reviews on its own model with no agent registered.
+`agents.ts` no longer has an invoke path of its own.
+
+### Not implemented from the site docs
+
+- **Key Vault writes.** The site says "keys are stored in Key Vault the
+  moment you save them". The console never handles a key value: an admin
+  puts the secret in Key Vault (or the environment) and enters its *name*.
+  The write path (a form field that goes straight to Key Vault and stores
+  only the name) is a Cloud-only concern for the phase that gives the api a
+  Key Vault write identity.
+- **Bedrock and Vertex** adapters are stubs (above).
+- **Platform default** (Cometloop's own Anthropic account, metered) is
+  today the process's `ANTHROPIC_API_KEY` auto-registered per workspace —
+  metering per workspace is the usage ledger; a separate platform key per
+  workspace is not modelled.
+- **Per-workspace gateway cache TTL / rate limit** are stored on the
+  provider row (`extra.gateway`) and sent as headers; rate limits are a
+  gateway-side setting, not sent per request.
 
 ## 7. Compute
 
@@ -614,16 +695,17 @@ columns and keys land but isolation stays off (bare pool, no per-query
 client). Proven on a Neon branch of production by
 `server/tenancy.integration.test.ts` rather than in docker-compose.
 
-**Phase 3 — Provider registry + AI Gateway.**
-`server/llm/` with the interface, the `databricks` adapter (which is what
-production uses, unchanged behaviour), the `anthropic` and
-`openai-compatible` adapters, `app.tenant_model_config`, `invokeModel`
-resolving per tenant, `run_token_usage` columns and control-plane rows.
-*Done when:* production runs through the `databricks` adapter with the same
-prompts and fallbacks; docker-compose runs `ticket-refine` through Anthropic
-via the Gateway with a BYO key; `/api/llm/health` reports the tenant's
-provider; a cost-by-tenant query on `run_token_usage` returns rows for both
-sources.
+**Phase 3 — Provider registry + AI Gateway.** *Shipped* (section 6).
+`server/llm/` with the interface, the `databricks` adapter (auto-registered
+for a Databricks deploy, unchanged behaviour), the `anthropic` and
+`openai-compatible` adapters, `bedrock` / `vertex` stubs,
+`app.model_providers` + `app.model_roles`, `invokeModel(role, …)` resolving
+per tenant with the capability contract, credentials by name (env → Key
+Vault), Cloudflare AI Gateway routing, `run_token_usage` `source` /
+`provider` / `role` columns with control-plane rows, the PR reviewer as a
+`pr-review` registry skill, the Admin page's Model providers section and
+`/api/llm/health` per role. Left for later: Key Vault *writes* from the
+settings form, the Bedrock and Vertex adapters.
 
 **Phase 4 — Worker + queue.**
 pg-boss, `worker.ts`, the five loops as scheduled jobs, `estimateTicket`

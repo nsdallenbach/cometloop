@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { installFakeProvider, resetLlm, withFakeRoles, type Query } from '../llm/test-support';
 import {
   NEEDS_ESTIMATE_TAG,
   acList,
@@ -122,26 +123,26 @@ function fakeDb(ticket: FakeTicket) {
   return { q, feed, estimateRows };
 }
 
-/** Serving stub that replies with whatever text the test wants. */
-function fakeServing(content: string) {
-  let calls = 0;
-  const serving = () => ({
-    invoke: () => {
-      calls++;
-      return Promise.resolve({ choices: [{ message: { content } }] });
-    },
-  });
-  return { serving, calls: () => calls };
+/**
+ * The estimate role answers with whatever text the test wants. The fake
+ * adapter sits behind the real `invokeModel`, and the role-resolution reads
+ * are answered by `withFakeRoles` over the test's own query stub.
+ */
+function fakeModel(q: Query, content: string) {
+  const fake = installFakeProvider(withFakeRoles(q), 'anthropic', [content, content]);
+  return { calls: () => fake.calls.length };
 }
+
+afterEach(resetLlm);
 
 const INPUT = { key: 'DAT-1', engagementId: 'eng', title: 'T', description: 'D', ac: ['a'] };
 
 describe('ensureTicketHours', () => {
   it('leaves a ticket that already has hours alone', async () => {
     const db = fakeDb({ est_hours: 2, human_est_hours: 8, tags: [], est: '2h' });
-    const model = fakeServing('{"hours": 9, "human_hours": 9}');
+    const model = fakeModel(db.q, '{"hours": 9, "human_hours": 9}');
 
-    const result = await ensureTicketHours(db.q, model.serving, INPUT);
+    const result = await ensureTicketHours(db.q, INPUT);
 
     expect(result).toEqual({ key: 'DAT-1', status: 'ready', estHours: 2, humanEstHours: 8, estimated: false });
     expect(model.calls()).toBe(0); // no model spend on a ticket that is already complete
@@ -150,9 +151,9 @@ describe('ensureTicketHours', () => {
   it('populates hours and clears the flag when the agent produces an estimate', async () => {
     const ticket: FakeTicket = { est_hours: 1, human_est_hours: 4, tags: ['keep', NEEDS_ESTIMATE_TAG], est: '—' };
     const db = fakeDb(ticket);
-    const model = fakeServing('{"hours": 2.5, "human_hours": 10, "confidence": "high", "rationale": "r"}');
+    const model = fakeModel(db.q, '{"hours": 2.5, "human_hours": 10, "confidence": "high", "rationale": "r"}');
 
-    const result = await ensureTicketHours(db.q, model.serving, INPUT);
+    const result = await ensureTicketHours(db.q, INPUT);
 
     expect(model.calls()).toBe(1);
     expect(result.status).toBe('ready');
@@ -166,9 +167,9 @@ describe('ensureTicketHours', () => {
   it('keeps the ticket flagged and announces it when the model returns nothing usable', async () => {
     const ticket: FakeTicket = { est_hours: 1, human_est_hours: 4, tags: [NEEDS_ESTIMATE_TAG], est: '—' };
     const db = fakeDb(ticket);
-    const model = fakeServing('I am afraid I cannot help with that.');
+    fakeModel(db.q, 'I am afraid I cannot help with that.');
 
-    const result = await ensureTicketHours(db.q, model.serving, INPUT);
+    const result = await ensureTicketHours(db.q, INPUT);
 
     expect(result.status).toBe('flagged');
     expect(ticket.tags).toEqual([NEEDS_ESTIMATE_TAG]);
@@ -178,9 +179,9 @@ describe('ensureTicketHours', () => {
   it('flags a ticket whose hour columns are empty even with no tag on it', async () => {
     const ticket: FakeTicket = { est_hours: null, human_est_hours: null, tags: [], est: '—' };
     const db = fakeDb(ticket);
-    const model = fakeServing('no json here');
+    fakeModel(db.q, 'no json here');
 
-    const result = await ensureTicketHours(db.q, model.serving, INPUT);
+    const result = await ensureTicketHours(db.q, INPUT);
 
     expect(result.status).toBe('flagged');
     expect(ticket.tags).toEqual([NEEDS_ESTIMATE_TAG]); // flag added, not just kept
@@ -192,19 +193,19 @@ describe('ensureTicketHours', () => {
     // silent-incomplete case the flag exists to prevent.
     const ticket: FakeTicket = { est_hours: 1, human_est_hours: 4, tags: [NEEDS_ESTIMATE_TAG], est: '—' };
     const db = fakeDb(ticket);
-    const model = fakeServing('{"confidence": "low"}'); // no hours field — unusable
+    fakeModel(db.q, '{"confidence": "low"}'); // no hours field — unusable
 
-    const result = await ensureTicketHours(db.q, model.serving, INPUT);
+    const result = await ensureTicketHours(db.q, INPUT);
 
     expect(result.status).toBe('flagged');
     expect(ticket.tags).toEqual([NEEDS_ESTIMATE_TAG]);
   });
 
   it('reports a vanished ticket as flagged rather than throwing', async () => {
-    const q = () => Promise.resolve({ rows: [] });
-    const model = fakeServing('{"hours": 1}');
+    const q: Query = () => Promise.resolve({ rows: [] });
+    const model = fakeModel(q, '{"hours": 1}');
 
-    const result = await ensureTicketHours(q, model.serving, INPUT);
+    const result = await ensureTicketHours(q, INPUT);
 
     expect(result.status).toBe('flagged');
     expect(model.calls()).toBe(0);
