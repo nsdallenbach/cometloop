@@ -49,6 +49,9 @@ export function isValidTenantId(id: string): boolean {
 export interface ScopedPoolClient {
   query(text: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
   release(destroy?: boolean | Error): void;
+  /** pg emits 'error' on a checked-out client whose connection dropped; test fakes may omit these. */
+  on?(event: 'error', listener: (err: Error) => void): unknown;
+  removeListener?(event: 'error', listener: (err: Error) => void): unknown;
 }
 
 export type TenantMode = 'pinned' | 'statement';

@@ -101,20 +101,41 @@ export function resetUnscopedWarnings(): void {
   warned.clear();
 }
 
+/**
+ * A checked-out client emits 'error' when its connection drops (a network
+ * blip, a Neon compute restart). With no listener, Node treats that as an
+ * unhandled event and exits the process — which is how the console died
+ * overnight once. Listen while the client is ours, remember that it broke,
+ * and destroy it on release instead of handing it back to the pool.
+ */
+const broken = new WeakSet<object>();
+function guard(client: ScopedPoolClient): () => void {
+  const onError = (err: Error) => {
+    broken.add(client);
+    console.warn('[db] connection error on a checked-out client:', err.message);
+  };
+  client.on?.('error', onError);
+  return () => client.removeListener?.('error', onError);
+}
+
 async function perStatement(pool: ScopedPool, tenantId: string | null, text: string, params?: unknown[]) {
   const client = await pool.connect();
+  const unguard = guard(client);
   try {
     await client.query(scopePreamble(tenantId));
     const result = await client.query(text, params);
     await client.query('COMMIT');
-    client.release();
+    unguard();
+    client.release(broken.has(client));
     return { rows: result.rows as Record<string, unknown>[] };
   } catch (err) {
     try {
-      await client.query('ROLLBACK');
-      client.release();
+      if (!broken.has(client)) await client.query('ROLLBACK');
+      unguard();
+      client.release(broken.has(client));
     } catch {
       // The connection itself is broken; destroy it rather than return it to the pool.
+      unguard();
       client.release(true);
     }
     throw err;
@@ -127,11 +148,14 @@ const inFlight = new WeakMap<PinnedConnection, number>();
 /** The context's pinned client, checking one out and setting the session on first use. */
 function pinnedClient(pool: ScopedPool, store: TenantStore): Promise<ScopedPoolClient> {
   if (store.pin) return store.pin.client;
+  let unguard: (() => void) | null = null;
   const client = (async () => {
     const c = await pool.connect();
+    unguard = guard(c);
     try {
       await c.query(sessionPreamble(store.tenantId));
     } catch (err) {
+      unguard();
       c.release(true);
       throw err;
     }
@@ -146,11 +170,18 @@ function pinnedClient(pool: ScopedPool, store: TenantStore): Promise<ScopedPoolC
       } catch {
         return; // never got a session; that checkout was already destroyed
       }
+      if (broken.has(c)) {
+        unguard?.();
+        c.release(true);
+        return;
+      }
       try {
         await c.query(SESSION_RESET);
+        unguard?.();
         c.release();
       } catch (err) {
         console.warn('[db] session reset failed, destroying the connection:', (err as Error).message);
+        unguard?.();
         c.release(true);
       }
     },
