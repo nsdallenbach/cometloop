@@ -126,13 +126,15 @@ async function perStatement(pool: ScopedPool, tenantId: string | null, text: str
     const result = await client.query(text, params);
     await client.query('COMMIT');
     unguard();
-    client.release(broken.has(client));
+    if (broken.has(client)) client.release(true);
+    else client.release();
     return { rows: result.rows as Record<string, unknown>[] };
   } catch (err) {
     try {
       if (!broken.has(client)) await client.query('ROLLBACK');
       unguard();
-      client.release(broken.has(client));
+      if (broken.has(client)) client.release(true);
+      else client.release();
     } catch {
       // The connection itself is broken; destroy it rather than return it to the pool.
       unguard();
@@ -201,7 +203,8 @@ export function scopedQuery(pool: ScopedPool, opts: ScopedQueryOptions = { pinni
       warnUnscoped(text);
       return perStatement(pool, null, text, params);
     }
-    if (!opts.pinning || store.mode !== 'pinned' || store.ended) return perStatement(pool, store.tenantId, text, params);
+    if (!opts.pinning || store.mode !== 'pinned' || store.ended)
+      return perStatement(pool, store.tenantId, text, params);
     // A statement issued while the pinned client is busy (a `Promise.all`
     // fan-out) would only queue behind it, so it spills over to the
     // per-statement path on another checkout and the fan-out stays parallel.
