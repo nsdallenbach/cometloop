@@ -121,7 +121,13 @@ function registerIpc(): void {
     if (id !== null && typeof id !== 'string') return { ok: false as const, error: 'bad environment id' };
     if (id !== null && !cfg.environments.some((env) => env.id === id)) return { ok: false as const, error: `unknown environment: ${id}` };
     saveEnvironmentChoice(id);
-    app.relaunch();
+    // The portable exe runs from a temp folder that its launcher deletes on
+    // exit, so a plain relaunch of process.execPath has nothing to start —
+    // the app just closes. electron-builder exposes the original file; start
+    // that again (it re-unpacks, a few seconds). Installed builds relaunch
+    // in place.
+    const portable = process.env.PORTABLE_EXECUTABLE_FILE;
+    app.relaunch(portable ? { execPath: portable, args: [] } : undefined);
     app.exit(0);
     return { ok: true as const };
   });
