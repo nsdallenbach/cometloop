@@ -18,7 +18,16 @@ import { mono } from '../util';
  * Styling follows the console: theme tokens, DM Sans, mono() labels, the
  * Setup form's input idiom — the desktop shows this inside its webview.
  */
-export type SignInProblem = { kind: 'no-workspace' } | null;
+export type SignInProblem =
+  /** Signed in at the auth host; the console says the email is in no workspace (403). */
+  | { kind: 'no-workspace' }
+  /** Signed in at the auth host; no token could be minted, or the console refused it (401). */
+  | { kind: 'no-token'; message: string }
+  /** The console itself failed (500, unreachable) while signed out. */
+  | { kind: 'server'; message: string }
+  /** An OAuth round trip (Google) came back with an error. */
+  | { kind: 'oauth'; message: string }
+  | null;
 
 const PASSWORD_MIN = 8;
 
@@ -67,12 +76,14 @@ export function SignIn({ onSignedIn, problem = null }: { onSignedIn: () => void;
   const [sessionEmail, setSessionEmail] = useState('');
 
   useEffect(() => {
-    if (!problem) return;
-    void authClient().then(async (client) => {
-      if (!client) return;
-      const { data } = await client.getSession();
-      setSessionEmail(data?.user?.email ?? '');
-    });
+    if (!problem || problem.kind === 'oauth') return;
+    void authClient()
+      .then(async (client) => {
+        if (!client) return;
+        const { data } = await client.getSession();
+        setSessionEmail(data?.user?.email ?? '');
+      })
+      .catch(() => setSessionEmail(''));
   }, [problem]);
 
   const message = (e: unknown, fallback: string) =>
@@ -159,25 +170,50 @@ export function SignIn({ onSignedIn, problem = null }: { onSignedIn: () => void;
     </div>
   );
 
-  if (problem?.kind === 'no-workspace') {
+  // Signed in at the auth host, but the console would not let the session
+  // through. Each case names what happened and what to do; none of them
+  // silently re-shows the form.
+  if (problem?.kind === 'no-workspace' || problem?.kind === 'no-token') {
+    const who = sessionEmail ? <span style={{ color: 'var(--tx)', fontWeight: 600 }}>{sessionEmail}</span> : <>This account</>;
     return shell(
       <div style={{ width: '100%', display: 'grid', gap: 14, textAlign: 'center' }}>
-        <div style={{ fontSize: 20, fontWeight: 600 }}>You&rsquo;re signed in, but not in a workspace yet</div>
+        <div style={{ fontSize: 20, fontWeight: 600 }}>
+          {problem.kind === 'no-workspace' ? <>You&rsquo;re signed in, but not in a workspace yet</> : <>Signed in, but the console didn&rsquo;t accept it</>}
+        </div>
         <p style={{ margin: 0, fontSize: 14, color: 'var(--tx2)', lineHeight: 1.55 }}>
-          {sessionEmail ? (
-            <>
-              <span style={{ color: 'var(--tx)', fontWeight: 600 }}>{sessionEmail}</span> isn&rsquo;t a member of this console. An admin
-              has to add that email before it can sign in.
-            </>
+          {problem.kind === 'no-workspace' ? (
+            <>{who} isn&rsquo;t a member of this console. An admin has to add that email before it can sign in.</>
           ) : (
-            <>This account isn&rsquo;t a member of this console. An admin has to add your email before it can sign in.</>
+            <>{who} signed in at the identity service, but the console could not use the session.</>
           )}
         </p>
+        {problem.kind === 'no-token' && (
+          <div role="alert" style={{ fontSize: 13, color: 'var(--bad)', lineHeight: 1.45, padding: '8px 10px', border: '1px solid var(--bad)', borderRadius: 3, textAlign: 'left' }}>
+            {problem.message}
+          </div>
+        )}
         <button type="button" onClick={onSignedIn} disabled={disabled} style={primary}>
-          I&rsquo;ve been added — try again
+          {problem.kind === 'no-workspace' ? <>I&rsquo;ve been added — try again</> : 'Try again'}
         </button>
         <button type="button" onClick={() => void switchAccount()} disabled={disabled} style={secondary}>
           Use a different account
+        </button>
+      </div>,
+    );
+  }
+
+  if (problem?.kind === 'server') {
+    return shell(
+      <div style={{ width: '100%', display: 'grid', gap: 14, textAlign: 'center' }}>
+        <div style={{ fontSize: 20, fontWeight: 600 }}>The console isn&rsquo;t answering</div>
+        <div role="alert" style={{ fontSize: 13, color: 'var(--bad)', lineHeight: 1.45, padding: '8px 10px', border: '1px solid var(--bad)', borderRadius: 3, textAlign: 'left' }}>
+          {problem.message}
+        </div>
+        <p style={{ margin: 0, fontSize: 14, color: 'var(--tx2)', lineHeight: 1.55 }}>
+          Your sign-in is fine; the console itself failed. Try again in a moment, and tell whoever runs it if it persists.
+        </p>
+        <button type="button" onClick={onSignedIn} disabled={disabled} style={primary}>
+          Try again
         </button>
       </div>,
     );
@@ -218,6 +254,12 @@ export function SignIn({ onSignedIn, problem = null }: { onSignedIn: () => void;
           </button>
         ))}
       </div>
+
+      {problem?.kind === 'oauth' && (
+        <div role="alert" style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, color: 'var(--bad)', lineHeight: 1.45, padding: '8px 10px', border: '1px solid var(--bad)', borderRadius: 3 }}>
+          Google sign-in did not complete: {problem.message}
+        </div>
+      )}
 
       <form onSubmit={(e) => void submit(e)} style={{ display: 'grid', gap: 14, width: '100%' }} noValidate>
         {mode === 'up' && (

@@ -20,7 +20,12 @@
  * is what actually persists, in the auth host's cookies).
  */
 
-export type AuthConfig = { provider: 'none' } | { provider: 'neon-auth'; url: string };
+/**
+ * `provider: 'none'` with an `error` means the config request itself failed
+ * (server down, network) — not that the deployment has no sign-in. The
+ * signed-out screen shows the error rather than guessing.
+ */
+export type AuthConfig = { provider: 'none'; error?: string } | { provider: 'neon-auth'; url: string };
 
 /** `{ data, error }` as every Better Auth client call returns it. */
 export interface AuthResult<T = unknown> {
@@ -55,9 +60,26 @@ let cached: { token: string; exp: number } | null = null;
 
 export function authConfig(): Promise<AuthConfig> {
   configPromise ??= fetch('/api/auth/config')
-    .then(async (r) => (r.ok ? ((await r.json()) as AuthConfig) : { provider: 'none' as const }))
-    .catch((): AuthConfig => ({ provider: 'none' }));
+    .then(async (r): Promise<AuthConfig> => {
+      if (r.ok) return (await r.json()) as AuthConfig;
+      return { provider: 'none', error: `The sign-in configuration request failed (HTTP ${r.status}).` };
+    })
+    .catch((e: unknown): AuthConfig => ({
+      provider: 'none',
+      error: `The console could not be reached to load its sign-in configuration (${e instanceof Error ? e.message : 'network error'}).`,
+    }));
   return configPromise;
+}
+
+/**
+ * The last reason a token could not be minted, if the most recent attempt
+ * failed — surfaced by the sign-in screen when the console still answers
+ * 401 after a successful sign-in at the auth host (third-party cookies
+ * blocked, auth host unreachable, …). Null after a successful mint.
+ */
+let lastTokenError: string | null = null;
+export function lastAccessTokenError(): string | null {
+  return lastTokenError;
 }
 
 /** The Neon Auth client, or null when this deployment does not use it. */
@@ -90,16 +112,21 @@ export async function accessToken(force = false): Promise<string | null> {
   if (!client) return null;
   if (!force && cached && Date.now() < cached.exp - 60_000) return cached.token;
   try {
-    const { data } = await client.token();
+    const { data, error } = await client.token();
     const token = data?.token;
     if (!token) {
       cached = null;
+      lastTokenError = error?.message
+        ? `The auth host refused to issue a token: ${error.message}`
+        : 'The auth host has no session for this browser (sign in again; if it keeps happening, the browser is blocking the sign-in cookie).';
       return null;
     }
     cached = { token, exp: jwtExp(token) };
+    lastTokenError = null;
     return token;
-  } catch {
+  } catch (e) {
     cached = null;
+    lastTokenError = `Could not reach the auth host for a token (${e instanceof Error ? e.message : 'network error'}).`;
     return null;
   }
 }

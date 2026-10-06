@@ -180,15 +180,31 @@ export const betterAuthVerifier: Verifier = async (req) => {
     });
     const subject = claimString(payload, 'sub');
     const email = claimString(payload, 'email');
-    if (!subject || !email) return null;
+    if (!subject || !email) {
+      rejections.set(req, 'token carries no subject or email');
+      return null;
+    }
     const fromDirectory = tenantDirectory ? await tenantDirectory(email) : null;
     const tenantId = tenantFromClaims(payload) ?? (fromDirectory && isValidTenantId(fromDirectory) ? fromDirectory : null);
     return { subject, email, name: claimString(payload, 'name') || email, source: 'better-auth', tenantId };
   } catch (err) {
-    console.warn('[identity] better-auth token rejected:', (err as Error).message);
+    const reason = (err as Error).message;
+    console.warn('[identity] better-auth token rejected:', reason);
+    rejections.set(req, reason);
     return null;
   }
 };
+
+// A token was presented and refused: the 401 says why, so a signed-in
+// browser that still gets 401 (expired token, wrong branch's key, clock
+// skew) shows the cause instead of a bare "sign in required". The reason
+// is jose's message — key ids and claim names, never the token itself.
+const rejections = new WeakMap<express.Request, string>();
+
+/** Why the bearer on this request was refused, if one was and it was. */
+export function tokenRejection(req: express.Request): string | null {
+  return rejections.get(req) ?? null;
+}
 
 /**
  * LOCAL DEVELOPMENT ONLY. `DEV_IDENTITY_EMAIL=you@example.com` stands in for
@@ -290,7 +306,8 @@ export function requireSignIn(): express.RequestHandler {
           runWithTenantRequest(ANONYMOUS_RUNNER_TENANT_ID, res, next);
           return;
         }
-        res.status(401).json({ error: 'Sign in required' });
+        const why = tokenRejection(req);
+        res.status(401).json(why ? { error: `Sign in required — your token was rejected: ${why}`, reason: why } : { error: 'Sign in required' });
       },
       (err: unknown) => {
         console.error('[identity] resolution failed:', err);

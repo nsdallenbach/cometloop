@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { Navigate, useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from './api';
-import { authConfig, signOut as authSignOut, type AuthConfig } from './auth';
+import { authConfig, lastAccessTokenError, signOut as authSignOut, type AuthConfig } from './auth';
 import { SignIn, type SignInProblem } from './components/SignIn';
 import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
 import { parsePath, paths, type Tab } from './routes';
@@ -64,8 +64,33 @@ export default function App() {
   const [signedOut, setSignedOut] = useState(false);
   // Which sign-in fronts this deployment (client/src/auth.ts); null until known.
   const [auth, setAuth] = useState<AuthConfig | null>(null);
-  // What the server said after a sign-in it would not let through (403).
-  const [signInProblem, setSignInProblem] = useState<SignInProblem>(null);
+  // What went wrong after a sign-in the console would not let through, or
+  // while signed out — never left implicit (see loadMe).
+  // An OAuth round trip (Google) lands back here with `?error=` when it
+  // failed; that is the initial problem to show rather than a bare form.
+  const [signInProblem, setSignInProblem] = useState<SignInProblem>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauthError = params.get('error');
+    if (!oauthError) return null;
+    const detail = params.get('error_description');
+    return { kind: 'oauth', message: `${oauthError.replace(/_/g, ' ')}${detail ? `: ${detail}` : ''}` };
+  });
+  useEffect(() => {
+    // Once read, drop the error from the address bar so a reload is a clean start.
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('error')) return;
+    params.delete('error');
+    params.delete('error_description');
+    const qs = params.toString();
+    window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
+  }, []);
+  // Set by the sign-in screen's onSignedIn: the next 401 is a failure to
+  // explain, not a first visit.
+  const signInAttempted = useRef(false);
+  const signedOutRef = useRef(false);
+  useEffect(() => {
+    signedOutRef.current = signedOut;
+  }, [signedOut]);
   useEffect(() => {
     void authConfig().then(setAuth);
   }, []);
@@ -110,7 +135,19 @@ export default function App() {
       .catch((e: unknown) => {
         if (e instanceof ApiError && e.status === 401) {
           setSignedOut(true);
-          setSignInProblem(null);
+          // A 401 right after the user signed in at the auth host is a
+          // failure to report, not a fresh visit: no token could be minted
+          // (cookie blocked, auth host down) or the server refused the one
+          // we sent — its message says why.
+          if (signInAttempted.current) {
+            const tokenProblem = lastAccessTokenError();
+            setSignInProblem({
+              kind: 'no-token',
+              message: tokenProblem ?? (e.message !== 'Sign in required' ? e.message : 'The console did not accept the sign-in.'),
+            });
+          } else {
+            setSignInProblem(null);
+          }
           return;
         }
         // 403 from the gate: signed in at the auth host, but the email is in
@@ -118,6 +155,12 @@ export default function App() {
         if (e instanceof ApiError && e.status === 403) {
           setSignedOut(true);
           setSignInProblem({ kind: 'no-workspace' });
+          return;
+        }
+        // Anything else while signed out (500, network) must not leave the
+        // form staring back: say what happened.
+        if (signedOutRef.current) {
+          setSignInProblem({ kind: 'server', message: e instanceof Error ? e.message : 'The console could not be reached.' });
           return;
         }
         // Least privilege until the lookup succeeds; the top bar surfaces a retry.
@@ -570,6 +613,8 @@ export default function App() {
           <SignIn
             problem={signInProblem}
             onSignedIn={() => {
+              signInAttempted.current = true;
+              setSignInProblem(null);
               loadMe();
               void refreshEngagements();
             }}
@@ -577,10 +622,17 @@ export default function App() {
         ) : (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, textAlign: 'center', maxWidth: 360 }}>
           <div style={{ ...mono(500, 11), color: 'var(--tx3)', letterSpacing: '.08em' }}>COMETLOOP</div>
-          <div style={{ fontSize: 18, fontWeight: 600 }}>Sign in required</div>
+          <div style={{ fontSize: 18, fontWeight: 600 }}>{auth?.provider === 'none' && auth.error ? 'Sign-in is unavailable' : 'Sign in required'}</div>
           <div style={{ fontSize: 13, color: 'var(--tx2)', lineHeight: 1.5 }}>
-            The console could not tell who you are. Open it through your workspace, then try again.
+            {auth?.provider === 'none' && auth.error
+              ? auth.error
+              : 'The console could not tell who you are. Open it through your workspace, then try again.'}
           </div>
+          {signInProblem?.kind === 'server' && (
+            <div role="alert" style={{ fontSize: 12, color: 'var(--bad)', lineHeight: 1.45 }}>
+              {signInProblem.message}
+            </div>
+          )}
           <button
             onClick={loadMe}
             style={{
