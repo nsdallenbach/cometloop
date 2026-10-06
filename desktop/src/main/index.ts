@@ -7,13 +7,23 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ConsoleClient } from '../../../shared/api-client';
 import { AgentPool, type AgentKind, AGENT_KINDS } from './agents';
-import { activeEnvironment, loadConfig, saveEnvironmentChoice, type DesktopConfig } from './config';
+import { CHANNEL, activeEnvironment, loadConfig, saveEnvironmentChoice, type DesktopConfig } from './config';
 import { CredentialManager, SIGN_IN_REQUIRED } from './credentials';
 import { DeployManager, type DeploysEvent } from './deploys';
 import { IdentityBroker, IDENTITY_PROVIDERS, type IdentityProvider, type ProviderStatus } from './identity';
 import type { RunnerEvent } from './runner';
 import { TerminalHost, taskWorkdir, type TerminalEvent } from './terminal';
 import { initAutoUpdate } from './updater';
+
+// The staging build must not share config.json, the encrypted refresh token
+// or the pid file with the production install on the same machine. Electron
+// derives userData from the package name (electron-builder's productName
+// does not reach app.getName() in the asar), so pin it per channel before
+// anything reads a path.
+if (CHANNEL === 'staging') {
+  app.setName('Cometloop Staging');
+  app.setPath('userData', path.join(app.getPath('appData'), 'cometloop-desktop-staging'));
+}
 
 let cfg: DesktopConfig;
 let creds: CredentialManager;

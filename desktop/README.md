@@ -101,7 +101,7 @@ it. Hand the installer or portable exe to testers directly; it is not
 published to GitHub Releases.
 
 Config lives at `%APPDATA%/cometloop-desktop/config.json` (written on
-first run; `%APPDATA%/Cometloop Staging/` for the staging build) and can be
+first run; `%APPDATA%/cometloop-desktop-staging/` for the staging build) and can be
 overridden per-run with env vars: `APP_URL`,
 `DATABRICKS_HOST`, `DATABRICKS_PROFILE`, `DATABRICKS_CLI`, `AGENT_NAME`,
 `HARNESS`, `WORK_ROOT`, `MAX_RUN_MINUTES`, `MCP_SERVER`, `DEPLOY_COMMAND`,
