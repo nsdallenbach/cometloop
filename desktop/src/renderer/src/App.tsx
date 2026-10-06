@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { Bot, FolderKanban, Gauge, KeyRound, RefreshCw, Rocket, Settings, Workflow, Wrench } from 'lucide-react';
 import { TerminalPane, type TerminalOpenRequest } from './TerminalPane';
 import { IdentityView } from './IdentityView';
+import { SignInGate } from './SignInGate';
 import { ToolsView } from './ToolsView';
 import { AgentWizard } from './AgentWizard';
 import { harnessBrand, providerBrand } from '../../../../shared/design/AgentLogos';
@@ -357,7 +358,7 @@ function ConsoleView({
     setSignInError('');
     const res = await window.desktopBridge.authLogin();
     setSigningIn(false);
-    if (res.ok) setAuth(res.mode);
+    if (res.ok) setAuth(res.status.mode);
     else setSignInError(res.error);
   };
 
@@ -1396,8 +1397,13 @@ export function App() {
   const [nav, setNav] = useState<NavId>('projects');
   // Environment gate: nothing else mounts until a console is chosen.
   const [cfg, setCfg] = useState<DesktopConfigView | null>(null);
+  // Sign-in gate: nothing of the shell mounts until the desktop holds a
+  // sign-in for that console (SignInGate). The main process starts agents
+  // and polling only after the same event.
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   useEffect(() => {
     void window.desktopBridge.getConfig().then(setCfg);
+    void window.desktopBridge.authStatus().then(setAuthStatus);
   }, []);
   // The console section the webview shows — or last showed, while a native
   // view sits on top — so coming back to it finds it unchanged.
@@ -1492,12 +1498,25 @@ export function App() {
       )}
     </button>
   );
-  if (!cfg) return null;
+  if (!cfg || !authStatus) return null;
   if (!cfg.envOverride && !cfg.activeEnvironment) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
         <TitleBar theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onOpenTicket={openTicket} />
         <EnvironmentPicker cfg={cfg} />
+      </div>
+    );
+  }
+  if (authStatus.mode === 'signed-out') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <TitleBar theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onOpenTicket={openTicket} />
+        <SignInGate
+          status={authStatus}
+          environmentLabel={cfg.envOverride ? 'Local override' : (cfg.activeEnvironment?.label ?? 'Console')}
+          onStatus={setAuthStatus}
+          onSignedIn={setAuthStatus}
+        />
       </div>
     );
   }

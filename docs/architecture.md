@@ -367,7 +367,10 @@ managed load balancer), the Neon branch `staging`
 that branch, served to the browser from `GET /api/auth/config` and verified
 by the Better Auth JWT verifier in `server/identity.ts`. Who may sign in is
 `app.tenant_members` (admins manage it at `/api/admin/members`; `owner` /
-`admin` rows are console admins, `member` rows developers). `deploy.yml`
+`admin` rows are console admins, `member` rows developers). On such a
+deployment the runner routes (`/api/agent/*`) are **not** sign-in exempt
+(`runnerRoutesRequireSignIn`): the desktop signs in with a console account
+and sends its JWT, and an anonymous caller cannot claim work. `deploy.yml`
 ships every green `main` to staging and promotes to production only on a
 manual dispatch; tester desktop builds (`desktop/README.md` → Environments)
 sign in to `https://staging.cometloop.ai` with no workspace token involved.

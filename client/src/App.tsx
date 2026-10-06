@@ -609,7 +609,25 @@ export default function App() {
           fontFamily: "'DM Sans', sans-serif",
         }}
       >
-        {auth?.provider === 'neon-auth' ? (
+        {IN_DESKTOP_SHELL ? (
+          // The desktop owns identity: it signs in natively and injects the
+          // token into this webview. A 401/403 here means the desktop's
+          // session is gone or the account is in no workspace — the desktop
+          // gate handles both; this view only says what happened.
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, textAlign: 'center', maxWidth: 380 }}>
+            <div style={{ ...mono(500, 11), color: 'var(--tx3)', letterSpacing: '.08em' }}>COMETLOOP</div>
+            <div style={{ fontSize: 18, fontWeight: 600 }}>
+              {signInProblem?.kind === 'no-workspace' ? 'Your account is not in this workspace' : 'Sign in from the desktop app'}
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--tx2)', lineHeight: 1.5 }}>
+              {signInProblem?.kind === 'no-workspace'
+                ? 'An admin has to add your email before this console lets you in. Identity in the sidebar shows which account you are signed in as.'
+                : signInProblem && 'message' in signInProblem
+                  ? signInProblem.message
+                  : 'The desktop app holds your sign-in. Open Identity in the sidebar and sign in again.'}
+            </div>
+          </div>
+        ) : auth?.provider === 'neon-auth' ? (
           <SignIn
             problem={signInProblem}
             onSignedIn={() => {
@@ -821,7 +839,7 @@ export default function App() {
                   .toUpperCase()
               : '·'}
           </div>
-          {auth?.provider === 'neon-auth' && (
+          {auth?.provider === 'neon-auth' && !IN_DESKTOP_SHELL && (
             <button
               onClick={() => {
                 void authSignOut().then(() => {

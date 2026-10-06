@@ -265,8 +265,23 @@ export function requestAuthor(req: express.Request, fallback = 'You'): string {
  */
 export const SIGN_IN_EXEMPT_PREFIXES: readonly string[] = ['/health', '/api/health', '/api/agent/'];
 
+/**
+ * On a deployment where the console signs users in itself (Neon Auth
+ * configured), runners are users too: the desktop signs in with a console
+ * account and sends its JWT, so `/api/agent/*` is not exempt there — an
+ * anonymous caller must never be able to claim work. The exemption stays
+ * for the Databricks deployment (the proxy in front is the runner's auth)
+ * and for a dev server with no provider.
+ */
+export function runnerRoutesRequireSignIn(): boolean {
+  return Boolean(process.env.NEON_AUTH_JWKS_URL?.trim());
+}
+
 export function isSignInExempt(path: string): boolean {
-  return SIGN_IN_EXEMPT_PREFIXES.some((p) => (p.endsWith('/') ? path.startsWith(p) : path === p));
+  return SIGN_IN_EXEMPT_PREFIXES.some((p) => {
+    if (p === '/api/agent/' && runnerRoutesRequireSignIn()) return false;
+    return p.endsWith('/') ? path.startsWith(p) : path === p;
+  });
 }
 
 /**
