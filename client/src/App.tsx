@@ -3,7 +3,7 @@ import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { Navigate, useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from './api';
 import { authConfig, signOut as authSignOut, type AuthConfig } from './auth';
-import { SignIn } from './components/SignIn';
+import { SignIn, type SignInProblem } from './components/SignIn';
 import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
 import { parsePath, paths, type Tab } from './routes';
 import { mono, STATUS_LABEL } from './util';
@@ -64,6 +64,8 @@ export default function App() {
   const [signedOut, setSignedOut] = useState(false);
   // Which sign-in fronts this deployment (client/src/auth.ts); null until known.
   const [auth, setAuth] = useState<AuthConfig | null>(null);
+  // What the server said after a sign-in it would not let through (403).
+  const [signInProblem, setSignInProblem] = useState<SignInProblem>(null);
   useEffect(() => {
     void authConfig().then(setAuth);
   }, []);
@@ -108,6 +110,14 @@ export default function App() {
       .catch((e: unknown) => {
         if (e instanceof ApiError && e.status === 401) {
           setSignedOut(true);
+          setSignInProblem(null);
+          return;
+        }
+        // 403 from the gate: signed in at the auth host, but the email is in
+        // no workspace. Stay on the sign-in screen and say so.
+        if (e instanceof ApiError && e.status === 403) {
+          setSignedOut(true);
+          setSignInProblem({ kind: 'no-workspace' });
           return;
         }
         // Least privilege until the lookup succeeds; the top bar surfaces a retry.
@@ -523,6 +533,21 @@ export default function App() {
   if (screen.name === 'redirect') return <Navigate to={screen.to} replace />;
   if (screen.name === 'external') return <ExternalRedirect to={screen.to} />;
 
+  // Until we know who you are, show nothing but the mark: on a deployment
+  // with its own sign-in, rendering the shell first means a flash of empty
+  // portfolio skeletons before the sign-in screen replaces it.
+  if (auth === null || (auth.provider === 'neon-auth' && me === null && !signedOut)) {
+    return (
+      <div
+        className="eec"
+        data-theme={theme}
+        style={{ height: '100vh', display: 'grid', placeItems: 'center', background: 'var(--bg)', color: 'var(--tx)', fontFamily: "'DM Sans', sans-serif" }}
+      >
+        <Wordmark size={22} />
+      </div>
+    );
+  }
+
   // Signed out. With the console's own sign-in configured (Neon Auth) this is
   // the sign-in screen; behind a proxy that should have identified the caller
   // it only says what happened.
@@ -543,6 +568,7 @@ export default function App() {
       >
         {auth?.provider === 'neon-auth' ? (
           <SignIn
+            problem={signInProblem}
             onSignedIn={() => {
               loadMe();
               void refreshEngagements();

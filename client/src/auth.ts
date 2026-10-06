@@ -43,6 +43,8 @@ export interface ConsoleAuthClient {
     email(input: { email: string; password: string; name: string }): Promise<AuthResult>;
   };
   signOut(): Promise<AuthResult>;
+  /** The auth host's view of the current session (who is signed in there). */
+  getSession(): Promise<AuthResult<{ user?: { email?: string; name?: string } }>>;
   /** JWT plugin: a fresh token for the current session. */
   token(): Promise<AuthResult<{ token?: string }>>;
 }
