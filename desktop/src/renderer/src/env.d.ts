@@ -60,15 +60,36 @@ interface BoardTicketRow {
   engagementId: string;
 }
 
+/** A console deployment the desktop can sign in to. */
+interface EnvironmentRow {
+  id: string;
+  label: string;
+  consoleUrl: string;
+  databricksHost?: string;
+  consoleAuth?: 'databricks' | 'none';
+  note?: string;
+}
+
+interface DesktopConfigView {
+  consoleUrl: string;
+  databricksHost: string;
+  databricksProfile?: string;
+  databricksCli: string;
+  agentName: string;
+  devMode: boolean;
+  /** 'production' or 'staging' — baked into the build. */
+  channel: 'production' | 'staging';
+  environments: EnvironmentRow[];
+  /** Chosen environment id, or null → the picker shows. */
+  environment: string | null;
+  activeEnvironment: EnvironmentRow | null;
+  /** APP_URL pinned the console for this run (dev): no picker. */
+  envOverride: boolean;
+}
+
 interface DesktopBridge {
-  getConfig: () => Promise<{
-    consoleUrl: string;
-    databricksHost: string;
-    databricksProfile?: string;
-    databricksCli: string;
-    agentName: string;
-    devMode: boolean;
-  }>;
+  getConfig: () => Promise<DesktopConfigView>;
+  selectEnvironment: (id: string | null) => Promise<{ ok: true } | { ok: false; error: string }>;
   listEngagements: () => Promise<
     { ok: true; engagements: EngagementRow[] } | { ok: false; error: string; signInRequired?: boolean }
   >;

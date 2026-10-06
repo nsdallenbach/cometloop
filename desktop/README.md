@@ -57,14 +57,52 @@ npm install
 npm run dev          # electron-vite dev with HMR
 ```
 
-Prereqs: Node 20+ and network access to the console. First launch: click
-**Sign in to Databricks** — your browser opens the workspace sign-in, the app
-catches the redirect, and you stay signed in across restarts. (No Databricks
-CLI needed; if one is installed and logged in it is used silently as a
-fallback.)
+Prereqs: Node 20+ and network access to the console. First launch: pick an
+**environment** (below), then click **Sign in to Databricks** — your browser
+opens the workspace sign-in, the app catches the redirect, and you stay
+signed in across restarts. (No Databricks CLI needed; if one is installed
+and logged in it is used silently as a fallback.)
+
+## Environments
+
+An environment is a console deployment the desktop signs in to.
+The first launch shows a picker; the choice is persisted as `environment`
+in config.json and **Identity → Switch environment** brings the picker back
+(the app relaunches, because the credential manager, console client, agent
+pool and webview session are all built from the resolved URL at startup).
+
+| Environment | Console | Backing data | Who uses it |
+|---|---|---|---|
+| **Production** | `delivery-console` Databricks App (until the AWS stack in `infra/aws` is applied for prod; then `https://app.cometloop.ai`) | Lakebase branch `production` | everyone, day to day |
+| **Staging** | `https://staging.cometloop.ai` — Amazon ECS (Express Mode), `consoleAuth: none` | Neon branch `staging` | testers on the staging build |
+| **Local** | `http://localhost:8000` (`consoleAuth: none`) | whatever the dev server points at | developers |
+
+Staging and Local use the **console's own sign-in**: the embedded console
+shows its Neon Auth sign-in screen (email + password, or Google) and the
+desktop needs no workspace token, so the Identity page reports the mode as
+**console sign-in**. Production still signs in to the Databricks workspace.
+Native surfaces that call the API from the main process (Agents queue,
+Deploys, the bell) have no console session on `consoleAuth: none`
+deployments yet and report *not signed in* — the desktop-side console
+sign-in is the next piece (docs/platform-architecture.md §5 "Desktop app").
+Add your own entries to `environments` in
+config.json (`id`, `label`, `consoleUrl`, optional `databricksHost`,
+`consoleAuth`, `note`). `APP_URL` in the environment pins the console for a
+dev run and skips the picker entirely.
+
+**Staging build.** `npm run dist:win:staging` bakes `COMETLOOP_CHANNEL=staging`
+into the bundle (`electron.vite.config.ts` → `__COMETLOOP_CHANNEL__`) and
+packages with `electron-builder.staging.yml`: product name **Cometloop
+Staging**, appId `com.datavail.delivery-console.staging`, output in
+`release-staging/`. It installs beside the production app with its own
+config and keychain entries, preselects **Staging** on the picker, and has
+`autoUpdate` off by default so the production release feed can never replace
+it. Hand the installer or portable exe to testers directly; it is not
+published to GitHub Releases.
 
 Config lives at `%APPDATA%/cometloop-desktop/config.json` (written on
-first run) and can be overridden per-run with env vars: `APP_URL`,
+first run; `%APPDATA%/Cometloop Staging/` for the staging build) and can be
+overridden per-run with env vars: `APP_URL`,
 `DATABRICKS_HOST`, `DATABRICKS_PROFILE`, `DATABRICKS_CLI`, `AGENT_NAME`,
 `HARNESS`, `WORK_ROOT`, `MAX_RUN_MINUTES`, `MCP_SERVER`, `DEPLOY_COMMAND`,
 `AUTO_UPDATE`. `DATABRICKS_TOKEN` skips the CLI entirely (dev mode; never
@@ -87,6 +125,7 @@ distinctly and stop it when you are done.
 npm run typecheck    # this package is excluded from the root TS/lint projects
 npm run build        # electron-vite production build
 npm run dist:win     # NSIS installer + portable exe into release/
+npm run dist:win:staging  # the tester build (Cometloop Staging) into release-staging/
 ```
 
 ## Releases & auto-update (DAT-237)

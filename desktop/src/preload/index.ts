@@ -5,6 +5,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 const bridge = {
   getConfig: () => ipcRenderer.invoke('config:get'),
+  // Environment picker: the app relaunches on success.
+  selectEnvironment: (id: string | null) => ipcRenderer.invoke('env:select', id),
   listEngagements: () => ipcRenderer.invoke('console:list-engagements'),
   listWork: () => ipcRenderer.invoke('queue:list'),
   authStatus: () => ipcRenderer.invoke('auth:status'),

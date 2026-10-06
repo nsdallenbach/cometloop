@@ -366,9 +366,12 @@ function ConsoleView({
   if (auth === 'signed-out') {
     return (
       <div style={{ padding: 28, display: 'grid', gap: 12, maxWidth: 480 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Console</h2>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>
+          {cfg.activeEnvironment ? `Sign in to ${cfg.activeEnvironment.label}` : 'Console'}
+        </h2>
         <p style={{ margin: 0, fontSize: 13, color: 'var(--tx2)', lineHeight: 1.5 }}>
-          The full console loads here once you&rsquo;re signed in to Databricks.
+          The full console loads here once you&rsquo;re signed in to Databricks
+          {cfg.activeEnvironment ? ` for the ${cfg.activeEnvironment.label} environment` : ''}.
         </p>
         <div>
           <button
@@ -1257,8 +1260,145 @@ const VIEWS_STATIC: Partial<Record<NavId, ReactNode>> = {
   ),
 };
 
+/**
+ * First-launch environment picker: which console deployment this
+ * desktop signs in to. Shown until a choice is persisted (or `APP_URL` pins
+ * the console for a dev run). The staging build preselects Staging so a
+ * tester's path is Continue → Sign in; Production is never silently chosen
+ * on that channel. Choosing relaunches the app — see `env:select` in main.
+ */
+function EnvironmentPicker({ cfg }: { cfg: DesktopConfigView }) {
+  const recommended = cfg.channel === 'staging' ? 'staging' : 'production';
+  const [choice, setChoice] = useState<string>(() =>
+    cfg.environments.some((e) => e.id === recommended) ? recommended : cfg.environments[0].id,
+  );
+  const [state, setState] = useState<'idle' | 'restarting' | 'error'>('idle');
+  const [error, setError] = useState('');
+  const hostOf = (url: string) => {
+    try {
+      return new URL(url).host;
+    } catch {
+      return url;
+    }
+  };
+  const confirm = async () => {
+    setState('restarting');
+    const res = await window.desktopBridge.selectEnvironment(choice);
+    if (!res.ok) {
+      setError(res.error);
+      setState('error');
+    }
+  };
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'grid', placeItems: 'center', background: 'var(--bg)', overflowY: 'auto' }}>
+      <div style={{ width: 520, maxWidth: '92%', display: 'grid', gap: 18, padding: '32px 0' }}>
+        <div style={{ display: 'grid', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Choose an environment</h2>
+            {cfg.channel === 'staging' && (
+              <span
+                style={{
+                  ...mono(600, 9.5),
+                  letterSpacing: '.12em',
+                  color: 'var(--warn)',
+                  border: '1px solid var(--warn)',
+                  borderRadius: 4,
+                  padding: '2px 6px',
+                }}
+              >
+                STAGING BUILD
+              </span>
+            )}
+          </div>
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--tx2)', lineHeight: 1.5 }}>
+            Where should Cometloop sign in? You can switch later from the Identity page.
+          </p>
+        </div>
+        <div role="radiogroup" style={{ display: 'grid', gap: 8 }}>
+          {cfg.environments.map((env) => {
+            const selected = env.id === choice;
+            return (
+              <button
+                key={env.id}
+                role="radio"
+                aria-checked={selected}
+                className="no-drag hv-lift"
+                onClick={() => setChoice(env.id)}
+                disabled={state === 'restarting'}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '18px 1fr auto',
+                  alignItems: 'center',
+                  gap: 12,
+                  textAlign: 'left',
+                  background: selected ? 'var(--bg3)' : 'var(--bg2)',
+                  border: `1px solid ${selected ? 'var(--acc)' : 'var(--line)'}`,
+                  borderRadius: 8,
+                  padding: '12px 14px',
+                  cursor: state === 'restarting' ? 'wait' : 'pointer',
+                  color: 'var(--tx)',
+                  fontFamily: 'inherit',
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 14,
+                    height: 14,
+                    borderRadius: '50%',
+                    border: `2px solid ${selected ? 'var(--acc)' : 'var(--tx3)'}`,
+                    background: selected ? 'var(--acc)' : 'transparent',
+                    boxShadow: selected ? 'inset 0 0 0 3px var(--bg3)' : 'none',
+                  }}
+                />
+                <span style={{ display: 'grid', gap: 3 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 600 }}>
+                    {env.label}
+                    {env.id === recommended && (
+                      <span style={{ ...mono(500, 9.5), color: 'var(--acc)', letterSpacing: '.08em' }}>RECOMMENDED</span>
+                    )}
+                  </span>
+                  {env.note && <span style={{ fontSize: 12, color: 'var(--tx2)', lineHeight: 1.45 }}>{env.note}</span>}
+                </span>
+                <span style={{ ...mono(400, 10.5), color: 'var(--tx3)' }}>{hostOf(env.consoleUrl)}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            className="no-drag hv-lift"
+            onClick={() => void confirm()}
+            disabled={state === 'restarting'}
+            style={{
+              background: 'var(--acc)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              padding: '9px 18px',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: state === 'restarting' ? 'wait' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {state === 'restarting' ? 'Restarting…' : 'Continue'}
+          </button>
+          <span style={{ fontSize: 12, color: 'var(--tx3)' }}>Next: sign in to the workspace that fronts it.</span>
+        </div>
+        {state === 'error' && <div style={{ fontSize: 12, color: 'var(--bad)' }}>{error}</div>}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [nav, setNav] = useState<NavId>('projects');
+  // Environment gate: nothing else mounts until a console is chosen.
+  const [cfg, setCfg] = useState<DesktopConfigView | null>(null);
+  useEffect(() => {
+    void window.desktopBridge.getConfig().then(setCfg);
+  }, []);
   // The console section the webview shows — or last showed, while a native
   // view sits on top — so coming back to it finds it unchanged.
   const [consoleSection, setConsoleSection] = useState<ConsoleSection>('projects');
@@ -1352,6 +1492,15 @@ export function App() {
       )}
     </button>
   );
+  if (!cfg) return null;
+  if (!cfg.envOverride && !cfg.activeEnvironment) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <TitleBar theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onOpenTicket={openTicket} />
+        <EnvironmentPicker cfg={cfg} />
+      </div>
+    );
+  }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <TitleBar theme={theme} onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} onOpenTicket={openTicket} />

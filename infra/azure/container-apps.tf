@@ -63,6 +63,13 @@ resource "azurerm_container_app" "api" {
         name  = "AI_GATEWAY_URL"
         value = var.ai_gateway_url
       }
+      # The console's own sign-in (Neon Auth). Not a secret — the browser
+      # talks to this URL directly; the JWKS URL beside it is in Key Vault
+      # only because the four secrets travel together (locals.tf).
+      env {
+        name  = "NEON_AUTH_BASE_URL"
+        value = var.neon_auth_base_url
+      }
       dynamic "env" {
         for_each = local.secrets
         content {

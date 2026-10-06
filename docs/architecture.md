@@ -359,6 +359,19 @@ deploy` → `bundle run app` on every push to main, serialized by a
 concurrency group (queued intermediates supersede, so merge bursts batch
 into few deploys). Each deploy restarts the app — expect ~1 minute of 502s.
 
+**Staging** is the portable runtime's first hosted environment:
+the same container image on Amazon ECS Express Mode (`infra/aws` applied
+with `environment = "staging"`, one 0.25 vCPU Fargate task behind the
+managed load balancer), the Neon branch `staging`
+(branched from `production`), and the console's own sign-in — Neon Auth on
+that branch, served to the browser from `GET /api/auth/config` and verified
+by the Better Auth JWT verifier in `server/identity.ts`. Who may sign in is
+`app.tenant_members` (admins manage it at `/api/admin/members`; `owner` /
+`admin` rows are console admins, `member` rows developers). `deploy.yml`
+ships every green `main` to staging and promotes to production only on a
+manual dispatch; tester desktop builds (`desktop/README.md` → Environments)
+sign in to `https://staging.cometloop.ai` with no workspace token involved.
+
 ## Key decisions
 
 - **GitHub over ADO** for this repo (tenant conditional-access blocked ADO);

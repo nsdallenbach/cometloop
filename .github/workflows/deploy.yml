@@ -1,15 +1,26 @@
 name: Deploy
 
-# Ships main to Azure Container Apps: build the image from the root
-# Dockerfile, push it to ACR as <sha> and latest, then point the api and
-# worker apps at the <sha> tag. Runs after CI succeeds on main (workflow_run)
-# or by hand (workflow_dispatch from main - the OIDC trust in
-# infra/azure/github-oidc.tf only covers runs on that branch).
+# Ships the console image to Amazon ECS (Express Mode, infra/aws): build
+# from the root Dockerfile, push to the environment's ECR repository as
+# <sha>, move the environment tag onto it, force a new deployment of the
+# service and wait for it to settle.
 #
-# The whole job is gated on the DEPLOY_ENABLED repository variable so merges
-# to main are harmless until the Azure stack exists:
-#   gh variable set DEPLOY_ENABLED --body true
-# Order of operations and the secrets it needs: infra/README.md.
+# Two environments, one stack each (infra/aws, `-var environment=`):
+#
+#   staging    — every green CI run on main (workflow_run), or by hand.
+#                cometloop-staging; Neon branch `staging`; what tester
+#                desktop builds sign in to (staging.cometloop.ai).
+#   production — by hand only (workflow_dispatch with environment=production),
+#                i.e. a promote step after staging has been exercised.
+#                cometloop-prod; Neon branch `production`; app.cometloop.ai.
+#
+# Each GitHub Environment holds the deploy user's AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY (the project's managed policy denies OIDC
+# federation — infra/aws/github-deploy.tf) and a DEPLOY_ENABLED variable
+# that gates the job, so merges to main stay harmless until that stack
+# exists:
+#   gh variable set DEPLOY_ENABLED --env staging --body true
+# Order of operations and the secrets: infra/aws/README.md.
 
 on:
   workflow_run:
@@ -17,120 +28,144 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Which environment to deploy
+        type: choice
+        options: [staging, production]
+        default: staging
 
 permissions:
   contents: read
-  id-token: write # OIDC token for azure/login; no Azure password anywhere
-
-# One deploy at a time, never cancelled midway: a half-updated api/worker
-# pair is worse than a queued run.
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
-
-env:
-  # Mirrors infra/azure/locals.tf `names`. Change both together.
-  AZURE_RESOURCE_GROUP: cometloop-prod-rg
-  ACR_NAME: cometloopprodacr
-  IMAGE_REPOSITORY: cometloop
-  API_APP_NAME: cometloop-prod-api
-  WORKER_APP_NAME: cometloop-prod-worker
 
 jobs:
   deploy:
-    # workflow_run fires on failure too; only deploy a green main.
+    # workflow_run fires on failure too; only deploy a green main. Automatic
+    # runs always target staging; production is an explicit dispatch.
     if: >-
-      ${{ vars.DEPLOY_ENABLED == 'true' &&
-          (github.event_name == 'workflow_dispatch' ||
-           github.event.workflow_run.conclusion == 'success') }}
+      ${{ github.event_name == 'workflow_dispatch' ||
+          github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+    # One deploy per environment at a time, never cancelled midway.
+    concurrency:
+      group: deploy-${{ github.event.inputs.environment || 'staging' }}
+      cancel-in-progress: false
+    env:
+      ENV_NAME: ${{ github.event.inputs.environment || 'staging' }}
+      AWS_REGION: us-east-2
     steps:
-      - name: Resolve commit
-        id: rev
-        # workflow_run checks out the default branch head by default, which
-        # can already be ahead of the commit CI validated; pin to that one.
+      - name: Gate on the environment's DEPLOY_ENABLED
+        if: ${{ vars.DEPLOY_ENABLED != 'true' }}
         run: |
+          echo "DEPLOY_ENABLED is not 'true' for environment $ENV_NAME; skipping (set it once the AWS stack exists)."
+          echo "skip=true" >> "$GITHUB_ENV"
+
+      - name: Resolve names and commit
+        if: ${{ env.skip != 'true' }}
+        id: rev
+        # Names mirror infra/aws/locals.tf (prefix cometloop-<env>); the
+        # infra variable is `prod` where the GitHub Environment is
+        # `production`, and the image tag the service runs is the
+        # environment's name. workflow_run checks out the default branch
+        # head by default, which can be ahead of the commit CI validated, so
+        # the sha is pinned to that run.
+        run: |
+          infra_env="$ENV_NAME"
+          if [ "$infra_env" = "production" ]; then infra_env="prod"; fi
+          base="cometloop-$infra_env"
+          {
+            echo "repository=$base"
+            echo "cluster=$base"
+            echo "service=$base-api"
+            echo "tag=$ENV_NAME"
+          } >> "$GITHUB_OUTPUT"
           sha="${{ github.event.workflow_run.head_sha || github.sha }}"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Deploying $sha"
+          echo "Deploying $sha to $ENV_NAME ($base)"
 
       - uses: actions/checkout@v4
+        if: ${{ env.skip != 'true' }}
         with:
           ref: ${{ steps.rev.outputs.sha }}
 
-      - name: Azure login (OIDC)
-        uses: azure/login@v2
+      - name: AWS credentials
+        if: ${{ env.skip != 'true' }}
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Registry login
-        id: acr
-        run: |
-          server="$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)"
-          az acr login --name "$ACR_NAME"
-          echo "server=$server" >> "$GITHUB_OUTPUT"
+        if: ${{ env.skip != 'true' }}
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       - uses: docker/setup-buildx-action@v3
+        if: ${{ env.skip != 'true' }}
 
       - name: Build and push
+        if: ${{ env.skip != 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          # <sha> is the immutable record; the environment tag is what the
+          # service's task definition points at.
           tags: |
-            ${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.rev.outputs.sha }}
-            ${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: false # keeps the manifest a plain image, which ACA Basic pulls without surprises
+            ${{ steps.ecr.outputs.registry }}/${{ steps.rev.outputs.repository }}:${{ steps.rev.outputs.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ steps.rev.outputs.repository }}:${{ steps.rev.outputs.tag }}
+          cache-from: type=gha,scope=${{ env.ENV_NAME }}
+          cache-to: type=gha,mode=max,scope=${{ env.ENV_NAME }}
+          provenance: false # a plain image manifest, which ECS pulls without surprises
 
-      - name: Update api
-        env:
-          IMAGE: ${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.rev.outputs.sha }}
-        # No --command: the image's default CMD runs the api on $PORT.
+      - name: Roll the service
+        if: ${{ env.skip != 'true' }}
+        id: roll
+        # The service runs `<repository>:<tag>`; a forced deployment makes
+        # ECS pull the tag again, which is now the image just pushed. A
+        # service still on the bootstrap placeholder has to be flipped in
+        # Terraform first (infra/aws/README.md step 4).
         run: |
-          az containerapp update \
-            --name "$API_APP_NAME" \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --image "$IMAGE" \
-            --output none
-
-      - name: Update worker
-        env:
-          IMAGE: ${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.rev.outputs.sha }}
-        # Same image, worker entrypoint. Set here rather than in terraform
-        # because the apps are created with a placeholder image that has no
-        # such entrypoint (infra/azure/container-apps.tf explains the split).
-        run: |
-          az containerapp update \
-            --name "$WORKER_APP_NAME" \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --image "$IMAGE" \
-            --command node dist/server/worker.js \
-            --output none
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          arn="arn:aws:ecs:$AWS_REGION:$account:service/${{ steps.rev.outputs.cluster }}/${{ steps.rev.outputs.service }}"
+          # Express services describe through their own API; the classic
+          # describe-services call leaves taskDefinition and loadBalancers empty.
+          if ! desc="$(aws ecs describe-express-gateway-service --service-arn "$arn" --output json 2>&1)"; then
+            echo "::error::ECS service ${{ steps.rev.outputs.service }} not found in ${{ steps.rev.outputs.cluster }} — apply infra/aws for $ENV_NAME first ($desc)"
+            exit 1
+          fi
+          current="$(printf '%s' "$desc" | jq -r '.service.activeConfigurations[0].primaryContainer.image')"
+          echo "service image: $current"
+          case "$current" in
+            public.ecr.aws/*)
+              echo "::error::the service still runs the bootstrap placeholder; apply infra/aws with bootstrap_placeholder_image=false, then re-run"
+              exit 1 ;;
+          esac
+          aws ecs update-service --cluster "${{ steps.rev.outputs.cluster }}" --service "${{ steps.rev.outputs.service }}" \
+            --force-new-deployment >/dev/null
+          echo "waiting for the service to stabilise…"
+          aws ecs wait services-stable --cluster "${{ steps.rev.outputs.cluster }}" --services "${{ steps.rev.outputs.service }}"
+          # The Express Mode ingress endpoint (the managed load balancer), for the health check below.
+          host="$(printf '%s' "$desc" | jq -r '.service.activeConfigurations[0].ingressPaths[0].endpoint' | sed -E 's#^https?://##')"
+          echo "url=https://$host" >> "$GITHUB_OUTPUT"
 
       - name: Verify
+        if: ${{ env.skip != 'true' }}
         run: |
-          for app in "$API_APP_NAME" "$WORKER_APP_NAME"; do
-            state="$(az containerapp show --name "$app" --resource-group "$AZURE_RESOURCE_GROUP" \
-              --query 'properties.provisioningState' -o tsv)"
-            rev="$(az containerapp show --name "$app" --resource-group "$AZURE_RESOURCE_GROUP" \
-              --query 'properties.latestRevisionName' -o tsv)"
-            health="$(az containerapp revision show --name "$app" --resource-group "$AZURE_RESOURCE_GROUP" \
-              --revision "$rev" --query 'properties.healthState' -o tsv)"
-            echo "$app: provisioning=$state revision=$rev health=$health"
-            if [ "$state" != "Succeeded" ] || [ "$health" = "Unhealthy" ]; then
-              echo "::error::$app did not come up cleanly"
-              exit 1
-            fi
+          # /healthz needs no sign-in. The load balancer's own certificate
+          # covers its AWS hostname only after the custom domain is attached,
+          # so -k is just for this probe; the step summary links the real
+          # hostname once DNS exists.
+          for i in 1 2 3 4 5 6; do
+            if curl -fsSk -m 15 "${{ steps.roll.outputs.url }}/healthz"; then echo; echo "healthz ok"; break; fi
+            if [ "$i" = 6 ]; then echo "::error::/healthz did not answer on ${{ steps.roll.outputs.url }}"; exit 1; fi
+            sleep 10
           done
-          fqdn="$(az containerapp show --name "$API_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
-            --query 'properties.configuration.ingress.fqdn' -o tsv)"
           {
-            echo "### Deployed \`${{ steps.rev.outputs.sha }}\`"
-            echo "- api: https://$fqdn"
-            echo "- image: \`${{ steps.acr.outputs.server }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.rev.outputs.sha }}\`"
+            echo "### Deployed \`${{ steps.rev.outputs.sha }}\` to **$ENV_NAME**"
+            echo "- load balancer: ${{ steps.roll.outputs.url }}"
+            echo "- image: \`${{ steps.ecr.outputs.registry }}/${{ steps.rev.outputs.repository }}:${{ steps.rev.outputs.sha }}\` (tag \`${{ steps.rev.outputs.tag }}\`)"
           } >> "$GITHUB_STEP_SUMMARY"

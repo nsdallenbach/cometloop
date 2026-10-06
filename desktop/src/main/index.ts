@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ConsoleClient } from '../../../shared/api-client';
 import { AgentPool, type AgentKind, AGENT_KINDS } from './agents';
-import { loadConfig, type DesktopConfig } from './config';
+import { activeEnvironment, loadConfig, saveEnvironmentChoice, type DesktopConfig } from './config';
 import { CredentialManager, SIGN_IN_REQUIRED } from './credentials';
 import { DeployManager, type DeploysEvent } from './deploys';
 import { IdentityBroker, IDENTITY_PROVIDERS, type IdentityProvider, type ProviderStatus } from './identity';
@@ -100,7 +100,20 @@ function registerIpc(): void {
   ipcMain.handle('config:get', () => {
     // Renderer-safe view: no secrets.
     const { devToken: _devToken, ...safe } = cfg;
-    return { ...safe, devMode: Boolean(_devToken) };
+    return { ...safe, devMode: Boolean(_devToken), activeEnvironment: activeEnvironment(cfg) };
+  });
+
+  // Environment picker: persist the choice and relaunch — every
+  // long-lived object (credentials, console client, pool, webview session)
+  // was built from the previous URL. `null` clears the choice so the picker
+  // shows again.
+  ipcMain.handle('env:select', (_e, id: unknown) => {
+    if (id !== null && typeof id !== 'string') return { ok: false as const, error: 'bad environment id' };
+    if (id !== null && !cfg.environments.some((env) => env.id === id)) return { ok: false as const, error: `unknown environment: ${id}` };
+    saveEnvironmentChoice(id);
+    app.relaunch();
+    app.exit(0);
+    return { ok: true as const };
   });
 
   ipcMain.handle('console:list-engagements', async () => {

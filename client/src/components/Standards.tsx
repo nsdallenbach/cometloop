@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { authHeaders } from '../auth';
 import type { ContextFile } from '../types';
 import { mono } from '../util';
 import { CODE_LANG, extOf, fencedBlock, lineDiff } from '../lib/standards-doc';
@@ -202,7 +203,8 @@ export function Standards({ engId, lead, toast }: { engId: string; lead: boolean
 
   const insertFile = (f: ContextFile) => {
     setInserting(f.name);
-    fetch(f.url)
+    authHeaders()
+      .then((headers) => fetch(f.url, { headers }))
       .then((r) => {
         if (!r.ok) throw new Error('download failed');
         return r.text();

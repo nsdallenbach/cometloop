@@ -90,3 +90,81 @@ Rules that follow from that split:
   `main`). Use a fresh worktree from `origin/main` for independent work
   (`claude --worktree` puts it under `.claude/worktrees/`, which git, eslint
   and vitest ignore).
+
+## AWS (Agent Toolkit for AWS — new AWS experience)
+
+Hosting for the hosted console (staging first, then production) is **Amazon
+ECS Express Mode** in the **Cometloop** project, Region **us-east-2** —
+`infra/aws/` and `infra/aws/README.md`. App Runner is sunset and denied by
+the project's policy; IAM OIDC providers are denied too, so CI deploys as a
+scoped IAM user. The AWS CLI profile is
+`cometloop` (`aws login --profile cometloop`; the Agent Toolkit MCP server is
+registered with `AWS_MCP_PROXY_PROFILES=cometloop`). The rules below are the
+toolkit's starter rules for the new AWS experience; where they conflict with
+this project's own instructions, the project's instructions win.
+
+### Terminology
+
+- Say "project" instead of "account" — a project contains an AWS account and
+  settings for sharing with other collaborators.
+- Say "team member" instead of "IAM user" — users are invited by email, not
+  created or federated in IAM.
+- Say "AWS Settings" for management tasks at <https://settings.aws.com/>
+  (project management, billing, team members, spend limits). Actual AWS
+  resources are viewed in the AWS Management Console.
+- Say "selected Region" for the user's Region — not "home Region".
+- The user has a managed IAM experience: managed service control policies
+  (SCPs) and resource control policies (RCPs) govern the use of AWS. IAM
+  policies are still needed to let services work with each other. Reference:
+  <https://docs.aws.amazon.com/accounts/latest/reference/scps-and-rcps-for-projects.html>
+
+### Constraints
+
+- All projects share a single Region determined by the user's contact
+  address (here **us-east-2**). Resources cannot be created elsewhere.
+  - MUST create all Regional resources in the project's assigned Region.
+  - CAN create AWS WAF and CloudWatch Logs resources in us-east-1 only when a
+    global resource (e.g. a global WAF) requires us-east-1 dependencies; when
+    inventorying resources, look in both the selected Region and us-east-1
+    for those.
+  - MUST NOT create Lambda, API Gateway or other Regional resources in any
+    other Region. MUST NOT use Lambda@Edge, CloudFormation StackSets,
+    cross-Region actions (DynamoDB/S3/RDS replication, multi-Region KMS
+    keys) or Route 53 cross-Region routing policies.
+  - CloudFront is global and allowed in us-east-1, pointing at
+    project-Region origins.
+  - If the user cannot confirm their Region (AWS Settings → View all
+    projects → Overview → Additional Info → Region), check `~/.aws/config`.
+- IAM permissions for human access are managed by AWS. Don't assign roles
+  to team members unless absolutely necessary.
+- A paid-plan project may have a **spend limit** that pauses it when
+  exceeded. On sudden "Access Denied" for operations that previously worked,
+  ask about the spend limit (AWS Settings → Billing) and whether the project
+  is on the paid plan. After creating resources, ask whether to keep or
+  clean them up.
+- Not every service is available. If one fails: run
+  `aws freetier get-account-plan-state --profile cometloop`; for `FREE` check
+  the Free Tier supported-services list, for `PAID` the Paid Tier list, else
+  the "Not supported for this experience" list — the user may need to
+  activate advanced features.
+  <https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html>
+- Before starting an AWS task, check whether a relevant AWS skill is
+  available (`retrieve_skill` on the aws-mcp server) and prefer its guidance.
+
+### Help level
+
+`help_level`: **not yet set** — ask once: "How much guidance would you like
+from me? Low (I only flag security risks), medium (I ask a couple of
+clarifying questions if something seems off), or high (I explain what I'm
+doing, suggest alternatives, and flag best practices)." Then record the
+answer here.
+
+- **LOW**: follow the constraints, execute requests without modification, no
+  clarifying questions unless the action would create a security
+  vulnerability, no alternatives.
+- **MEDIUM**: execute the request; up to two clarifying questions per task
+  when something is ambiguous or off; never repeat a dismissed question; no
+  trade-off explanations unless asked.
+- **HIGH**: explain each step before executing, suggest alternatives when a
+  better approach exists, flag best practices; still execute the user's
+  choice.

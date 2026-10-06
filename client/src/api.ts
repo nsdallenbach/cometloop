@@ -1,3 +1,4 @@
+import { accessToken } from './auth';
 import type {
   ActivePr,
   AdminData,
@@ -289,10 +290,23 @@ export class ApiError extends Error {
   }
 }
 
+/** `init` plus the sign-in bearer when this deployment uses the console's own sign-in (client/src/auth.ts). */
+async function withAuth(init: RequestInit | undefined, force = false): Promise<RequestInit | undefined> {
+  const token = await accessToken(force);
+  if (!token) return init;
+  return { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } };
+}
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(path, init);
+    res = await fetch(path, await withAuth(init));
+    // A token that expired between mint and send: refresh once and retry,
+    // the same discipline as the desktop's ConsoleClient.
+    if (res.status === 401) {
+      const retry = await withAuth(init, true);
+      if (retry !== init) res = await fetch(path, retry);
+    }
   } catch {
     throw new ApiError('Network error — check your connection', 0);
   }
@@ -585,7 +599,7 @@ export const api = {
   },
   /** Per-role live health; the body is returned even on 503 (a configured role that does not answer). */
   async llmHealth(): Promise<LlmHealth> {
-    const res = await fetch('/api/llm/health');
+    const res = await fetch('/api/llm/health', await withAuth(undefined));
     return (await res.json()) as LlmHealth;
   },
 

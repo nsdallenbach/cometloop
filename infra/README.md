@@ -211,3 +211,14 @@ while it lasts. Neon is billed separately on its own plan.
   by hand - terraform will not undo it.
 - Redeploy the apps from scratch after an image exists:
   `terraform apply -var bootstrap_placeholder_image=false -var image_tag=<sha>`.
+
+## AWS — the hosting that is actually being set up
+
+The Azure stack above was written first and is kept as the alternative;
+**nothing of it is applied.** The console is going to **Amazon ECS Express
+Mode** instead — one Fargate service whose load balancer, HTTPS listener,
+target group, security groups and autoscaling ECS provisions and manages
+(App Runner is sunset and denied by the project's policy). Everything about it — the stack, cost, order of
+operations, DNS, Neon Auth trusted origins, GitHub Environments and the
+first deploy — is in [aws/README.md](aws/README.md). `deploy.yml` targets
+AWS; the Azure path has no workflow any more.

@@ -171,3 +171,16 @@ variable "tags" {
     managedBy = "terraform"
   }
 }
+
+variable "neon_auth_base_url" {
+  description = <<-EOT
+    Neon Auth (managed Better Auth) base URL of the Neon branch this
+    environment runs on — the console serves it to the browser from
+    `GET /api/auth/config` and signs users in against it. Per branch: the
+    `production` branch's URL for prod, the `staging` branch's for staging
+    (`neon neon-auth status`, or the Neon console → Auth). The matching
+    JWKS URL goes into Key Vault as `neon-auth-jwks-url`.
+  EOT
+  type        = string
+  default     = ""
+}

@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import express, { Application } from 'express';
 import { extractSowText } from './extract-text';
-import { callerOf, resolveCaller, type Caller } from './roles';
-import { identityOf, requestAuthor, requireSignIn, setTenantDirectory } from '../identity';
+import { callerOf, resolveCaller, setMemberRoleDirectory, type Caller } from './roles';
+import { identityOf, requestAuthor, requireSignIn, resolveIdentity, setTenantDirectory } from '../identity';
 import { tenancySchemaSql } from '../db/tenancy';
 import { feedPageQuery, parseFeedPageQuery } from './feed-page';
 import { startPerTenant } from '../db/tenant-loops';
@@ -820,6 +820,16 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     const t = rows[0]?.tenant_id;
     return typeof t === 'string' ? t : null;
   });
+  // …and their console role comes from the same directory row (owner/admin →
+  // admin), read the same way.
+  setMemberRoleDirectory(async (tenantId, email) => {
+    const { rows } = await adminQ(`SELECT role FROM app.tenant_members WHERE tenant_id = $1 AND LOWER(email) = LOWER($2) LIMIT 1`, [
+      tenantId,
+      email,
+    ]);
+    const r = rows[0]?.role;
+    return typeof r === 'string' ? r : null;
+  });
 
   /** Sends 403 and returns null unless the caller is an admin. */
   const requireAdmin = async (req: express.Request, res: express.Response): Promise<Caller | null> => {
@@ -882,6 +892,20 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       }
     });
 
+    // Which sign-in fronts this deployment — read by the client before it
+    // knows who you are, so it sits ahead of the gate. Not a secret: the auth
+    // URL is the same one the browser talks to directly. Neon Auth is the
+    // console's own sign-in (portable runtime); behind the Databricks Apps
+    // proxy, or with DEV_IDENTITY_EMAIL, the server identifies the caller and
+    // the client has nothing to do (client/src/auth.ts).
+    app.get('/api/auth/config', (_req, res) => {
+      const url = process.env.NEON_AUTH_BASE_URL?.trim();
+      const jwks = process.env.NEON_AUTH_JWKS_URL?.trim();
+      res.setHeader('Cache-Control', 'no-store');
+      if (url && jwks && !process.env.DEV_IDENTITY_EMAIL?.trim()) res.json({ provider: 'neon-auth', url });
+      else res.json({ provider: 'none' });
+    });
+
     // Fail closed: every /api route below needs a signed-in caller, except the
     // sign-in-exempt paths listed in server/identity.ts (runner machinery).
     app.use('/api', requireSignIn());
@@ -904,6 +928,76 @@ export async function setupApiRoutes(appkit: AppKitServices) {
       } catch (err) {
         console.error('me failed:', err);
         res.status(500).json({ error: 'Failed to resolve identity' });
+      }
+    });
+
+    // ---- workspace members (admin) ----
+    // Who may sign in to this workspace with the console's own sign-in
+    // (Neon Auth): a Better Auth identity whose email is not in
+    // `app.tenant_members` is answered 403 `No workspace` by the gate, so an
+    // admin adds testers / teammates here before they sign up. Role is the
+    // workspace role only (`owner`/`admin` → console admin, `member` →
+    // developer); leads are still per engagement. Reads and writes go through
+    // the owner connection because the directory is global (no RLS), scoped
+    // here to the caller's own tenant.
+    const tenantOf = async (req: express.Request): Promise<string> => (await resolveIdentity(req))?.tenantId ?? '';
+    app.get('/api/admin/members', async (req, res) => {
+      if (!(await requireAdmin(req, res))) return;
+      try {
+        const { rows } = await adminQ(
+          `SELECT email, role, created_at FROM app.tenant_members WHERE tenant_id = $1 ORDER BY (role = 'owner') DESC, LOWER(email)`,
+          [await tenantOf(req)],
+        );
+        res.json(rows.map((r) => ({ email: String(r.email), role: String(r.role), createdAt: r.created_at })));
+      } catch (err) {
+        console.error('list members failed:', err);
+        res.status(500).json({ error: 'Failed to list members' });
+      }
+    });
+    app.post('/api/admin/members', async (req, res) => {
+      if (!(await requireAdmin(req, res))) return;
+      const parsed = z
+        .object({ email: z.string().trim().email().max(254), role: z.enum(['owner', 'admin', 'member']).default('member') })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'email (and optional role: owner | admin | member) required' });
+        return;
+      }
+      try {
+        const { rows } = await adminQ(
+          `INSERT INTO app.tenant_members (tenant_id, email, role) VALUES ($1, $2, $3)
+           ON CONFLICT (tenant_id, LOWER(email)) DO UPDATE SET role = EXCLUDED.role
+           RETURNING email, role, created_at`,
+          [await tenantOf(req), parsed.data.email, parsed.data.role],
+        );
+        const r = rows[0];
+        res.status(201).json({ email: String(r.email), role: String(r.role), createdAt: r.created_at });
+      } catch (err) {
+        console.error('add member failed:', err);
+        res.status(500).json({ error: 'Failed to add member' });
+      }
+    });
+    app.delete('/api/admin/members/:email', async (req, res) => {
+      const caller = await requireAdmin(req, res);
+      if (!caller) return;
+      const email = String(req.params.email ?? '').trim();
+      if (email.toLowerCase() === caller.email.toLowerCase()) {
+        res.status(400).json({ error: 'You cannot remove yourself' });
+        return;
+      }
+      try {
+        const r = await adminQ(
+          `DELETE FROM app.tenant_members WHERE tenant_id = $1 AND LOWER(email) = LOWER($2) AND role <> 'owner' RETURNING email`,
+          [await tenantOf(req), email],
+        );
+        if (r.rows.length === 0) {
+          res.status(404).json({ error: 'No such member (owners cannot be removed here)' });
+          return;
+        }
+        res.status(204).end();
+      } catch (err) {
+        console.error('remove member failed:', err);
+        res.status(500).json({ error: 'Failed to remove member' });
       }
     });
 
