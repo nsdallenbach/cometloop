@@ -39,3 +39,8 @@ publish:
   # Publish as a real release, not a draft: electron-updater only sees
   # published releases, and the workflow already gates on an explicit tag push.
   releaseType: release
+# node-pty (the only native module) ships N-API prebuilds for win32/darwin, so
+# the Electron rebuild electron-builder would run by default adds nothing and
+# needs Visual Studio build tools on Windows — a dev laptop packaging a tester
+# build has none. Skip it; the prebuilt binaries are what ship.
+npmRebuild: false

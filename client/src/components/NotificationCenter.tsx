@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Bell, X } from 'lucide-react';
 import { api } from '../api';
+import { withAccessToken } from '../auth';
 import type { Notification } from '../types';
 import { mono } from '../util';
 
@@ -43,18 +44,39 @@ export function NotificationCenter({ onOpenTicket }: { onOpenTicket: (key: strin
   useEffect(load, [load]);
 
   useEffect(() => {
-    const events = new EventSource('/api/notifications/stream');
-    events.onmessage = (event) => {
-      // event.data is `any` off the EventSource type — narrow before parsing.
-      const payload: unknown = event.data;
-      const raw: unknown = typeof payload === 'string' ? (JSON.parse(payload) as unknown) : {};
-      const notification = fromRow((raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>);
-      setItems((current) => [notification, ...current.filter((item) => item.id !== notification.id)]);
-      setUnread((count) => count + 1);
-      setToasts((current) => [...current, notification]);
-      setTimeout(() => setToasts((current) => current.filter((item) => item.id !== notification.id)), AUTO_DISMISS_MS);
+    // EventSource cannot send headers, so the sign-in JWT rides along as
+    // `?access_token=` (client/src/auth.ts). It expires in minutes; when the
+    // server drops the stream the browser would reconnect with the stale URL,
+    // so reconnection is ours: close, mint a fresh token, reopen.
+    let events: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let closed = false;
+    const open = async () => {
+      const url = await withAccessToken('/api/notifications/stream');
+      if (closed) return;
+      events = new EventSource(url);
+      events.onmessage = (event) => {
+        // event.data is `any` off the EventSource type — narrow before parsing.
+        const payload: unknown = event.data;
+        const raw: unknown = typeof payload === 'string' ? (JSON.parse(payload) as unknown) : {};
+        const notification = fromRow((raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>);
+        setItems((current) => [notification, ...current.filter((item) => item.id !== notification.id)]);
+        setUnread((count) => count + 1);
+        setToasts((current) => [...current, notification]);
+        setTimeout(() => setToasts((current) => current.filter((item) => item.id !== notification.id)), AUTO_DISMISS_MS);
+      };
+      events.onerror = () => {
+        events?.close();
+        events = null;
+        if (!closed) retry = setTimeout(() => void open(), 5_000);
+      };
     };
-    return () => events.close();
+    void open();
+    return () => {
+      closed = true;
+      clearTimeout(retry);
+      events?.close();
+    };
   }, []);
 
   useEffect(() => {

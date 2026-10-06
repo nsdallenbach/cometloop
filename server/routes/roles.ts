@@ -48,11 +48,29 @@ async function databricksRole(token: string): Promise<Role> {
 }
 
 /**
+ * Tenant membership role for a Better Auth identity: `(tenantId, email)` →
+ * the `app.tenant_members.role` value, or null when the email is not a
+ * member. Wired by `setupApiRoutes` to a read on the owner connection (the
+ * directory is global); unset in tests, where every Better Auth identity is
+ * a developer.
+ */
+export type MemberRoleDirectory = (tenantId: string, email: string) => Promise<string | null>;
+
+let memberRoleDirectory: MemberRoleDirectory | null = null;
+
+export function setMemberRoleDirectory(lookup: MemberRoleDirectory | null): void {
+  memberRoleDirectory = lookup;
+}
+
+/**
  * The role an identity carries. Databricks identities are looked up in the
  * workspace groups; without a forwarded token there is nothing to look up, so
  * they are developers. A `dev` identity is the local developer's admin stand-in
- * (`DEV_IDENTITY_EMAIL`, see server/identity.ts). Better Auth identities have
- * no group mapping yet — developer until the role source for them lands.
+ * (`DEV_IDENTITY_EMAIL`, see server/identity.ts). A Better Auth identity is
+ * an admin when its tenant membership says `owner` or `admin` (the stand-in
+ * for the organization role until the organization plugin is wired —
+ * docs/platform-architecture.md §5), otherwise a developer; leads are still
+ * decided per engagement by `app.engagement_leads`.
  */
 export async function roleOf(identity: Identity): Promise<Role> {
   switch (identity.source) {
@@ -60,8 +78,21 @@ export async function roleOf(identity: Identity): Promise<Role> {
       return identity.accessToken ? databricksRole(identity.accessToken) : 'developer';
     case 'dev':
       return 'admin';
-    case 'better-auth':
-      return 'developer';
+    case 'better-auth': {
+      if (!memberRoleDirectory || !identity.tenantId) return 'developer';
+      const key = `member:${identity.tenantId}:${identity.email.toLowerCase()}`;
+      const hit = cache.get(key);
+      if (hit && hit.expires > Date.now()) return hit.role;
+      let role: Role = 'developer';
+      try {
+        const member = (await memberRoleDirectory(identity.tenantId, identity.email))?.toLowerCase();
+        if (member === 'owner' || member === 'admin') role = 'admin';
+      } catch (err) {
+        console.warn('[roles] membership lookup failed, defaulting to developer:', (err as Error).message);
+      }
+      cache.set(key, { role, expires: Date.now() + CACHE_TTL_MS });
+      return role;
+    }
   }
 }
 

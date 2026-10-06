@@ -44,9 +44,13 @@ the context handed to agent runners.
   as agents) open PRs and stop. Merging is the human review gate.
 - **Merged is not deployed.** Every merge to `main` runs the CI gate
   (typecheck → lint → build, plus the desktop typecheck) and only then
-  deploys. A red Actions run means
-  the merge shipped nothing — check the Actions tab or the ticket's deploy
-  badge before believing a feature is live.
+  deploys — to **staging** (`staging.cometloop.ai`, Amazon ECS, Neon branch
+  `staging`). **Production is a promotion**: someone runs the Deploy
+  workflow with `environment = production` after staging has been
+  exercised; nothing reaches production on merge alone. A red Actions run
+  means the merge shipped nothing — check the Actions tab or the ticket's
+  deploy badge before believing a feature is live. Hosting and the runbook:
+  `infra/aws/README.md`.
 - **Done means deployed.** The board refuses a move into Done until the
   ticket's linked PR is merged and its deploy pipeline has succeeded (DAT-213)
   — by hand, over the API, or through MCP. The rule is not retroactive and

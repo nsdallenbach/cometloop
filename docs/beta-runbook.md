@@ -42,12 +42,25 @@ required (an authenticated CLI is used silently as a fallback if present).
 
 ## 2. First run — sign in
 
-1. Launch the app. Open the **Identity** tab (⛉ in the left nav).
-2. Under **DATABRICKS**, click **Sign in to Databricks**. Your browser opens
+1. Launch the app. The first screen asks which **environment** to sign in
+   to. The beta build is the **Cometloop Staging** build, which preselects
+   **Staging** — keep it and click **Continue** (the app restarts once).
+   Staging is its own console with its own data; nothing you do there
+   reaches production. (Identity → **Switch environment** brings this
+   screen back if you ever need it.)
+   **Staging signs you in with a Cometloop account, not Databricks**: the
+   Projects view shows a sign-in screen — use the email the Cometloop admin
+   registered for you (ask if you have not been added; the console answers
+   *No workspace* otherwise) and create your password with **New here?
+   Create an account**, or **Continue with Google** on the same email. You
+   stay signed in across restarts. Steps 2–4 below are the Databricks sign-in
+   that the **Production** environment uses; skip them on Staging.
+2. Open the **Identity** tab (⛉ in the left nav).
+3. Under **DATABRICKS**, click **Sign in to Databricks**. Your browser opens
    the workspace sign-in; complete it and return — the app catches the
    redirect. You stay signed in across restarts (refresh token encrypted via
    the OS keychain: DPAPI on Windows, Keychain on macOS, libsecret on Linux).
-3. The auth row should show a green **signed in (browser OAuth)** (or
+4. The auth row should show a green **signed in (browser OAuth)** (or
    **signed in via Databricks CLI** if the CLI fallback kicked in). Use
    **Test connection** to list your engagements and prove the loop.
 

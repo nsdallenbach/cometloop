@@ -8,12 +8,70 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 
+/** Build channel baked in by electron.vite.config.ts (`COMETLOOP_CHANNEL`). */
+export const CHANNEL: 'production' | 'staging' = __COMETLOOP_CHANNEL__;
+
+// Production is still the Databricks App until the Azure stack in infra/ is
+// applied (then it becomes https://app.cometloop.ai with consoleAuth 'none',
+// like staging). Staging is the Azure Container App on the Neon `staging`
+// branch; the console signs the tester in itself (Neon Auth), so no
+// workspace token is involved — see docs/platform-architecture.md §5.
+const PRODUCTION_CONSOLE_URL = 'https://delivery-console-7474645607548631.aws.databricksapps.com';
+const STAGING_CONSOLE_URL = 'https://staging.cometloop.ai';
+const DATABRICKS_HOST = 'https://dbc-96494b8f-6b86.cloud.databricks.com';
+
+/**
+ * An environment is a console deployment the desktop can sign in to.
+ * The first launch asks which one; the choice is persisted as
+ * `environment` and applied on every start. Users can add their own to
+ * `environments` in config.json (a client's own hosted console, say).
+ */
+const EnvironmentSchema = z.object({
+  id: z.string().min(1).max(40),
+  label: z.string().min(1).max(60),
+  consoleUrl: z.string().url(),
+  /** Workspace that fronts this console; omit to keep the default host. */
+  databricksHost: z.string().url().optional(),
+  /** See `consoleAuth` below; unset, a localhost URL means 'none'. */
+  consoleAuth: z.enum(['databricks', 'none']).optional(),
+  /** One line under the name on the picker. */
+  note: z.string().max(160).optional(),
+});
+export type Environment = z.infer<typeof EnvironmentSchema>;
+
+export const BUILT_IN_ENVIRONMENTS: Environment[] = [
+  {
+    id: 'production',
+    label: 'Production',
+    consoleUrl: PRODUCTION_CONSOLE_URL,
+    note: 'The live console — real projects, real tickets.',
+  },
+  {
+    id: 'staging',
+    label: 'Staging',
+    consoleUrl: STAGING_CONSOLE_URL,
+    consoleAuth: 'none',
+    note: 'The tester environment: its own data, nothing you do here reaches production. Sign in with your Cometloop account.',
+  },
+  {
+    id: 'local',
+    label: 'Local',
+    consoleUrl: 'http://localhost:8000',
+    consoleAuth: 'none',
+    note: 'A console dev server running on this machine (npm run dev at the repo root).',
+  },
+];
+
 const ConfigSchema = z.object({
-  consoleUrl: z
-    .string()
-    .url()
-    .default('https://delivery-console-7474645607548631.aws.databricksapps.com'),
-  databricksHost: z.string().url().default('https://dbc-96494b8f-6b86.cloud.databricks.com'),
+  /**
+   * The environments this build can sign in to and which one is active.
+   * `environment: null` → the picker shows on launch. `APP_URL` in the
+   * environment (dev runs) bypasses both and pins the console URL directly.
+   */
+  environments: z.array(EnvironmentSchema).min(1).default(BUILT_IN_ENVIRONMENTS),
+  environment: z.string().nullable().default(null),
+  consoleUrl: z.string().url().default(PRODUCTION_CONSOLE_URL),
+  databricksHost: z.string().url().default(DATABRICKS_HOST),
   /**
    * How the console authenticates the desktop: 'databricks' = workspace OAuth
    * token through the Apps proxy; 'none' = the console handles sign-in itself
@@ -34,8 +92,12 @@ const ConfigSchema = z.object({
   maxRunMinutes: z.number().int().min(0).default(180),
   /** Path to the delivery-console MCP server to wire into workdirs (optional). */
   mcpServer: z.string().optional(),
-  /** Silent auto-update from GitHub Releases (DAT-237); disable to pin a build. */
-  autoUpdate: z.boolean().default(true),
+  /**
+   * Silent auto-update from GitHub Releases (DAT-237); disable to pin a build.
+   * Off by default on the staging channel: the release feed carries
+   * production builds, which must never replace a tester's staging install.
+   */
+  autoUpdate: z.boolean().default(CHANNEL !== 'staging'),
   /**
    * Local deploy command override (DAT-236). Unset, the deploy executor
    * auto-detects: Databricks bundle repos run `databricks bundle deploy` +
@@ -89,20 +151,33 @@ export type AgentKindConfig = z.infer<ReturnType<typeof agentKindSchema>>;
 export type DesktopConfig = z.infer<typeof ConfigSchema> & {
   /** Dev-mode only, from env — never persisted. */
   devToken?: string;
+  /** `APP_URL` pinned the console for this run: no picker, no environment. */
+  envOverride: boolean;
+  /** Which build this is — drives the picker's default and the updater. */
+  channel: typeof CHANNEL;
 };
 
 const configPath = () => path.join(app.getPath('userData'), 'config.json');
 
-export function loadConfig(): DesktopConfig {
-  let fileValues: Record<string, unknown> = {};
+function readConfigFile(): Record<string, unknown> {
   const p = configPath();
-  if (existsSync(p)) {
-    try {
-      fileValues = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>;
-    } catch {
-      // Corrupt config falls back to defaults; the file is rewritten below.
-    }
+  if (!existsSync(p)) return {};
+  try {
+    return JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>;
+  } catch {
+    // Corrupt config falls back to defaults; the file is rewritten by loadConfig.
+    return {};
   }
+}
+
+/** The environment a config names, or null when none is chosen / it was removed. */
+export function activeEnvironment(cfg: Pick<DesktopConfig, 'environments' | 'environment'>): Environment | null {
+  if (!cfg.environment) return null;
+  return cfg.environments.find((e) => e.id === cfg.environment) ?? null;
+}
+
+export function loadConfig(): DesktopConfig {
+  const fileValues = readConfigFile();
 
   const envValues: Record<string, unknown> = {};
   if (process.env.APP_URL) envValues.consoleUrl = process.env.APP_URL;
@@ -120,26 +195,47 @@ export function loadConfig(): DesktopConfig {
 
   const parsed = ConfigSchema.parse({ ...fileValues, ...envValues });
 
+  // The chosen environment decides where the console is — unless APP_URL
+  // pinned it for this run (developing against a local server).
+  const envOverride = Boolean(process.env.APP_URL);
+  const env = envOverride ? null : activeEnvironment(parsed);
+  if (env) {
+    parsed.consoleUrl = env.consoleUrl;
+    parsed.consoleAuth = env.consoleAuth;
+    if (env.databricksHost && !process.env.DATABRICKS_HOST) parsed.databricksHost = env.databricksHost;
+  } else if (!envOverride && parsed.environment) {
+    // Named an environment that no longer exists in the list: ask again.
+    parsed.environment = null;
+  }
+
   // First run (or corrupt file): persist the resolved non-secret config so
   // users have a file to edit.
+  const p = configPath();
   if (!existsSync(p)) {
     mkdirSync(path.dirname(p), { recursive: true });
     writeFileSync(p, JSON.stringify(parsed, null, 2));
   }
 
-  return { ...parsed, devToken: process.env.DATABRICKS_TOKEN || undefined };
+  return { ...parsed, devToken: process.env.DATABRICKS_TOKEN || undefined, envOverride, channel: CHANNEL };
 }
 
 /** Persist the agent-fleet block (the only config the UI edits today). */
 export function saveAgentsConfig(cfg: DesktopConfig): void {
   const p = configPath();
-  let fileValues: Record<string, unknown> = {};
-  try {
-    fileValues = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>;
-  } catch {
-    // fresh or corrupt file — rewrite from the live config
-  }
-  const { devToken: _devToken, ...persistable } = cfg;
+  const fileValues = readConfigFile();
+  const { devToken: _devToken, envOverride: _envOverride, channel: _channel, ...persistable } = cfg;
   mkdirSync(path.dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify({ ...fileValues, ...persistable }, null, 2));
+}
+
+/**
+ * Persist the environment choice (null → ask again on next launch). The
+ * caller relaunches: the credential manager, console client, agent pool and
+ * webview session are all built from the resolved URL at startup.
+ */
+export function saveEnvironmentChoice(id: string | null): void {
+  const p = configPath();
+  const fileValues = readConfigFile();
+  mkdirSync(path.dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify({ ...fileValues, environment: id }, null, 2));
 }

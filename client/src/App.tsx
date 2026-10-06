@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { Navigate, useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from './api';
+import { authConfig, signOut as authSignOut, type AuthConfig } from './auth';
+import { SignIn } from './components/SignIn';
 import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
 import { parsePath, paths, type Tab } from './routes';
 import { mono, STATUS_LABEL } from './util';
@@ -60,6 +62,11 @@ export default function App() {
   const [meError, setMeError] = useState(false);
   // The server answered 401: nobody is signed in (see server/identity.ts).
   const [signedOut, setSignedOut] = useState(false);
+  // Which sign-in fronts this deployment (client/src/auth.ts); null until known.
+  const [auth, setAuth] = useState<AuthConfig | null>(null);
+  useEffect(() => {
+    void authConfig().then(setAuth);
+  }, []);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -516,8 +523,9 @@ export default function App() {
   if (screen.name === 'redirect') return <Navigate to={screen.to} replace />;
   if (screen.name === 'external') return <ExternalRedirect to={screen.to} />;
 
-  // Minimal signed-out state. Sign-in itself arrives with the Better Auth
-  // client in a later phase; until then this only says what happened.
+  // Signed out. With the console's own sign-in configured (Neon Auth) this is
+  // the sign-in screen; behind a proxy that should have identified the caller
+  // it only says what happened.
   if (signedOut) {
     return (
       <div
@@ -533,6 +541,14 @@ export default function App() {
           fontFamily: "'DM Sans', sans-serif",
         }}
       >
+        {auth?.provider === 'neon-auth' ? (
+          <SignIn
+            onSignedIn={() => {
+              loadMe();
+              void refreshEngagements();
+            }}
+          />
+        ) : (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, textAlign: 'center', maxWidth: 360 }}>
           <div style={{ ...mono(500, 11), color: 'var(--tx3)', letterSpacing: '.08em' }}>COMETLOOP</div>
           <div style={{ fontSize: 18, fontWeight: 600 }}>Sign in required</div>
@@ -556,6 +572,7 @@ export default function App() {
             RETRY
           </button>
         </div>
+        )}
       </div>
     );
   }
@@ -726,6 +743,30 @@ export default function App() {
                   .toUpperCase()
               : '·'}
           </div>
+          {auth?.provider === 'neon-auth' && (
+            <button
+              onClick={() => {
+                void authSignOut().then(() => {
+                  setMe(null);
+                  setSignedOut(true);
+                });
+              }}
+              title="Sign out of Cometloop"
+              style={{
+                ...mono(500, 10),
+                background: 'none',
+                border: '1px solid var(--line2)',
+                color: 'var(--tx2)',
+                borderRadius: 3,
+                padding: '3px 7px',
+                cursor: 'pointer',
+                letterSpacing: '.06em',
+              }}
+              className="hv-tx2"
+            >
+              SIGN OUT
+            </button>
+          )}
         </div>
       )}
 

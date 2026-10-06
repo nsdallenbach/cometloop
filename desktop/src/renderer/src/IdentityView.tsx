@@ -95,6 +95,19 @@ export function IdentityView() {
 
   const db = AUTH_TEXT[auth];
   const host = cfg?.databricksHost.replace(/^https?:\/\//, '') ?? '';
+  // Environment: named next to the workspace host so a tester can
+  // see at a glance which console this build is signed in to.
+  const envLabel = cfg?.envOverride ? 'Local override (APP_URL)' : cfg?.activeEnvironment?.label;
+  const [switching, setSwitching] = useState(false);
+  const switchEnvironment = async () => {
+    setSwitching(true);
+    const res = await window.desktopBridge.selectEnvironment(null);
+    if (!res.ok) {
+      setDbError(res.error);
+      setDbState('error');
+      setSwitching(false);
+    }
+  };
 
   return (
     <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 18, overflowY: 'auto', height: '100%', boxSizing: 'border-box' }}>
@@ -108,7 +121,7 @@ export function IdentityView() {
         <ServiceCard
           service="databricks"
           title="Databricks"
-          sub={host}
+          sub={envLabel ? `${envLabel} · ${host}` : host}
           status={db.text}
           tone={dbState === 'signing-in' || dbState === 'testing' ? 'agent' : db.tone}
           busy={dbState === 'signing-in' || dbState === 'testing'}
@@ -127,6 +140,11 @@ export function IdentityView() {
               {auth === 'oauth' && (
                 <Btn tone="muted" onClick={() => void signOut()}>
                   Sign out
+                </Btn>
+              )}
+              {cfg && !cfg.envOverride && (
+                <Btn tone="muted" onClick={() => void switchEnvironment()} disabled={switching}>
+                  {switching ? 'Restarting…' : 'Switch environment'}
                 </Btn>
               )}
             </>

@@ -1,0 +1,29 @@
+# Staging (tester) build — layered on electron-builder.yml. Build with
+# `npm run dist:win:staging` (sets COMETLOOP_CHANNEL=staging so the app
+# preselects the Staging environment). Distinct appId + productName so it
+# installs beside the production Cometloop instead of replacing it, with its
+# own config.json / keychain entries under "Cometloop Staging". No publish
+# block: staging builds are handed to testers directly and never feed the
+# production electron-updater channel.
+extends: ./electron-builder.yml
+appId: com.datavail.delivery-console.staging
+productName: Cometloop Staging
+directories:
+  output: release-staging
+  buildResources: resources
+nsis:
+  artifactName: ${productName}-${version}-staging-setup.${ext}
+portable:
+  artifactName: ${productName}-${version}-staging-portable.${ext}
+publish: null
+# Unsigned tester build packaged on a dev laptop: electron-builder's
+# winCodeSign toolchain (rcedit + signtool) extracts with symlinks, which
+# needs Developer Mode / admin on Windows. Skip exe editing + signing here —
+# the installer and exe are unsigned anyway (SmartScreen click-through, as
+# the beta runbook says); the icon/version metadata on the exe is all that
+# is lost. CI-built production releases keep the default.
+win:
+  target:
+    - nsis
+    - portable
+  signAndEditExecutable: false

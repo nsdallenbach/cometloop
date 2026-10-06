@@ -141,6 +141,13 @@ function betterAuthToken(req: express.Request): string {
   const auth = headerValue(req, 'authorization');
   const m = /^Bearer\s+(.+)$/i.exec(auth);
   if (m && looksLikeJwt(m[1].trim())) return m[1].trim();
+  // EventSource cannot set headers, so the notification stream carries the
+  // same short-lived JWT as `?access_token=` (GET only; it is still verified
+  // against the JWKS like any bearer, and expires in minutes).
+  if (req.method === 'GET') {
+    const qt = (req.query as Record<string, unknown> | undefined)?.access_token;
+    if (typeof qt === 'string' && looksLikeJwt(qt.trim())) return qt.trim();
+  }
   const cookieName = process.env.NEON_AUTH_COOKIE?.trim();
   for (const name of cookieName ? [cookieName] : SESSION_COOKIES) {
     const v = cookieValue(req, name);
