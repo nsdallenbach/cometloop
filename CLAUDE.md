@@ -38,6 +38,12 @@ The repo ships **one product in two shells** that must move together:
 | `shared/` | Code both shells import: `api-client/` (typed console client), `design/` (tokens), `harnesses/` (coding-agent adapters). | Covered by both of the above |
 | `mcp/`, `devbox-runner/`, `scripts/` | Standalone plain-JS packages (MCP server, headless runner, ops scripts). | `node --check <file>` |
 
+Hosting is **not** in this repo: the Terraform stacks (AWS ECS Express Mode,
+the Azure alternative, Cloudflare) and the Deploy workflow live in the
+private `nsdallenbach/cometloop-infra` repo. This repo's CI hands every
+green `main` to that repo's Deploy workflow (`dispatch-deploy` in
+`.github/workflows/ci.yml`); nothing here knows how the console is hosted.
+
 Rules that follow from that split:
 
 - **An API or `shared/` change is a two-shell change.** If you touch a route
@@ -95,7 +101,8 @@ Rules that follow from that split:
 
 Hosting for the hosted console (staging first, then production) is **Amazon
 ECS Express Mode** in the **Cometloop** project, Region **us-east-2** —
-`infra/aws/` and `infra/aws/README.md`. App Runner is sunset and denied by
+Terraform and runbook in the private `nsdallenbach/cometloop-infra` repo
+(`aws/README.md` there). App Runner is sunset and denied by
 the project's policy; IAM OIDC providers are denied too, so CI deploys as a
 scoped IAM user. The AWS CLI profile is
 `cometloop` (`aws login --profile cometloop`; the Agent Toolkit MCP server is

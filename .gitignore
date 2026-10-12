@@ -18,12 +18,6 @@ shared/appkit-types/serving.d.ts
 .neon
 .env.local
 
-# Terraform (infra/): providers and state never belong in the repo; lock files do
-infra/**/.terraform/
-*.tfstate
-*.tfstate.*
-*.tfvars
-!*.tfvars.example
 
 # Portable runtime: local-disk files volume (FILES_DIR default)
 data/
