@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+// The owner seed is read when server/db/tenancy evaluates, so set it before
+// the hoisted imports run.
+const OWNER_EMAIL = vi.hoisted(() => {
+  process.env.BOOTSTRAP_OWNER_EMAIL = 'owner@example.com';
+  return process.env.BOOTSTRAP_OWNER_EMAIL;
+});
 import { createPortableDb, type PortableDb } from './portable/db';
 import { BOOT_SCHEMA_SQL } from './routes/api';
 import { runWithTenant } from './db/tenant-context';
@@ -122,7 +129,7 @@ describe.skipIf(!url)('tenancy on Postgres', () => {
     const { rows } = await admin(`SELECT count(*)::int AS n FROM app.tickets WHERE tenant_id <> 't_cometloop' AND tenant_id NOT IN ($1, $2)`, [A, B]);
     expect(rows[0].n).toBe(0);
     expect((await admin(`SELECT id FROM app.tenants ORDER BY id`)).rows.map((r) => r.id)).toContain('t_cometloop');
-    expect((await admin(`SELECT tenant_id, role FROM app.tenant_members WHERE email = 'nigelsilva12@gmail.com'`)).rows).toEqual([{ tenant_id: 't_cometloop', role: 'owner' }]);
+    expect((await admin(`SELECT tenant_id, role FROM app.tenant_members WHERE email = $1`, [OWNER_EMAIL])).rows).toEqual([{ tenant_id: 't_cometloop', role: 'owner' }]);
   });
 
   it('two tenants can both own CL-1, and each sees only its own', async () => {

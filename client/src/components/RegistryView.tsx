@@ -731,7 +731,7 @@ function RegistryDrawer({
                   value={env}
                   disabled={!canEdit}
                   onChange={(e) => setEnv(e.target.value)}
-                  placeholder="JIRA_SITE=datavail.atlassian.net"
+                  placeholder="JIRA_SITE=your-org.atlassian.net"
                 />
               </div>
               <label

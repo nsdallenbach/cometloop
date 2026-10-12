@@ -66,10 +66,10 @@ beforeEach(async () => {
   for (const sql of [...SUPPORT_SQL, ...STALE_NUDGE_SCHEMA_SQL]) await q(sql);
   for (const sql of tenancyTestSql([...SUPPORT_SQL, ...STALE_NUDGE_SCHEMA_SQL])) await q(sql);
   await q(`INSERT INTO app.engagements (id) VALUES ('exec')`);
-  await q(`INSERT INTO app.engagement_leads (engagement_id, email) VALUES ('exec', 'lead@datavail.com')`);
+  await q(`INSERT INTO app.engagement_leads (engagement_id, email) VALUES ('exec', 'lead@example.com')`);
   await q(
     `INSERT INTO app.tickets (key, engagement_id, title, status, assignee)
-     VALUES ('DAT-107', 'exec', 'Implement stale-ticket nudges', 'progress', 'dev@datavail.com')`,
+     VALUES ('DAT-107', 'exec', 'Implement stale-ticket nudges', 'progress', 'dev@example.com')`,
   );
   // DAT-101 trail: the ticket entered progress at MON and nothing since.
   await q(`INSERT INTO app.ticket_events (ticket_key, engagement_id, from_status, to_status, created_at) VALUES ('DAT-107', 'exec', 'backlog', 'progress', $1)`, [at(0)]);
@@ -115,10 +115,10 @@ describe('checkStaleNudges', () => {
     expect((await sweep(7)).nudged).toBe(1); // Monday: 5 business days quiet
     const sent = await notifications();
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ recipient: 'dev@datavail.com', type: 'stale_nudge' });
+    expect(sent[0]).toMatchObject({ recipient: 'dev@example.com', type: 'stale_nudge' });
     expect(sent[0].title).toContain('DAT-107');
     const feed = (await q('SELECT text FROM app.feed_items')).rows.map((r) => String(r.text));
-    expect(feed.some((t) => t.includes('DAT-107') && t.includes('dev@datavail.com'))).toBe(true);
+    expect(feed.some((t) => t.includes('DAT-107') && t.includes('dev@example.com'))).toBe(true);
   });
 
   it('never repeats a nudge for the same quiet period, however often the sweep runs', async () => {
@@ -133,7 +133,7 @@ describe('checkStaleNudges', () => {
   it('new activity opens a new quiet period that earns one fresh nudge', async () => {
     await sweep(7);
     // The assignee replies on day 8 (Tue) — the ticket is active again.
-    await q(`INSERT INTO app.ticket_comments (ticket_key, author, body, created_at) VALUES ('DAT-107', 'dev@datavail.com', 'still on it', $1)`, [at(8)]);
+    await q(`INSERT INTO app.ticket_comments (ticket_key, author, body, created_at) VALUES ('DAT-107', 'dev@example.com', 'still on it', $1)`, [at(8)]);
     expect((await sweep(9)).nudged).toBe(0);
     // Quiet again for 5 business days from the comment (Tue +7 calendar days).
     expect((await sweep(15)).nudged).toBe(1);
@@ -151,7 +151,7 @@ describe('checkStaleNudges', () => {
     await sweep(7);
     let sent = await notifications();
     expect(sent).toHaveLength(1);
-    expect(sent[0].recipient).toBe('lead@datavail.com');
+    expect(sent[0].recipient).toBe('lead@example.com');
     expect(sent[0].title).toContain('unassigned');
 
     // A runner name is not an inbox — the leads get that one too.
@@ -162,7 +162,7 @@ describe('checkStaleNudges', () => {
     await sweep(7);
     sent = await notifications();
     expect(sent).toHaveLength(2);
-    expect(sent[1].recipient).toBe('lead@datavail.com');
+    expect(sent[1].recipient).toBe('lead@example.com');
   });
 
   it('honours a per-engagement threshold instead of the default', async () => {
@@ -183,24 +183,24 @@ describe('checkStaleNudges', () => {
     await q(`DELETE FROM app.engagement_leads`);
     expect((await sweep(7)).nudged).toBe(0);
     expect(await nudgeRows()).toBe(0);
-    await q(`INSERT INTO app.engagement_leads (engagement_id, email) VALUES ('exec', 'lead@datavail.com')`);
+    await q(`INSERT INTO app.engagement_leads (engagement_id, email) VALUES ('exec', 'lead@example.com')`);
     expect((await sweep(8)).nudged).toBe(1);
-    expect((await notifications())[0].recipient).toBe('lead@datavail.com');
+    expect((await notifications())[0].recipient).toBe('lead@example.com');
   });
 });
 
 describe('resolveNudgeRecipients', () => {
   it('an email assignee is the recipient; anything else falls to the leads', async () => {
-    await expect(resolveNudgeRecipients(q, 'exec', ' Dev@Datavail.com ')).resolves.toEqual({
-      recipients: ['dev@datavail.com'],
+    await expect(resolveNudgeRecipients(q, 'exec', ' Dev@the first tenant.com ')).resolves.toEqual({
+      recipients: ['dev@example.com'],
       assigneeNudged: true,
     });
     await expect(resolveNudgeRecipients(q, 'exec', 'desktop-runner-3')).resolves.toEqual({
-      recipients: ['lead@datavail.com'],
+      recipients: ['lead@example.com'],
       assigneeNudged: false,
     });
     await expect(resolveNudgeRecipients(q, 'exec', '—')).resolves.toEqual({
-      recipients: ['lead@datavail.com'],
+      recipients: ['lead@example.com'],
       assigneeNudged: false,
     });
   });

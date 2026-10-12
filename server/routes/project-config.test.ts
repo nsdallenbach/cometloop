@@ -131,7 +131,7 @@ describe('resolveRunnerConfig', () => {
       validateRunnerConfig({ baseImage: 'python-3.12', libraries: ['pandas', 'pyarrow==16.1.0', 'npm:typescript', 'apt:jq'] }),
     );
     const resolved = resolveRunnerConfig(c);
-    expect(resolved.image).toBe('ghcr.io/datavail-solutions/runner-base:python-3.12');
+    expect(resolved.image).toBe('ghcr.io/your-org/runner-base:python-3.12');
     expect(resolved.installCommands.map((cmd) => cmd.manager)).toEqual(['pip', 'npm', 'apt']);
     expect(resolved.installCommands[0].argv.slice(-2)).toEqual(['pandas', 'pyarrow==16.1.0']);
     expect(resolved.installCommands[1].argv).toContain('typescript');

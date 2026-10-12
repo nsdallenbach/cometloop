@@ -40,7 +40,7 @@ flowchart LR
         mcp["mcp/server.mjs\nMCP over the same /api"]
     end
 
-    github["GitHub\ndatavail-solutions/engagement-console\nGitHub App auth + Actions CI"]
+    github["GitHub\nyour-org/your-repo\nGitHub App auth + Actions CI"]
 
     browser --> proxy --> apiRoutes
     desktop -->|"webview (as the dev)"| proxy

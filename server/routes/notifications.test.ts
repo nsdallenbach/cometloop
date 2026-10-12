@@ -3,18 +3,18 @@ import { createNotification, mentionedEmails, renderEmailDigest } from './notifi
 
 describe('notification events', () => {
   it('extracts and de-duplicates email mentions case-insensitively', () => {
-    expect(mentionedEmails('Hi @Dev@One.com and @dev@one.com, cc @lead.two@datavail.com')).toEqual([
+    expect(mentionedEmails('Hi @Dev@One.com and @dev@one.com, cc @lead.two@example.com')).toEqual([
       'dev@one.com',
-      'lead.two@datavail.com',
+      'lead.two@example.com',
     ]);
   });
 
   it('persists one canonical payload for the feed and live stream', async () => {
-    const row = { id: 7, recipient_email: 'dev@datavail.com', type: 'assignment', read: false };
+    const row = { id: 7, recipient_email: 'dev@example.com', type: 'assignment', read: false };
     const q = vi.fn().mockResolvedValue({ rows: [row] });
     await expect(
       createNotification(q, {
-        recipient: ' Dev@Datavail.com ',
+        recipient: ' Dev@the first tenant.com ',
         type: 'assignment',
         title: 'DAT-105 assigned',
         message: 'Build it',
@@ -22,7 +22,7 @@ describe('notification events', () => {
       })
     ).resolves.toEqual(row);
     expect(q).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO app.notifications'), [
-      'dev@datavail.com',
+      'dev@example.com',
       'assignment',
       'DAT-105 assigned',
       'Build it',

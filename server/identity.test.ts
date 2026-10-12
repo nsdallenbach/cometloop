@@ -34,19 +34,19 @@ describe('databricks verifier', () => {
   it('maps the Apps proxy headers to a databricks identity', async () => {
     const id = await resolveIdentity(
       fakeReq({
-        'x-forwarded-email': 'ada@datavail.com',
-        'x-forwarded-preferred-username': 'ada@datavail.com',
+        'x-forwarded-email': 'ada@example.com',
+        'x-forwarded-preferred-username': 'ada@example.com',
         'x-forwarded-user': '1234567890',
         'x-forwarded-access-token': 'eyJ.token.here',
       }),
     );
-    expect(id).toMatchObject({ subject: '1234567890', email: 'ada@datavail.com', name: 'ada@datavail.com', source: 'databricks', tenantId: DEFAULT_TENANT_ID });
+    expect(id).toMatchObject({ subject: '1234567890', email: 'ada@example.com', name: 'ada@example.com', source: 'databricks', tenantId: DEFAULT_TENANT_ID });
     expect(id?.accessToken).toBe('eyJ.token.here');
   });
 
   it('keeps the preferred-username-over-email precedence and falls back to the email as subject', async () => {
-    const id = await resolveIdentity(fakeReq({ 'x-forwarded-email': 'ada@datavail.com' }));
-    expect(id).toEqual({ subject: 'ada@datavail.com', email: 'ada@datavail.com', name: 'ada@datavail.com', source: 'databricks', tenantId: DEFAULT_TENANT_ID });
+    const id = await resolveIdentity(fakeReq({ 'x-forwarded-email': 'ada@example.com' }));
+    expect(id).toEqual({ subject: 'ada@example.com', email: 'ada@example.com', name: 'ada@example.com', source: 'databricks', tenantId: DEFAULT_TENANT_ID });
   });
 
   it('returns null with no headers at all', async () => {
@@ -67,7 +67,7 @@ describe('dev verifier', () => {
 
   it('never outranks the proxy headers', async () => {
     process.env.DEV_IDENTITY_EMAIL = 'me@localhost';
-    expect((await resolveIdentity(fakeReq({ 'x-forwarded-email': 'ada@datavail.com' })))?.source).toBe('databricks');
+    expect((await resolveIdentity(fakeReq({ 'x-forwarded-email': 'ada@example.com' })))?.source).toBe('databricks');
   });
 });
 
@@ -186,10 +186,10 @@ describe('requireSignIn middleware', () => {
   });
 
   it('passes a protected route once the proxy headers are present', async () => {
-    const res = await fetch(`${base}/api/me`, { headers: { 'x-forwarded-email': 'ada@datavail.com' } });
+    const res = await fetch(`${base}/api/me`, { headers: { 'x-forwarded-email': 'ada@example.com' } });
     expect(res.status).toBe(200);
     // The handler ran inside the identity's tenant context.
-    expect(await res.json()).toEqual({ author: 'ada@datavail.com', tenant: DEFAULT_TENANT_ID });
+    expect(await res.json()).toEqual({ author: 'ada@example.com', tenant: DEFAULT_TENANT_ID });
   });
 
   it('answers 403 No workspace for an identity that belongs to no tenant', async () => {
@@ -206,8 +206,8 @@ describe('requireSignIn middleware', () => {
     expect(anon.status).toBe(200);
     // Anonymous runner traffic is scoped to the compatibility tenant, not to nothing.
     expect(await anon.json()).toEqual({ author: 'anonymous runner', tenant: DEFAULT_TENANT_ID });
-    const named = await fetch(`${base}/api/agent/work`, { headers: { 'x-forwarded-email': 'runner@datavail.com' } });
-    expect(await named.json()).toEqual({ author: 'runner@datavail.com', tenant: DEFAULT_TENANT_ID });
+    const named = await fetch(`${base}/api/agent/work`, { headers: { 'x-forwarded-email': 'runner@example.com' } });
+    expect(await named.json()).toEqual({ author: 'runner@example.com', tenant: DEFAULT_TENANT_ID });
   });
 
   it('keeps the exemption list explicit', () => {

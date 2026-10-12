@@ -17,7 +17,7 @@ survive the provider change).
 **Goal.** One deployment serves many customers (tenants). A customer signs
 up, gets an organization, invites their team, connects their repos, points
 the console at their own model provider, and installs the desktop app on
-their developers' machines. Datavail is tenant #1.
+their developers' machines. The first tenant is the author's own consultancy.
 
 Decided target stack (chosen; do not re-litigate):
 

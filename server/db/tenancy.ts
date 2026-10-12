@@ -388,10 +388,16 @@ export const TENANT_DIRECTORY_SQL: readonly string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS tenant_members_tenant_email ON app.tenant_members (tenant_id, LOWER(email))`,
-  // The lead of the existing tenant, so a Better Auth sign-in with that email
-  // lands in t_cometloop before the organization plugin is wired (phase 3).
-  `INSERT INTO app.tenant_members (tenant_id, email, role) VALUES ('${DEFAULT_TENANT_ID}', 'nigelsilva12@gmail.com', 'owner')
+  // The first console admin, so a Better Auth sign-in with that email lands
+  // in the default tenant before the organization plugin is wired (phase 3).
+  // Set BOOTSTRAP_OWNER_EMAIL for the first boot; later members are added
+  // through /api/admin/members. Idempotent, so leaving it set is harmless.
+  ...(process.env.BOOTSTRAP_OWNER_EMAIL
+    ? [
+        `INSERT INTO app.tenant_members (tenant_id, email, role) VALUES ('${DEFAULT_TENANT_ID}', '${process.env.BOOTSTRAP_OWNER_EMAIL.trim().replace(/'/g, "''")}', 'owner')
    ON CONFLICT (tenant_id, LOWER(email)) DO NOTHING`,
+      ]
+    : []),
 ];
 
 /** The app role the scoped query layer switches to, plus its grants. Idempotent. */

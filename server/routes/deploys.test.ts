@@ -63,8 +63,8 @@ beforeEach(async () => {
   for (const sql of [...SUPPORT_SQL, ...DEPLOY_EVENTS_SCHEMA_SQL]) await q(sql);
   await q(`INSERT INTO app.engagements (id) VALUES ('eng-a')`);
   await q(`INSERT INTO app.tickets (key, engagement_id, status, assignee, title) VALUES
-    ('DAT-1', 'eng-a', 'review', 'Nigel Silva', 'First feature'),
-    ('DAT-2', 'eng-a', 'review', 'Nigel Silva', 'Second feature')`);
+    ('DAT-1', 'eng-a', 'review', 'Dev One', 'First feature'),
+    ('DAT-2', 'eng-a', 'review', 'Dev One', 'Second feature')`);
 });
 
 const ticketRow = async (key: string) =>
@@ -74,7 +74,7 @@ const record = async (key: string, event: 'queued' | 'started' | 'succeeded' | '
   const t = await ticketRow(key);
   return recordDeployEvent(q, {
     agent: 'desktop-LAPTOP1',
-    actor: 'nigel.silva@datavail.com',
+    actor: 'dev@example.com',
     event,
     prNumber: opts.prNumber ?? null,
     detail: opts.detail ?? '',
@@ -159,7 +159,7 @@ describe('recordDeployEvent', () => {
     const feed = (await q(`SELECT text, source FROM app.feed_items`)).rows;
     expect(feed).toHaveLength(1);
     expect(String(feed[0].text)).toContain('Local deploy started for DAT-1');
-    expect(String(feed[0].text)).toContain('nigel.silva@datavail.com');
+    expect(String(feed[0].text)).toContain('dev@example.com');
     expect(feed[0].source).toBe('deploys');
   });
 
@@ -231,7 +231,7 @@ describe('localDeployPending', () => {
 
 describe('listLocalDeployQueue', () => {
   beforeEach(async () => {
-    await q(`INSERT INTO app.team_members (name, email) VALUES ('Nigel Silva', 'nigel.silva@datavail.com'), ('Other Dev', 'other@datavail.com')`);
+    await q(`INSERT INTO app.team_members (name, email) VALUES ('Dev One', 'dev@example.com'), ('Other Dev', 'other@example.com')`);
     await q(`INSERT INTO app.engagement_members (engagement_id, member_id) VALUES ('eng-a', 1), ('eng-a', 2)`);
     await q(`INSERT INTO app.repo_connections (engagement_id, repo_name, repo_url) VALUES ('eng-a', 'org/repo', 'https://github.com/org/repo')`);
   });
@@ -241,7 +241,7 @@ describe('listLocalDeployQueue', () => {
       (1, 5, 'merged', 'DAT-1', 'pending', '2026-08-25T09:00:00Z'),
       (1, 6, 'merged', 'DAT-2', 'failed',  '2026-08-25T08:00:00Z'),
       (1, 7, 'open',   'DAT-1', NULL,      '2026-08-25T10:00:00Z')`);
-    const items = await listLocalDeployQueue(q, 'NIGEL.SILVA@datavail.com');
+    const items = await listLocalDeployQueue(q, 'DEV@example.com');
     expect(items.map((r) => `${String(r.ticket_key)}#${String(r.pr_number)}`)).toEqual(['DAT-2#6', 'DAT-1#5']);
     expect(items[0]).toMatchObject({ engagement_id: 'eng-a', repo_name: 'org/repo' });
   });
@@ -252,13 +252,13 @@ describe('listLocalDeployQueue', () => {
     await q(`INSERT INTO app.repo_prs (connection_id, number, state, ticket_key, deploy_state) VALUES
       (1, 5, 'merged', 'DAT-1', 'pending'),
       (1, 6, 'merged', 'DAT-2', 'pending')`);
-    expect(await listLocalDeployQueue(q, 'nigel.silva@datavail.com')).toHaveLength(0);
-    const other = await listLocalDeployQueue(q, 'other@datavail.com');
+    expect(await listLocalDeployQueue(q, 'dev@example.com')).toHaveLength(0);
+    const other = await listLocalDeployQueue(q, 'other@example.com');
     expect(other.map((r) => r.ticket_key)).toEqual(['DAT-2']);
   });
 
   it('excludes deploys the CI watch or a local client already settled as success', async () => {
     await q(`INSERT INTO app.repo_prs (connection_id, number, state, ticket_key, deploy_state) VALUES (1, 5, 'merged', 'DAT-1', 'success')`);
-    expect(await listLocalDeployQueue(q, 'nigel.silva@datavail.com')).toHaveLength(0);
+    expect(await listLocalDeployQueue(q, 'dev@example.com')).toHaveLength(0);
   });
 });
