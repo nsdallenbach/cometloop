@@ -8,12 +8,12 @@ for Azure DevOps.
 
 ## 1. Register the App (org admin, one time)
 
-GitHub → your org (e.g. `datavail-solutions`) → **Settings → Developer
+GitHub → your org (e.g. `your-org`) → **Settings → Developer
 settings → GitHub Apps → New GitHub App**:
 
 - **Name**: `delivery-console` (shows as `delivery-console[bot]`)
 - **Homepage URL**: the app URL
-  (`https://delivery-console-7474645607548631.aws.databricksapps.com`)
+  (`https://<your-app>.databricksapps.com`)
 - **Webhook**: leave **inactive** for now — Databricks Apps sit behind the
   workspace OAuth proxy, so GitHub cannot deliver events directly yet. The
   console already exposes an HMAC-verified receiver at
@@ -39,7 +39,7 @@ download).
 ## 2. Install it on your repos
 
 App settings → **Install App** → choose the org → select the delivery repos
-(e.g. `datavail-solutions/engagement-console`). That's the entire per-repo
+(e.g. `your-org/your-repo`). That's the entire per-repo
 credential story — access is managed on this screen from now on.
 
 ## 3. Configure the console

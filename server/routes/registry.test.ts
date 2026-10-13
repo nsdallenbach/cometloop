@@ -103,11 +103,11 @@ const leadOfA = (
   res: express.Response,
   engagementId: string | null
 ): Promise<Caller | null> => {
-  if (engagementId === 'eng-a') return Promise.resolve({ email: 'lead@datavail.com', role: 'lead' });
+  if (engagementId === 'eng-a') return Promise.resolve({ email: 'lead@example.com', role: 'lead' });
   res.status(403).json({ error: 'Engagement lead access required for this project' });
   return Promise.resolve(null);
 };
-const admin = (): Promise<Caller | null> => Promise.resolve({ email: 'admin@datavail.com', role: 'admin' });
+const admin = (): Promise<Caller | null> => Promise.resolve({ email: 'admin@example.com', role: 'admin' });
 
 describe('slugs', () => {
   it('derives a stable slug and the auth env stem from a name', () => {

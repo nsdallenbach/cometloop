@@ -1,7 +1,7 @@
 # appId stays as first shipped: NSIS derives the install/uninstall registry
 # key from it, so a new id would install Cometloop beside the old build
 # instead of updating it in place (electron-updater feed identity too).
-appId: com.datavail.delivery-console
+appId: ai.cometloop.desktop
 productName: Cometloop
 directories:
   output: release

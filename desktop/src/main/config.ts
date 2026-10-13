@@ -11,14 +11,14 @@ import { z } from 'zod';
 /** Build channel baked in by electron.vite.config.ts (`COMETLOOP_CHANNEL`). */
 export const CHANNEL: 'production' | 'staging' = __COMETLOOP_CHANNEL__;
 
-// Production is still the Databricks App until the Azure stack in infra/ is
-// applied (then it becomes https://app.cometloop.ai with consoleAuth 'none',
-// like staging). Staging is the Azure Container App on the Neon `staging`
-// branch; the console signs the tester in itself (Neon Auth), so no
-// workspace token is involved — see docs/platform-architecture.md §5.
-const PRODUCTION_CONSOLE_URL = 'https://delivery-console-7474645607548631.aws.databricksapps.com';
-const STAGING_CONSOLE_URL = 'https://staging.cometloop.ai';
-const DATABRICKS_HOST = 'https://dbc-96494b8f-6b86.cloud.databricks.com';
+// Baked in at build time (electron.vite.config.ts). A production console
+// that is a Databricks App comes with its workspace host and the desktop
+// signs in with a workspace OAuth token; otherwise the console signs the
+// user in itself (Neon Auth, consoleAuth 'none') and no workspace token is
+// involved: see docs/platform-architecture.md section 5.
+const PRODUCTION_CONSOLE_URL = __COMETLOOP_PRODUCTION_CONSOLE_URL__;
+const STAGING_CONSOLE_URL = __COMETLOOP_STAGING_CONSOLE_URL__;
+const DATABRICKS_HOST = __COMETLOOP_DATABRICKS_HOST__;
 
 /**
  * An environment is a console deployment the desktop can sign in to.
@@ -44,15 +44,22 @@ export const BUILT_IN_ENVIRONMENTS: Environment[] = [
     id: 'production',
     label: 'Production',
     consoleUrl: PRODUCTION_CONSOLE_URL,
+    consoleAuth: DATABRICKS_HOST ? 'databricks' : 'none',
     note: 'The live console — real projects, real tickets.',
   },
-  {
-    id: 'staging',
-    label: 'Staging',
-    consoleUrl: STAGING_CONSOLE_URL,
-    consoleAuth: 'none',
-    note: 'The tester environment: its own data, nothing you do here reaches production. Sign in with your Cometloop account.',
-  },
+  // A build whose staging console is the production one (one hosted
+  // environment for now) offers Production and Local only.
+  ...(STAGING_CONSOLE_URL && STAGING_CONSOLE_URL !== PRODUCTION_CONSOLE_URL
+    ? [
+        {
+          id: 'staging',
+          label: 'Staging',
+          consoleUrl: STAGING_CONSOLE_URL,
+          consoleAuth: 'none' as const,
+          note: 'The tester environment: its own data, nothing you do here reaches production. Sign in with your Cometloop account.',
+        },
+      ]
+    : []),
   {
     id: 'local',
     label: 'Local',
@@ -71,7 +78,7 @@ const ConfigSchema = z.object({
   environments: z.array(EnvironmentSchema).min(1).default(BUILT_IN_ENVIRONMENTS),
   environment: z.string().nullable().default(null),
   consoleUrl: z.string().url().default(PRODUCTION_CONSOLE_URL),
-  databricksHost: z.string().url().default(DATABRICKS_HOST),
+  databricksHost: z.string().url().or(z.literal('')).default(DATABRICKS_HOST),
   /**
    * How the console authenticates the desktop: 'databricks' = workspace OAuth
    * token through the Apps proxy; 'none' = the console handles sign-in itself
@@ -209,11 +216,14 @@ export function loadConfig(): DesktopConfig {
   }
 
   // First run (or corrupt file): persist the resolved non-secret config so
-  // users have a file to edit.
+  // users have a file to edit. The built-in environment list is not written:
+  // it belongs to the build, so a newer build's consoles reach every install.
+  // (A list someone added by hand stays, because only its absence is defaulted.)
   const p = configPath();
   if (!existsSync(p)) {
     mkdirSync(path.dirname(p), { recursive: true });
-    writeFileSync(p, JSON.stringify(parsed, null, 2));
+    const { environments: _environments, ...persisted } = parsed;
+    writeFileSync(p, JSON.stringify(persisted, null, 2));
   }
 
   return { ...parsed, devToken: process.env.DATABRICKS_TOKEN || undefined, envOverride, channel: CHANNEL };
@@ -223,7 +233,7 @@ export function loadConfig(): DesktopConfig {
 export function saveAgentsConfig(cfg: DesktopConfig): void {
   const p = configPath();
   const fileValues = readConfigFile();
-  const { devToken: _devToken, envOverride: _envOverride, channel: _channel, ...persistable } = cfg;
+  const { devToken: _devToken, envOverride: _envOverride, channel: _channel, environments: _environments, ...persistable } = cfg;
   mkdirSync(path.dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify({ ...fileValues, ...persistable }, null, 2));
 }

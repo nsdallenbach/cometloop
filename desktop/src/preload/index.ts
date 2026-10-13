@@ -29,6 +29,15 @@ const bridge = {
   },
   windowControl: (action: 'minimize' | 'maximize' | 'close') =>
     ipcRenderer.send('window:control', action),
+  // The running build and the auto-updater's state (sidebar footer).
+  updatesStatus: () => ipcRenderer.invoke('updates:status'),
+  updatesCheck: () => ipcRenderer.invoke('updates:check'),
+  updatesInstall: () => ipcRenderer.invoke('updates:install'),
+  onUpdatesEvent: (cb: (status: unknown) => void) => {
+    const listener = (_e: unknown, status: unknown) => cb(status);
+    ipcRenderer.on('updates:event', listener);
+    return () => ipcRenderer.removeListener('updates:event', listener);
+  },
   boardOverview: () => ipcRenderer.invoke('board:overview'),
   boardPickup: (ticketKey: string) => ipcRenderer.invoke('board:pickup', ticketKey),
   agentsState: () => ipcRenderer.invoke('agents:state'),

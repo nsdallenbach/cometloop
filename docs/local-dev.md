@@ -78,5 +78,12 @@ has a `HEALTHCHECK` on `/healthz`. Default command `node dist/main.js` (api);
 | `AI_GATEWAY_URL` | optional | Route provider calls through Cloudflare AI Gateway (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>`). |
 | `DATABRICKS_VOLUME_*`, `LAKEBASE_ENDPOINT`, `PG*` | ignored | Databricks-path only. |
 
-Identity: without the Apps OAuth proxy every request is `local-dev` with the
-`admin` role (`server/routes/roles.ts`) — phase 1 replaces this.
+Identity: the API fails closed (`server/identity.ts`). Without the Apps OAuth
+proxy a request is signed in only by a Neon Auth / Better Auth JWT (verified
+against `NEON_AUTH_JWKS_URL`; `NEON_AUTH_BASE_URL` tells the client where to
+sign in) or, for local development only, by `DEV_IDENTITY_EMAIL`, which makes
+every request that user with the `admin` role. With neither, every `/api/*`
+call answers 401 and the console shows "Sign in required". `docker compose up`
+passes `DEV_IDENTITY_EMAIL` through from your shell (or the project `.env`);
+`npm run dev:local` reads it from `.env.local`. Never set it on a deployed
+instance.

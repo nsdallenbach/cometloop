@@ -10,7 +10,7 @@ const ticket = (over: Partial<Parameters<typeof ticketMatchesQuery>[0]> = {}) =>
   key: 'DAT-210',
   title: 'Add feature/bug tag support to tickets',
   assignee: 'local-runner-2',
-  client: 'DATAVAIL',
+  client: 'ACME',
   engagementName: 'Execution Console',
   tags: [] as string[],
   ...over,

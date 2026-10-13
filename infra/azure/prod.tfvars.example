@@ -1,6 +1,0 @@
-# Production — the defaults in variables.tf, spelled out. Copy to prod.tfvars
-# (git-ignored); state key azure.prod.tfstate.
-environment        = "prod"
-custom_domain      = "app.cometloop.ai"
-neon_auth_base_url = "https://ep-curly-forest-b5c0naxn.neonauth.c-7.us-east-2.aws.neon.tech/neondb/auth"
-# custom_domain_enabled = true

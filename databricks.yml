@@ -40,7 +40,7 @@ resources:
   apps:
     app:
       name: "delivery-console"
-      description: "Delivery Console - Datavail delivery execution: portfolio, board, roadmap, sources, team, status feed"
+      description: "Cometloop - delivery execution console: portfolio, board, roadmap, sources, team, status feed"
       source_code_path: ./
       user_api_scopes:
         - files.files
@@ -76,8 +76,8 @@ resources:
 targets:
   default:
     default: true
-    workspace:
-      host: https://dbc-96494b8f-6b86.cloud.databricks.com
+    # The workspace comes from the CLI profile (databricks auth login) or
+    # DATABRICKS_HOST; add a workspace.host here to pin one.
 
     variables:
       files_path: /Volumes/sandbox/engagement_console/sow_docs

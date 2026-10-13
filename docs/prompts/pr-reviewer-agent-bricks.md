@@ -69,7 +69,7 @@ with only the JSON object the request asks for — the console will publish it.
 Add the Delivery Console as a **custom MCP server**:
 
 ```
-https://delivery-console-7474645607548631.aws.databricksapps.com/api/mcp
+https://<your-app>.databricksapps.com/api/mcp
 ```
 
 The Agent Map tab (/agent-map) shows this URL with a copy button — on the New agent form and

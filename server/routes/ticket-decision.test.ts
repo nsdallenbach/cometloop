@@ -56,7 +56,7 @@ beforeEach(async () => {
 
 describe('decideTicketReview — approve', () => {
   it('moves the ticket to Deploying in one call and records the transition', async () => {
-    const result = await decideTicketReview(q, 'DAT-222', { decision: 'approve', actor: 'lead@datavail.com' });
+    const result = await decideTicketReview(q, 'DAT-222', { decision: 'approve', actor: 'lead@example.com' });
     expect(result).toMatchObject({ ok: true, status: APPROVED_STATUS });
     expect((await ticket()).status).toBe('deploying');
     expect(await events()).toEqual(['review→deploying']);
@@ -64,20 +64,20 @@ describe('decideTicketReview — approve', () => {
   });
 
   it('needs no note and writes no comment', async () => {
-    await decideTicketReview(q, 'DAT-222', { decision: 'approve', actor: 'lead@datavail.com' });
+    await decideTicketReview(q, 'DAT-222', { decision: 'approve', actor: 'lead@example.com' });
     expect(await comments()).toEqual([]);
   });
 
   it('leaves no completion stamp — approved is not deployed', async () => {
     await q(`UPDATE app.tickets SET done_at = NOW() WHERE key = 'DAT-222'`);
-    await decideTicketReview(q, 'DAT-222', { decision: 'approve', actor: 'lead@datavail.com' });
+    await decideTicketReview(q, 'DAT-222', { decision: 'approve', actor: 'lead@example.com' });
     expect((await ticket()).doneAt).toBeNull();
   });
 });
 
 describe('decideTicketReview — reject', () => {
   it('refuses a blank note and writes nothing at all', async () => {
-    const result = await decideTicketReview(q, 'DAT-222', { decision: 'reject', note: '  \n ', actor: 'lead@datavail.com' });
+    const result = await decideTicketReview(q, 'DAT-222', { decision: 'reject', note: '  \n ', actor: 'lead@example.com' });
     expect(result).toEqual({ ok: false, status: 400, error: 'A rejection note is required — say what needs to change' });
     expect((await ticket()).status).toBe('review');
     expect(await comments()).toEqual([]);
@@ -85,7 +85,7 @@ describe('decideTicketReview — reject', () => {
   });
 
   it('refuses a missing note the same way', async () => {
-    const result = await decideTicketReview(q, 'DAT-222', { decision: 'reject', actor: 'lead@datavail.com' });
+    const result = await decideTicketReview(q, 'DAT-222', { decision: 'reject', actor: 'lead@example.com' });
     expect(result.ok).toBe(false);
     expect((await ticket()).status).toBe('review');
   });
@@ -94,7 +94,7 @@ describe('decideTicketReview — reject', () => {
     const result = await decideTicketReview(q, 'DAT-222', {
       decision: 'reject',
       note: '  The lane filter misses tickets with no deploy state.  ',
-      actor: 'lead@datavail.com',
+      actor: 'lead@example.com',
     });
     expect(result).toMatchObject({ ok: true, status: REJECTED_STATUS });
     expect((await ticket()).status).toBe('backlog');
@@ -104,9 +104,9 @@ describe('decideTicketReview — reject', () => {
   });
 
   it('accumulates a note per rejection instead of overwriting the last one', async () => {
-    await decideTicketReview(q, 'DAT-222', { decision: 'reject', note: 'first', actor: 'lead@datavail.com' });
+    await decideTicketReview(q, 'DAT-222', { decision: 'reject', note: 'first', actor: 'lead@example.com' });
     await q(`UPDATE app.tickets SET status = 'review' WHERE key = 'DAT-222'`);
-    await decideTicketReview(q, 'DAT-222', { decision: 'reject', note: 'second', actor: 'lead@datavail.com' });
+    await decideTicketReview(q, 'DAT-222', { decision: 'reject', note: 'second', actor: 'lead@example.com' });
     expect(await comments()).toEqual(['⨯ Review rejected: first', '⨯ Review rejected: second']);
   });
 });
@@ -114,7 +114,7 @@ describe('decideTicketReview — reject', () => {
 describe('decideTicketReview — guards', () => {
   it('only decides tickets that are in review', async () => {
     await q(`UPDATE app.tickets SET status = 'deploying' WHERE key = 'DAT-222'`);
-    const result = await decideTicketReview(q, 'DAT-222', { decision: 'approve', actor: 'lead@datavail.com' });
+    const result = await decideTicketReview(q, 'DAT-222', { decision: 'approve', actor: 'lead@example.com' });
     expect(result).toEqual({
       ok: false,
       status: 409,
@@ -124,7 +124,7 @@ describe('decideTicketReview — guards', () => {
   });
 
   it('404s on an unknown ticket', async () => {
-    const result = await decideTicketReview(q, 'DAT-999', { decision: 'approve', actor: 'lead@datavail.com' });
+    const result = await decideTicketReview(q, 'DAT-999', { decision: 'approve', actor: 'lead@example.com' });
     expect(result).toEqual({ ok: false, status: 404, error: 'Ticket not found' });
   });
 });

@@ -17,11 +17,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const APP_URL = (process.env.APP_URL ?? 'https://delivery-console-7474645607548631.aws.databricksapps.com').replace(
+const APP_URL = (process.env.APP_URL ?? '').replace(
   /\/$/,
   ''
 );
-const HOST = process.env.DATABRICKS_HOST ?? 'https://dbc-96494b8f-6b86.cloud.databricks.com';
+const HOST = process.env.DATABRICKS_HOST ?? '';
+if (!APP_URL || !HOST) {
+  console.error('Set APP_URL (the console, e.g. https://<app>.databricksapps.com) and DATABRICKS_HOST (the workspace, for `databricks auth token`).');
+  process.exit(1);
+}
 const CLI = process.env.DATABRICKS_CLI ?? 'databricks';
 const ENGAGEMENT = process.env.ENGAGEMENT ?? 'execution-console';
 const DEFAULT_DOCS = ['docs/development-standards.md', 'docs/beta-runbook.md'];

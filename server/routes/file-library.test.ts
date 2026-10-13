@@ -15,7 +15,7 @@ describe('file automation', () => {
       if (sql.startsWith('SELECT * FROM app.file_rules')) {
         return Promise.resolve({ rows: [{ id: 'rule-1', file_pattern: '*.txt', action_type: 'create_ticket', target_ticket: null }] });
       }
-      if (sql.startsWith('SELECT client')) return Promise.resolve({ rows: [{ client: 'Datavail' }] });
+      if (sql.startsWith('SELECT client')) return Promise.resolve({ rows: [{ client: 'ACME' }] });
       if (sql.startsWith('SELECT key')) return Promise.resolve({ rows: [{ key: 'DAT-201' }] });
       return Promise.resolve({ rows: [] });
     });

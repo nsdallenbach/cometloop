@@ -37,10 +37,10 @@ async function boot(): Promise<void> {
   const pool = new Pool();
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of [...SUPPORT_SQL, ...TABLE_SQL]) await q(sql);
-  // Three queued tasks: shared pool, Nigel's, and someone else's.
+  // Three queued tasks: shared pool, the developer's, and someone else's.
   await q(`INSERT INTO app.agent_tasks (ticket_key, engagement_id, state, assignee) VALUES
     ('DAT-1', 'eng-a', 'queued', NULL),
-    ('DAT-2', 'eng-a', 'queued', 'nigel@example.com'),
+    ('DAT-2', 'eng-a', 'queued', 'dev@example.com'),
     ('DAT-3', 'eng-a', 'queued', 'other@example.com')`);
 }
 
@@ -58,11 +58,11 @@ beforeEach(async () => {
 
 describe('assigneeScope', () => {
   it('shows an identified caller the shared pool plus their own tasks only', async () => {
-    expect(await visibleTo('nigel@example.com')).toEqual(['DAT-1', 'DAT-2']);
+    expect(await visibleTo('dev@example.com')).toEqual(['DAT-1', 'DAT-2']);
   });
 
   it('matches identity case-insensitively (proxy headers vary)', async () => {
-    expect(await visibleTo('Nigel@Example.COM')).toEqual(['DAT-1', 'DAT-2']);
+    expect(await visibleTo('Dev@Example.COM')).toEqual(['DAT-1', 'DAT-2']);
   });
 
   it('shows an anonymous caller only the shared pool', async () => {

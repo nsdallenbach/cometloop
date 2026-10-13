@@ -78,7 +78,7 @@ beforeEach(async () => {
 describe('rejectTicketReview', () => {
   it('refuses a blank reason and writes nothing', async () => {
     await inReview();
-    const result = await rejectTicketReview(q, 'DAT-217', { reason: '   \n ', rejectedBy: 'lead@datavail.com' });
+    const result = await rejectTicketReview(q, 'DAT-217', { reason: '   \n ', rejectedBy: 'lead@example.com' });
     expect(result).toEqual({ ok: false, status: 400, error: 'A rejection reason is required' });
     expect(await loadRejections(q, 'DAT-217')).toEqual([]);
     expect((await ticket()).status).toBe('review');
@@ -87,13 +87,13 @@ describe('rejectTicketReview', () => {
 
   it('only rejects from review — a done ticket is refused', async () => {
     await q(`UPDATE app.tickets SET status = 'done' WHERE key = 'DAT-217'`);
-    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Wrong endpoint', rejectedBy: 'lead@datavail.com' });
+    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Wrong endpoint', rejectedBy: 'lead@example.com' });
     expect(result).toEqual({ ok: false, status: 409, error: 'Only tickets in review can be rejected (this one is done)' });
     expect(await loadRejections(q, 'DAT-217')).toEqual([]);
   });
 
   it('404s on an unknown ticket', async () => {
-    const result = await rejectTicketReview(q, 'DAT-999', { reason: 'nope', rejectedBy: 'lead@datavail.com' });
+    const result = await rejectTicketReview(q, 'DAT-999', { reason: 'nope', rejectedBy: 'lead@example.com' });
     expect(result).toEqual({ ok: false, status: 404, error: 'Ticket not found' });
   });
 
@@ -101,7 +101,7 @@ describe('rejectTicketReview', () => {
     await inReview();
     const result = await rejectTicketReview(q, 'DAT-217', {
       reason: 'The reject endpoint is not lead-gated.',
-      rejectedBy: 'lead@datavail.com',
+      rejectedBy: 'lead@example.com',
     });
     expect(result.ok).toBe(true);
     const t = await ticket();
@@ -114,10 +114,10 @@ describe('rejectTicketReview', () => {
 
   it('persists the reason with the rejector and a timestamp, and shows it in the ticket history', async () => {
     await inReview();
-    await rejectTicketReview(q, 'DAT-217', { reason: 'Missing the AC about multiple cycles.', rejectedBy: 'lead@datavail.com' });
+    await rejectTicketReview(q, 'DAT-217', { reason: 'Missing the AC about multiple cycles.', rejectedBy: 'lead@example.com' });
     const [rejection] = await loadRejections(q, 'DAT-217');
     expect(rejection.reason).toBe('Missing the AC about multiple cycles.');
-    expect(rejection.rejectedBy).toBe('lead@datavail.com');
+    expect(rejection.rejectedBy).toBe('lead@example.com');
     expect(rejection.rejectedAt).not.toBe('');
     expect(await comments()).toEqual(['⨯ Review rejected (rejection 1): Missing the AC about multiple cycles.']);
     expect((await feed())[0]).toContain('Rejected DAT-217 in review');
@@ -125,26 +125,26 @@ describe('rejectTicketReview', () => {
 
   it('re-queues an agent run by default when an agent worked the ticket', async () => {
     await inReview();
-    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Rework the prompt section.', rejectedBy: 'lead@datavail.com' });
+    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Rework the prompt section.', rejectedBy: 'lead@example.com' });
     expect(result.ok && result.requeued).toBe(true);
     expect(await tasks()).toEqual([
       { state: 'done', queued_by: '' },
-      { state: 'queued', queued_by: 'lead@datavail.com' },
+      { state: 'queued', queued_by: 'lead@example.com' },
     ]);
   });
 
   it('leaves a ticket no agent ever worked in the backlog without queueing one', async () => {
-    await q(`UPDATE app.tickets SET status = 'review', assignee = 'nigel' WHERE key = 'DAT-217'`);
-    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Human rework.', rejectedBy: 'lead@datavail.com' });
+    await q(`UPDATE app.tickets SET status = 'review', assignee = 'dev' WHERE key = 'DAT-217'`);
+    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Human rework.', rejectedBy: 'lead@example.com' });
     expect(result.ok && result.requeued).toBe(false);
     expect(await tasks()).toEqual([]);
     // Nothing claimed it, so the human assignee is left alone.
-    expect((await ticket()).assignee).toBe('nigel');
+    expect((await ticket()).assignee).toBe('dev');
   });
 
   it('honours requeue: false', async () => {
     await inReview();
-    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Park it.', rejectedBy: 'lead@datavail.com', requeue: false });
+    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Park it.', rejectedBy: 'lead@example.com', requeue: false });
     expect(result.ok && result.requeued).toBe(false);
     expect((await tasks()).filter((t) => t.state === 'queued')).toEqual([]);
   });
@@ -152,7 +152,7 @@ describe('rejectTicketReview', () => {
   it('never double-queues while a run is still active', async () => {
     await inReview();
     await q(`INSERT INTO app.agent_tasks (ticket_key, engagement_id, state, agent) VALUES ('DAT-217', 'exec', 'working', 'local-runner')`);
-    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Already running.', rejectedBy: 'lead@datavail.com', requeue: true });
+    const result = await rejectTicketReview(q, 'DAT-217', { reason: 'Already running.', rejectedBy: 'lead@example.com', requeue: true });
     expect(result.ok && result.requeued).toBe(false);
     expect((await tasks()).filter((t) => t.state === 'queued')).toEqual([]);
   });
@@ -160,7 +160,7 @@ describe('rejectTicketReview', () => {
   it('accumulates reasons across cycles instead of overwriting them', async () => {
     for (const [i, reason] of ['First pass missed the endpoint.', 'Second pass has no tests.', 'Third pass broke the build.'].entries()) {
       await q(`UPDATE app.tickets SET status = 'review' WHERE key = 'DAT-217'`);
-      const result = await rejectTicketReview(q, 'DAT-217', { reason, rejectedBy: `reviewer-${i}@datavail.com` });
+      const result = await rejectTicketReview(q, 'DAT-217', { reason, rejectedBy: `reviewer-${i}@example.com` });
       expect(result.ok && result.count).toBe(i + 1);
     }
     const history = await loadRejections(q, 'DAT-217');
@@ -170,9 +170,9 @@ describe('rejectTicketReview', () => {
       'Third pass broke the build.',
     ]);
     expect(history.map((r) => r.rejectedBy)).toEqual([
-      'reviewer-0@datavail.com',
-      'reviewer-1@datavail.com',
-      'reviewer-2@datavail.com',
+      'reviewer-0@example.com',
+      'reviewer-1@example.com',
+      'reviewer-2@example.com',
     ]);
     // One comment per cycle, numbered, so the thread reads as a history too.
     expect(await comments()).toHaveLength(3);
@@ -183,7 +183,7 @@ describe('rejectTicketReview', () => {
 const rejection = (n: number, reason = `reason ${n}`): TicketRejection => ({
   id: n,
   reason,
-  rejectedBy: `reviewer-${n}@datavail.com`,
+  rejectedBy: `reviewer-${n}@example.com`,
   rejectedAt: `2026-08-1${n}T09:00:00.000Z`,
 });
 
@@ -195,7 +195,7 @@ describe('rejectionPromptSection', () => {
   it('names the rejector, the time and the reason, and frames them as requirements', () => {
     const lines = rejectionPromptSection([rejection(1, 'The endpoint is not lead-gated.')]).join('\n');
     expect(lines).toContain('## Previous review rejections (1)');
-    expect(lines).toContain('- Rejected by reviewer-1@datavail.com (2026-08-11T09:00:00.000Z): The endpoint is not lead-gated.');
+    expect(lines).toContain('- Rejected by reviewer-1@example.com (2026-08-11T09:00:00.000Z): The endpoint is not lead-gated.');
     expect(lines).toContain('Treat every point above as a requirement');
   });
 

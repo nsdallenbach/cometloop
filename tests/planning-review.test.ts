@@ -45,7 +45,7 @@ describe('planning-agent comment attribution', () => {
   });
 
   it('leaves human comments alone', () => {
-    expect(isPlanningAgentAuthor('nigel.silva@datavail.com')).toBe(false);
+    expect(isPlanningAgentAuthor('dev@example.com')).toBe(false);
     expect(isPlanningAgentAuthor('Planning Agents Anonymous')).toBe(false);
   });
 });

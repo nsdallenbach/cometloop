@@ -120,7 +120,7 @@ function captureRoutes(requireLead: (req: express.Request, res: express.Response
     put: (path: string, h: Handler) => routes.set(`PUT ${path}`, h),
     delete: (path: string, h: Handler) => routes.set(`DELETE ${path}`, h),
   } as unknown as express.Application;
-  setupProjectAgentRoutes(app, q, requireLead, () => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' }));
+  setupProjectAgentRoutes(app, q, requireLead, () => Promise.resolve({ email: 'lead@example.com', role: 'lead' }));
   return routes;
 }
 
@@ -140,7 +140,7 @@ function fakeRes() {
   return res;
 }
 
-const leadGuard = (): Promise<Caller | null> => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' });
+const leadGuard = (): Promise<Caller | null> => Promise.resolve({ email: 'lead@example.com', role: 'lead' });
 
 const patch = async (routes: Map<string, Handler>, params: Record<string, string>, body: unknown) => {
   const res = fakeRes();
@@ -153,7 +153,7 @@ describe('PATCH /api/projects/:id/agents/:agentId', () => {
     await q(`CREATE TABLE app.feed_items (id SERIAL PRIMARY KEY, engagement_id TEXT, actor TEXT, text TEXT, time_label TEXT, reversible BOOLEAN)`);
     await q(
       `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, model, created_by)
-       VALUES ('eng-a', 'codex-writer', 'runner', 'codex', 'openai', 'gpt-5.2-codex', 'lead@datavail.com')`,
+       VALUES ('eng-a', 'codex-writer', 'runner', 'codex', 'openai', 'gpt-5.2-codex', 'lead@example.com')`,
     );
     await q(
       `INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, created_by)
@@ -213,7 +213,7 @@ describe('PATCH /api/projects/:id/agents/:agentId — registry attachments (DAT-
   beforeEach(async () => {
     await q(`CREATE TABLE app.feed_items (id SERIAL PRIMARY KEY, engagement_id TEXT, actor TEXT, text TEXT, time_label TEXT, reversible BOOLEAN)`);
     for (const sql of REGISTRY_SCHEMA_SQL.filter((s) => !s.includes('CREATE UNIQUE INDEX')).map((s) => s.replace(' REFERENCES app.engagements(id) ON DELETE CASCADE', ''))) await q(sql);
-    await q(`INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, config, created_by) VALUES ('eng-a', 'codex-writer', 'runner', 'codex', 'openai', '{"notes":"keep"}', 'lead@datavail.com')`);
+    await q(`INSERT INTO app.project_agents (engagement_id, name, agent_type, harness, model_provider, config, created_by) VALUES ('eng-a', 'codex-writer', 'runner', 'codex', 'openai', '{"notes":"keep"}', 'lead@example.com')`);
     await q(`INSERT INTO app.registry_mcp_servers (engagement_id, slug, name, command) VALUES (NULL, 'shared', 'Shared', 'x'), ('eng-a', 'own', 'Own', 'x'), ('eng-b', 'other', 'Other', 'x')`);
     await q(`INSERT INTO app.registry_skills (engagement_id, slug, name, status) VALUES (NULL, 'live', 'Live', 'published'), (NULL, 'gone', 'Gone', 'retired')`);
   });

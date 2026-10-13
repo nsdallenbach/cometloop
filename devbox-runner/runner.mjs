@@ -46,8 +46,12 @@ import os from 'os';
 import path from 'path';
 import { getHarness, missingAuthEnv, normalizeState, toolLabel } from './harnesses.mjs';
 
-const APP = (process.env.APP_URL ?? 'https://delivery-console-7474645607548631.aws.databricksapps.com').replace(/\/+$/, '');
-const HOST = process.env.DATABRICKS_HOST ?? 'https://dbc-96494b8f-6b86.cloud.databricks.com';
+const APP = (process.env.APP_URL ?? '').replace(/\/+$/, '');
+const HOST = process.env.DATABRICKS_HOST ?? '';
+if (!APP || !HOST) {
+  console.error('Set APP_URL (the console, e.g. https://<app>.databricksapps.com) and DATABRICKS_HOST (the workspace, for `databricks auth token`).');
+  process.exit(1);
+}
 const CLI = process.env.DATABRICKS_CLI ?? 'databricks';
 const AGENT = process.env.AGENT_NAME ?? `devbox-${os.hostname()}`;
 const ENGAGEMENT = process.env.ENGAGEMENT ?? null;

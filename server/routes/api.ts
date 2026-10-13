@@ -2062,7 +2062,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
         const rmEnd = (milestones ?? []).reduce((max, m) => (m.d > max ? m.d : max), phaseEnd);
         const fmt = (d: string) =>
           new Date(`${d}T12:00:00`).toLocaleString('en', { month: 'short', day: '2-digit' }).toUpperCase();
-        // Owner defaults to the creator; "nigel.silva@…" reads as "Nigel Silva".
+        // Owner defaults to the creator; "jane.doe@…" reads as "Jane Doe".
         const owner =
           creator.email
             .split('@')[0]

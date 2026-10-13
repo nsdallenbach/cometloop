@@ -101,14 +101,14 @@ describe('parseSecuritySettings', () => {
       enabled: false,
       accessLevel: 'custom',
       allowedActions: ['claim_work', 'delete_everything'],
-      updatedBy: 'lead@datavail.com',
+      updatedBy: 'lead@example.com',
       updatedAt: '2026-08-12T00:00:00.000Z',
     });
     expect(parsed).toEqual({
       enabled: false,
       accessLevel: 'custom',
       allowedActions: ['claim_work'],
-      updatedBy: 'lead@datavail.com',
+      updatedBy: 'lead@example.com',
       updatedAt: '2026-08-12T00:00:00.000Z',
     });
   });
@@ -139,13 +139,13 @@ describe('rollout migration', () => {
 
   it('is idempotent and never re-grants a scope a lead revoked', async () => {
     await boot([`INSERT INTO app.project_agents (engagement_id, name, role) VALUES ('eng-a', 'runner-1', 'delivery')`]);
-    await saveAgentSecurity(q, 'eng-a', 1, { enabled: false, accessLevel: 'restricted' }, 'lead@datavail.com');
+    await saveAgentSecurity(q, 'eng-a', 1, { enabled: false, accessLevel: 'restricted' }, 'lead@example.com');
     // Re-running the boot migration must leave the lead's decision alone.
     for (const sql of BACKFILL_SQL) await q(sql);
     const after = await settingsFor('runner-1');
     expect(after.enabled).toBe(false);
     expect(after.allowedActions).toEqual([]);
-    expect(after.updatedBy).toBe('lead@datavail.com');
+    expect(after.updatedBy).toBe('lead@example.com');
   });
 });
 
@@ -187,7 +187,7 @@ describe('checkAgentAction', () => {
   });
 
   it('blocks a disabled agent and writes the denial to the feed', async () => {
-    await saveAgentSecurity(q, 'eng-a', 1, { enabled: false }, 'lead@datavail.com');
+    await saveAgentSecurity(q, 'eng-a', 1, { enabled: false }, 'lead@example.com');
     const d = await checkAgentAction(q, { engagementId: 'eng-a', agent: 'runner-1', action: 'claim_work', detail: 'DAT-1' });
     expect(d.allowed).toBe(false);
     const feed = (await q('SELECT text FROM app.feed_items')).rows;
@@ -197,7 +197,7 @@ describe('checkAgentAction', () => {
   });
 
   it('scopes settings per agent — narrowing one leaves the other untouched', async () => {
-    await saveAgentSecurity(q, 'eng-a', 1, { accessLevel: 'restricted' }, 'lead@datavail.com');
+    await saveAgentSecurity(q, 'eng-a', 1, { accessLevel: 'restricted' }, 'lead@example.com');
     expect((await checkAgentAction(q, { engagementId: 'eng-a', agent: 'runner-1', action: 'git_credential' })).allowed).toBe(false);
     expect((await checkAgentAction(q, { engagementId: 'eng-a', agent: 'runner-2', action: 'git_credential' })).allowed).toBe(true);
   });
@@ -211,7 +211,7 @@ describe('checkAgentAction', () => {
   it('is scoped per engagement — the same runner name elsewhere keeps its own settings', async () => {
     await q(`INSERT INTO app.engagements (id, client, name, health, phase) VALUES ('eng-b', 'BETA', 'Portal', 'ok', 'Plan')`);
     await q(`INSERT INTO app.project_agents (engagement_id, name, role, security_settings) VALUES ('eng-b', 'runner-1', 'delivery', '{}')`);
-    await saveAgentSecurity(q, 'eng-a', 1, { enabled: false }, 'lead@datavail.com');
+    await saveAgentSecurity(q, 'eng-a', 1, { enabled: false }, 'lead@example.com');
     expect((await checkAgentAction(q, { engagementId: 'eng-a', agent: 'runner-1', action: 'claim_work' })).allowed).toBe(false);
     expect((await checkAgentAction(q, { engagementId: 'eng-b', agent: 'runner-1', action: 'claim_work' })).allowed).toBe(true);
   });
@@ -221,18 +221,18 @@ describe('mergeSecurityUpdate', () => {
   const base = baselineSecurity('delivery');
 
   it('rewrites the action list from a preset so a level cannot drift from its label', () => {
-    const next = mergeSecurityUpdate(base, { accessLevel: 'elevated', allowedActions: [] }, 'lead@datavail.com');
+    const next = mergeSecurityUpdate(base, { accessLevel: 'elevated', allowedActions: [] }, 'lead@example.com');
     expect(next.allowedActions).toEqual(ACCESS_LEVEL_ACTIONS.elevated);
   });
 
   it('treats a bare action list as a custom scope and stamps the actor', () => {
-    const next = mergeSecurityUpdate(base, { allowedActions: ['pr_review'] }, 'lead@datavail.com');
-    expect(next).toMatchObject({ accessLevel: 'custom', allowedActions: ['pr_review'], updatedBy: 'lead@datavail.com' });
+    const next = mergeSecurityUpdate(base, { allowedActions: ['pr_review'] }, 'lead@example.com');
+    expect(next).toMatchObject({ accessLevel: 'custom', allowedActions: ['pr_review'], updatedBy: 'lead@example.com' });
     expect(next.updatedAt).toBeTruthy();
   });
 
   it('leaves untouched fields alone', () => {
-    const next = mergeSecurityUpdate(base, { enabled: false }, 'lead@datavail.com');
+    const next = mergeSecurityUpdate(base, { enabled: false }, 'lead@example.com');
     expect(next.accessLevel).toBe('standard');
     expect(next.allowedActions).toEqual(base.allowedActions);
   });
@@ -250,7 +250,7 @@ describe('activeEngagementFor', () => {
 describe('describeChange', () => {
   it('summarizes what actually changed', () => {
     const before = baselineSecurity('delivery');
-    const after = mergeSecurityUpdate(before, { enabled: false, accessLevel: 'restricted' }, 'lead@datavail.com');
+    const after = mergeSecurityUpdate(before, { enabled: false, accessLevel: 'restricted' }, 'lead@example.com');
     const text = describeChange(before, after, 'runner-1');
     expect(text).toContain('disabled');
     expect(text).toContain('revoked');
@@ -289,7 +289,7 @@ function fakeRes() {
   return res;
 }
 
-const leadGuard = (): Promise<Caller | null> => Promise.resolve({ email: 'lead@datavail.com', role: 'lead' });
+const leadGuard = (): Promise<Caller | null> => Promise.resolve({ email: 'lead@example.com', role: 'lead' });
 /** Stands in for requireLead's own 403 path (developer, or a lead on another project). */
 const denyGuard = (_req: express.Request, res: express.Response): Promise<Caller | null> => {
   res.status(403).json({ error: 'Engagement lead access required for this project' });
@@ -318,7 +318,7 @@ describe('PUT /api/projects/:id/agents/:agentId/security', () => {
     const res = await call(routes, 'PUT', '/api/projects/:id/agents/:agentId/security', { id: 'eng-a', agentId: '1' }, { enabled: false, accessLevel: 'restricted' });
     expect(res.statusCode).toBe(200);
     const saved = await settingsFor('runner-1');
-    expect(saved).toMatchObject({ enabled: false, accessLevel: 'restricted', updatedBy: 'lead@datavail.com' });
+    expect(saved).toMatchObject({ enabled: false, accessLevel: 'restricted', updatedBy: 'lead@example.com' });
     expect(saved.allowedActions).toEqual([]);
   });
 

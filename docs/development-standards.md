@@ -14,7 +14,7 @@ the context handed to agent runners.
   for files (`context/`, `standards/` per engagement), and the workspace's
   configured model providers (Admin → Model providers; `server/llm/`) for
   all LLM calls — the Databricks serving endpoint is one provider kind.
-- **Git**: GitHub (`datavail-solutions/engagement-console`), GitHub App for
+- **Git**: GitHub (`your-org/your-repo`), GitHub App for
   repo auth (installation tokens, no PATs at rest), CI deploy on merge.
 - **Agents**: work queue in Postgres; runners long-poll, claim atomically,
   drive a coding agent through a harness adapter (`shared/harnesses/`), and
@@ -49,8 +49,9 @@ the context handed to agent runners.
   workflow with `environment = production` after staging has been
   exercised; nothing reaches production on merge alone. A red Actions run
   means the merge shipped nothing — check the Actions tab or the ticket's
-  deploy badge before believing a feature is live. Hosting and the runbook:
-  `infra/aws/README.md`.
+  deploy badge before believing a feature is live. Hosting and the runbook
+  live in the private `nsdallenbach/cometloop-infra` repo (`aws/README.md`
+  there); this repo only dispatches to its Deploy workflow.
 - **Done means deployed.** The board refuses a move into Done until the
   ticket's linked PR is merged and its deploy pipeline has succeeded (DAT-213)
   — by hand, over the API, or through MCP. The rule is not retroactive and

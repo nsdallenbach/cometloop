@@ -40,7 +40,7 @@ flowchart LR
         mcp["mcp/server.mjs\nMCP over the same /api"]
     end
 
-    github["GitHub\ndatavail-solutions/engagement-console\nGitHub App auth + Actions CI"]
+    github["GitHub\nyour-org/your-repo\nGitHub App auth + Actions CI"]
 
     browser --> proxy --> apiRoutes
     desktop -->|"webview (as the dev)"| proxy
@@ -354,14 +354,17 @@ cycle, so a third rejection does not erase the first two) and the newest five
 are rendered into the runner prompt above the lead instructions, so the next
 run starts from the reviewer's words instead of a cold re-read.
 
-CI (`deploy.yml`) runs typecheck → lint → build → `databricks bundle
-deploy` → `bundle run app` on every push to main, serialized by a
-concurrency group (queued intermediates supersede, so merge bursts batch
-into few deploys). Each deploy restarts the app — expect ~1 minute of 502s.
+CI (`.github/workflows/ci.yml`) runs typecheck → lint → build → tests and
+the desktop typecheck on every push and PR. On a green `main` its
+`dispatch-deploy` job hands the commit to the Deploy workflow in the
+private hosting repo (`nsdallenbach/cometloop-infra`), which builds the
+image from the root `Dockerfile` and rolls the service; one deploy per
+environment at a time. Each deploy restarts the app — expect ~1 minute of
+502s.
 
 **Staging** is the portable runtime's first hosted environment:
-the same container image on Amazon ECS Express Mode (`infra/aws` applied
-with `environment = "staging"`, one 0.25 vCPU Fargate task behind the
+the same container image on Amazon ECS Express Mode (the `aws` stack in
+`cometloop-infra` applied with `environment = "staging"`, one 0.25 vCPU Fargate task behind the
 managed load balancer), the Neon branch `staging`
 (branched from `production`), and the console's own sign-in — Neon Auth on
 that branch, served to the browser from `GET /api/auth/config` and verified
@@ -370,8 +373,8 @@ by the Better Auth JWT verifier in `server/identity.ts`. Who may sign in is
 `admin` rows are console admins, `member` rows developers). On such a
 deployment the runner routes (`/api/agent/*`) are **not** sign-in exempt
 (`runnerRoutesRequireSignIn`): the desktop signs in with a console account
-and sends its JWT, and an anonymous caller cannot claim work. `deploy.yml`
-ships every green `main` to staging and promotes to production only on a
+and sends its JWT, and an anonymous caller cannot claim work. The Deploy
+workflow in `cometloop-infra` ships every green `main` to staging and promotes to production only on a
 manual dispatch; tester desktop builds (`desktop/README.md` → Environments)
 sign in to `https://staging.cometloop.ai` with no workspace token involved.
 

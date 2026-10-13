@@ -73,7 +73,7 @@ pool and webview session are all built from the resolved URL at startup).
 
 | Environment | Console | Backing data | Who uses it |
 |---|---|---|---|
-| **Production** | `delivery-console` Databricks App (until the AWS stack in `infra/aws` is applied for prod; then `https://app.cometloop.ai`) | Lakebase branch `production` | everyone, day to day |
+| **Production** | `delivery-console` Databricks App (until the AWS stack in the private `cometloop-infra` repo is applied for prod; then `https://app.cometloop.ai`) | Lakebase branch `production` | everyone, day to day |
 | **Staging** | `https://staging.cometloop.ai` — Amazon ECS (Express Mode), `consoleAuth: none` | Neon branch `staging` | testers on the staging build |
 | **Local** | `http://localhost:8000` (`consoleAuth: none`) | whatever the dev server points at | developers |
 
@@ -111,7 +111,7 @@ dev run and skips the picker entirely.
 **Staging build.** `npm run dist:win:staging` bakes `COMETLOOP_CHANNEL=staging`
 into the bundle (`electron.vite.config.ts` → `__COMETLOOP_CHANNEL__`) and
 packages with `electron-builder.staging.yml`: product name **Cometloop
-Staging**, appId `com.datavail.delivery-console.staging`, output in
+Staging**, appId `ai.cometloop.desktop.staging`, output in
 `release-staging/`. It installs beside the production app with its own
 config and keychain entries, preselects **Staging** on the picker, and has
 `autoUpdate` off by default so the production release feed can never replace
@@ -154,17 +154,36 @@ publishes to GitHub Releases: Windows NSIS installer + portable exe
 release:
 
 ```bash
-# 1. bump "version" in desktop/package.json (CI fails the build if the tag disagrees)
-git tag v0.2.0 && git push origin v0.2.0
+cd desktop && npm run release -- 0.3.1
 ```
 
+`scripts/release.mjs` bumps `package.json` + the lockfile, commits, tags
+`v0.3.1` and pushes both; it refuses to run off `main`, with a dirty tree,
+behind `origin/main`, or with a version that is not newer. Watch the build
+with `gh run watch` and the release appears at
+<https://github.com/nsdallenbach/cometloop/releases>. (By hand: bump the
+version, `git tag v<version>`, push the tag — CI fails the build if the two
+disagree.)
+
 Installed builds update themselves silently via `electron-updater`
-(`src/main/updater.ts`): hourly check against the release feed, background
-download, install on the next app quit. No prompts. Opt out with
-`"autoUpdate": false` in config.json (or `AUTO_UPDATE=0`) to pin a build.
-Not self-updating by design: dev runs, the portable exe (nothing installed
-to replace), and macOS until builds are signed (Squirrel.Mac refuses
-unsigned updates).
+(`src/main/updater.ts`): a check against the release feed at launch and
+hourly, background download, install on the next app quit. The sidebar
+footer shows the running version (its tooltip has the updater's state; a
+click checks now) and, once a newer build is downloaded, an **Update to
+vX.Y.Z** button that restarts into it. The button is refused while an agent
+is mid-run; the build still installs on the next quit. Every transition is appended to
+`<userData>/updater.log`. Opt out with `"autoUpdate": false` in
+config.json (or `AUTO_UPDATE=0`) to pin a build. Not self-updating by
+design, and the footer says which: dev runs, the portable exe (nothing
+installed to replace), and macOS until builds are signed (Squirrel.Mac
+refuses unsigned updates).
+
+The consoles a build offers on first launch are baked in by the release
+workflow from the repository variables `COMETLOOP_PRODUCTION_CONSOLE_URL`,
+`COMETLOOP_STAGING_CONSOLE_URL` and `COMETLOOP_DATABRICKS_HOST` (empty →
+the console signs users in itself). A build whose staging URL equals its
+production URL offers Production and Local only. The list is not written to
+config.json, so a newer build's consoles reach every install.
 
 **Code signing** is the long-lead item (procurement, tracked on DAT-237):
 unsigned builds install fine but Windows shows the SmartScreen warning, and

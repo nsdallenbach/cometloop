@@ -13,7 +13,7 @@ import { DeployManager, type DeploysEvent } from './deploys';
 import { IdentityBroker, IDENTITY_PROVIDERS, type IdentityProvider, type ProviderStatus } from './identity';
 import type { RunnerEvent } from './runner';
 import { TerminalHost, taskWorkdir, type TerminalEvent } from './terminal';
-import { initAutoUpdate } from './updater';
+import { checkForUpdatesNow, initAutoUpdate, installUpdateNow, updateStatus } from './updater';
 
 // The staging build must not share config.json, the encrypted refresh token
 // or the pid file with the production install on the same machine. Electron
@@ -131,6 +131,18 @@ function registerIpc(): void {
     app.exit(0);
     return { ok: true as const };
   });
+
+  // Sidebar footer: the running build and the auto-updater's state.
+  ipcMain.handle('updates:status', () => updateStatus());
+  ipcMain.handle('updates:check', () => checkForUpdatesNow());
+  // Never restart under a running agent (Nigel's rule: don't interrupt a
+  // runner mid-ticket); the staged build installs on the next quit instead.
+  ipcMain.handle('updates:install', () =>
+    installUpdateNow(() => {
+      const busy = pool.state().instances.find((i) => i.current != null);
+      return busy?.current ? `${busy.current.ticketKey} is being worked; update after it finishes` : null;
+    }),
+  );
 
   ipcMain.handle('console:list-engagements', async () => {
     try {
@@ -572,8 +584,11 @@ void app.whenReady().then(async () => {
 
   registerIpc();
   createWindow();
-  // Silent updates (DAT-237): staged in the background, applied on quit.
-  initAutoUpdate(cfg);
+  // Silent updates (DAT-237): staged in the background, applied on quit;
+  // every state change reaches the sidebar footer.
+  initAutoUpdate(cfg, (status) => {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('updates:event', status);
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
