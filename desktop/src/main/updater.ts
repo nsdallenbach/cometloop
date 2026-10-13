@@ -67,8 +67,7 @@ function log(line: string): void {
 }
 
 /** electron-updater's messages carry the whole HTTP exchange; the first line says what happened. */
-const firstLine = (e: unknown): string => (e instanceof Error ? e.message : String(e)).split('
-')[0].trim();
+const firstLine = (e: unknown): string => (e instanceof Error ? e.message : String(e)).split(/\r?\n/)[0].trim();
 
 function set(next: UpdateState): void {
   state = next;
