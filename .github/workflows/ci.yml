@@ -2,9 +2,10 @@ name: CI
 
 # The gate for every change: web typecheck/lint/build/tests and the desktop
 # typecheck (it consumes shared/ and the console API, so a web-side change
-# that breaks it must fail here). Deployment is separate — see
-# docs/platform-architecture.md; the Databricks bundle deploy that used to
-# run on merge belongs to the previous home of this repo.
+# that breaks it must fail here). Hosting is not in this repo: a green main
+# is handed to the Deploy workflow of the private nsdallenbach/cometloop-infra
+# repo (dispatch-deploy below), which builds this commit's image and rolls
+# staging; production is a manual promotion run from that repo.
 
 on:
   push:
@@ -45,3 +46,23 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+
+  # Hand a green main to the hosting repo. INFRA_DISPATCH_TOKEN is a
+  # fine-grained PAT with Contents: read & write on cometloop-infra; while it
+  # is unset nothing is dispatched and the merge stays harmless.
+  dispatch-deploy:
+    needs: [web, desktop-typecheck]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.INFRA_DISPATCH_TOKEN }}
+    steps:
+      - name: Dispatch Deploy in cometloop-infra
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "INFRA_DISPATCH_TOKEN is not set; skipping the deploy dispatch."
+            exit 0
+          fi
+          gh api -X POST repos/nsdallenbach/cometloop-infra/dispatches             -f event_type=deploy             -f "client_payload[sha]=$GITHUB_SHA"             -f "client_payload[environment]=staging"
+          echo "Dispatched $GITHUB_SHA to cometloop-infra (staging)."

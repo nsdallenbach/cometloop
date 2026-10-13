@@ -28,7 +28,7 @@ devbox-runner/    Headless reference runner for devbox VMs (wait → claim → h
 scripts/          Ops scripts: dev-role migrations, Standards-tab sync, beta seeding, validators
 tests/            Vitest unit tests for client libs + the Playwright smoke test
 docs/             Architecture, standards, runner contract, runbooks, incidents, prompts
-.github/          deploy.yml (CI gate + bundle deploy), desktop-release.yml (tag → installers)
+.github/          ci.yml (gate; dispatches a green main to the hosting repo), desktop-release.yml (tag → installers)
 databricks.yml    Bundle: app, UC volumes, Lakebase + serving-endpoint resources
 app.yaml          App runtime: start command and resource-injected env
 ```
@@ -121,9 +121,11 @@ npm run build              # dist/server.js + client/dist/
 npm start                  # serve the production build locally
 ```
 
-Deploys are CI-driven: `.github/workflows/deploy.yml` runs the gate, then
-`databricks bundle deploy`, the dev-role migrations, and `databricks bundle
-run app`. A manual deploy is the same two bundle commands with an
+Deploys are CI-driven: `.github/workflows/ci.yml` runs the gate and, on a
+green `main`, dispatches the Deploy workflow in the private hosting repo
+(`nsdallenbach/cometloop-infra`), which builds the root `Dockerfile` and
+rolls the service. Hosting is not part of this repo; a Databricks App
+deploy is `databricks bundle deploy` + `databricks bundle run app` with an
 authenticated CLI. Each deploy restarts the app (~1 minute of 502s).
 
 Desktop releases: bump `desktop/package.json` version, push a `v<version>`

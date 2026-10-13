@@ -11,10 +11,10 @@ import { z } from 'zod';
 /** Build channel baked in by electron.vite.config.ts (`COMETLOOP_CHANNEL`). */
 export const CHANNEL: 'production' | 'staging' = __COMETLOOP_CHANNEL__;
 
-// Production is still the Databricks App until the Azure stack in infra/ is
-// applied (then it becomes https://app.cometloop.ai with consoleAuth 'none',
-// like staging). Staging is the Azure Container App on the Neon `staging`
-// branch; the console signs the tester in itself (Neon Auth), so no
+// Production is still the Databricks App until the AWS stack in the private
+// cometloop-infra repo is applied for prod (then it becomes
+// https://app.cometloop.ai with consoleAuth 'none', like staging). Staging is
+// the ECS Express Mode service on the Neon `staging` branch; the console signs the tester in itself (Neon Auth), so no
 // workspace token is involved — see docs/platform-architecture.md §5.
 const PRODUCTION_CONSOLE_URL = 'https://delivery-console-7474645607548631.aws.databricksapps.com';
 const STAGING_CONSOLE_URL = 'https://staging.cometloop.ai';

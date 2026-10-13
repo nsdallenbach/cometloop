@@ -874,7 +874,7 @@ A release is three versioned things, and nothing else:
 | Artefact | Where it is published | How a customer references it |
 |---|---|---|
 | Container image (`api` and `worker` entrypoints) | `ghcr.io/nsdallenbach/cometloop:<version>` (GitHub Container Registry, pull-token per customer when gated) | `image` variable of the Terraform module |
-| Infra module | `infra/azure` at the release tag | `source = "github.com/nsdallenbach/cometloop//infra/azure?ref=v<version>"` |
+| Infra module | the `azure` stack of the private `cometloop-infra` repo at the release tag | `source = "github.com/nsdallenbach/cometloop-infra//azure?ref=v<version>"` |
 | Release manifest | `https://cometloop.ai/releases.json` (version, image digest, module ref, notes, minimum schema version) | polled by the update job and shown in the console |
 
 Everything a customer configures — provider keys, SSO, branding, integrations —
@@ -884,7 +884,7 @@ new image tag, which is what makes it safe to automate.
 
 ### What a dedicated install consists of
 
-The same `infra/azure` module applied in the customer's subscription with
+The same `azure` module (from `cometloop-infra`) applied in the customer's subscription with
 `deployment_mode = "dedicated"`: resource group, Log Analytics, Container Apps
 environment, `api` + `worker`, Key Vault, managed identity, custom domain.
 Differences from Cometloop Cloud, all switched by that one variable:
@@ -909,7 +909,7 @@ Cometloop **publishes; the customer's tenant pulls.** No Cometloop credential
 ever has write access to a customer subscription.
 
 1. **Release**: on a `v*` tag the release workflow builds the image once,
-   pushes `ghcr.io/…:<version>` (and `:latest`), attaches `infra/` to the
+   pushes `ghcr.io/…:<version>` (and `:latest`), attaches the `cometloop-infra` stacks to the
    GitHub Release, and updates `releases.json`. Cometloop Cloud's `deploy.yml`
    is simply the first consumer of that release.
 2. **Pull policy, chosen by the customer** — three tiers, all supported:
@@ -938,7 +938,7 @@ ever has write access to a customer subscription.
 
 - `RELEASE` workflow (tag → image → GHCR → release assets → `releases.json`).
 - `deployment_mode`, `registry_credentials` and `licence_secret_name`
-  variables in `infra/azure`; dedicated mode skips AI Gateway wiring and the
+  variables in the `azure` stack; dedicated mode skips AI Gateway wiring and the
   multi-tenant loop iteration.
 - `GET /api/version`, the `schema_version` guard, the licence check, and the
   heartbeat client.

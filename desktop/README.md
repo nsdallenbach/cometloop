@@ -73,7 +73,7 @@ pool and webview session are all built from the resolved URL at startup).
 
 | Environment | Console | Backing data | Who uses it |
 |---|---|---|---|
-| **Production** | `delivery-console` Databricks App (until the AWS stack in `infra/aws` is applied for prod; then `https://app.cometloop.ai`) | Lakebase branch `production` | everyone, day to day |
+| **Production** | `delivery-console` Databricks App (until the AWS stack in the private `cometloop-infra` repo is applied for prod; then `https://app.cometloop.ai`) | Lakebase branch `production` | everyone, day to day |
 | **Staging** | `https://staging.cometloop.ai` — Amazon ECS (Express Mode), `consoleAuth: none` | Neon branch `staging` | testers on the staging build |
 | **Local** | `http://localhost:8000` (`consoleAuth: none`) | whatever the dev server points at | developers |
 
