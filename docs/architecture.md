@@ -183,6 +183,7 @@ is set, which phase 3 removes.
 - `ticket-consolidate.ts` — merge duplicate tickets into a surviving target, nothing human-written lost
 - `ticket-hours.ts` — hour population and validation so estimates are never a data-entry chore
 - `ticket-events / -links / -tags / -order / -attachments / -activity` — the event trail, dependencies, tags, board ordering, file attachments, activity badges
+- `desktop-auth.ts` — the desktop app's browser sign-in: `POST /api/auth/desktop/handoff` (signed-in browser → one-time code, 2 minutes), `POST /api/auth/desktop/exchange` (sign-in exempt; code → `cldt_…` desktop session token, 90 days sliding, stored hashed in the global `app.desktop_sessions`), `DELETE /api/auth/desktop/session`; `desktopSessionVerifier` in `identity.ts` turns the token back into the person
 - `workflows.ts` — the Workflows builder's storage (DAT-288): `app.workflows` (a name and a graph as JSONB), list / read / create / save / delete, graph rules on the way in (known node kinds, edges between real nodes, no loops), and a stale-save guard that answers 409 instead of overwriting a colleague
 - `deploys.ts` — the local deployment queue: desktop clients post ticket-keyed deploy events, the web renders a read-only mirror
 - `deploy-gate.ts` — Done means deployed: a move into Done needs a merged PR with a green deploy (or the `no-deploy` tag)
@@ -370,7 +371,10 @@ managed load balancer), the Neon branch `staging`
 that branch, served to the browser from `GET /api/auth/config` and verified
 by the Better Auth JWT verifier in `server/identity.ts`. Who may sign in is
 `app.tenant_members` (admins manage it at `/api/admin/members`; `owner` /
-`admin` rows are console admins, `member` rows developers). The Deploy
+`admin` rows are console admins, `member` rows developers). On such a
+deployment the runner routes (`/api/agent/*`) are **not** sign-in exempt
+(`runnerRoutesRequireSignIn`): the desktop signs in with a console account
+and sends its JWT, and an anonymous caller cannot claim work. The Deploy
 workflow in `cometloop-infra` ships every green `main` to staging and promotes to production only on a
 manual dispatch; tester desktop builds (`desktop/README.md` → Environments)
 sign in to `https://staging.cometloop.ai` with no workspace token involved.

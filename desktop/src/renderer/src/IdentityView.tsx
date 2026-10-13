@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { KeyRound, Plus } from 'lucide-react';
 import { serviceBrand } from '../../../../shared/design/AgentLogos';
+import { CometMark } from '../../../../shared/design/Brand';
 
 /**
  * Identity page (DAT-235 / DAT-280 look): a card per service, like the Agents
@@ -20,8 +21,9 @@ const AUTH_TEXT: Record<AuthMode, { text: string; tone: 'ok' | 'warn' | 'muted' 
   oauth: { text: 'Signed in · browser OAuth', tone: 'ok' },
   cli: { text: 'Signed in · Databricks CLI', tone: 'ok' },
   'dev-token': { text: 'Dev token from env', tone: 'warn' },
+  console: { text: 'Signed in · Cometloop account', tone: 'ok' },
   'signed-out': { text: 'Not signed in', tone: 'muted' },
-  local: { text: 'Console sign-in · no workspace token needed', tone: 'ok' },
+  local: { text: 'Dev server identifies you · no token', tone: 'warn' },
 };
 
 const PROVIDER_NOTE: Record<IdentityProvider, string> = {
@@ -36,15 +38,22 @@ const toneColor = (tone: 'ok' | 'warn' | 'muted' | 'agent') =>
 export function IdentityView() {
   const [cfg, setCfg] = useState<Awaited<ReturnType<DesktopBridge['getConfig']>> | null>(null);
   const [auth, setAuth] = useState<AuthMode>('signed-out');
+  const [account, setAccount] = useState<string | null>(null);
+  const [provider, setProvider] = useState<AuthProvider>('databricks');
   const [dbState, setDbState] = useState<'idle' | 'signing-in' | 'testing' | 'ok' | 'error'>('idle');
   const [engagements, setEngagements] = useState<EngagementRow[]>([]);
   const [dbError, setDbError] = useState('');
   const [ids, setIds] = useState<IdentityStatusRow[]>([]);
   const [idErr, setIdErr] = useState<Partial<Record<IdentityProvider, string>>>({});
 
+  const applyStatus = (s: AuthStatus) => {
+    setAuth(s.mode);
+    setAccount(s.account);
+    setProvider(s.provider);
+  };
   useEffect(() => {
     void window.desktopBridge.getConfig().then(setCfg);
-    void window.desktopBridge.authStatus().then((s) => setAuth(s.mode));
+    void window.desktopBridge.authStatus().then(applyStatus);
     void window.desktopBridge.identityStatus().then(setIds);
     return window.desktopBridge.onIdentityEvent((row) => {
       setIds((rows) => rows.map((r) => (r.provider === row.provider ? row : r)));
@@ -55,7 +64,7 @@ export function IdentityView() {
     setDbState('testing');
     setDbError('');
     const res = await window.desktopBridge.listEngagements();
-    void window.desktopBridge.authStatus().then((s) => setAuth(s.mode));
+    void window.desktopBridge.authStatus().then(applyStatus);
     if (res.ok) {
       setEngagements(res.engagements);
       setDbState('ok');
@@ -69,18 +78,21 @@ export function IdentityView() {
     setDbError('');
     const res = await window.desktopBridge.authLogin();
     if (res.ok) {
-      setAuth(res.mode);
+      applyStatus(res.status);
       await test();
     } else {
       setDbError(res.error);
       setDbState('error');
     }
   };
+  // Signing out drops the whole shell behind the gate (App re-reads the
+  // status); the reload makes that immediate and leaves no stale view.
   const signOut = async () => {
     const res = await window.desktopBridge.authSignOut();
-    setAuth(res.mode);
+    applyStatus(res);
     setEngagements([]);
     setDbState('idle');
+    window.location.reload();
   };
   const providerLogin = async (p: IdentityProvider) => {
     setIdErr((e) => ({ ...e, [p]: undefined }));
@@ -119,9 +131,9 @@ export function IdentityView() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
         {/* Databricks — the console's identity */}
         <ServiceCard
-          service="databricks"
-          title="Databricks"
-          sub={envLabel ? `${envLabel} · ${host}` : host}
+          service={provider === 'neon-auth' ? 'cometloop' : 'databricks'}
+          title={provider === 'neon-auth' ? 'Cometloop account' : 'Databricks'}
+          sub={provider === 'neon-auth' ? [envLabel, account ?? host].filter(Boolean).join(' · ') : envLabel ? `${envLabel} · ${host}` : host}
           status={db.text}
           tone={dbState === 'signing-in' || dbState === 'testing' ? 'agent' : db.tone}
           busy={dbState === 'signing-in' || dbState === 'testing'}
@@ -137,7 +149,7 @@ export function IdentityView() {
                   {dbState === 'testing' ? 'Connecting…' : dbState === 'ok' ? `✓ ${engagements.length} project${engagements.length === 1 ? '' : 's'}` : 'Test'}
                 </Btn>
               )}
-              {auth === 'oauth' && (
+              {(auth === 'oauth' || auth === 'console') && (
                 <Btn tone="muted" onClick={() => void signOut()}>
                   Sign out
                 </Btn>
@@ -218,7 +230,9 @@ function ServiceCard({
   detail?: ReactNode;
   actions: ReactNode;
 }) {
-  const brand = serviceBrand(service);
+  // The console's own account card carries the comet; every other service
+  // has a brand mark in the shared catalogue.
+  const brand = service === 'cometloop' ? { label: 'Cometloop', mark: (size: number) => <CometMark size={size} /> } : serviceBrand(service);
   return (
     <div
       className="hv-lift"

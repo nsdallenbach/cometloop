@@ -807,6 +807,13 @@ export const api = {
     return d.escalation;
   },
 
+  // ---- desktop sign-in handoff ----
+
+  /** A one-time code the desktop app exchanges for its own session (server/routes/desktop-auth.ts). */
+  desktopHandoff(label: string): Promise<{ code: string; expiresInSeconds: number }> {
+    return http('/api/auth/desktop/handoff', { method: 'POST', ...json({ label }) });
+  },
+
   // ---- workflows (DAT-288) ----
 
   async workflows(): Promise<WorkflowSummary[]> {

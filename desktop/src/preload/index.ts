@@ -11,6 +11,11 @@ const bridge = {
   listWork: () => ipcRenderer.invoke('queue:list'),
   authStatus: () => ipcRenderer.invoke('auth:status'),
   authLogin: () => ipcRenderer.invoke('auth:login'),
+  // Console account sign-in (consoles that sign users in themselves).
+  authLoginConsole: (email: string, password: string) => ipcRenderer.invoke('auth:login-console', email, password),
+  authSignUpConsole: (name: string, email: string, password: string) => ipcRenderer.invoke('auth:signup-console', name, email, password),
+  authLoginConsoleBrowser: () => ipcRenderer.invoke('auth:login-console-browser'),
+  authRetryDiscovery: () => ipcRenderer.invoke('auth:retry-discovery'),
   authSignOut: () => ipcRenderer.invoke('auth:sign-out'),
   identityStatus: () => ipcRenderer.invoke('identity:status'),
   identityLogin: (provider: string) => ipcRenderer.invoke('identity:login', provider),

@@ -46,6 +46,7 @@ import { normalizeTags } from './ticket-tags';
 import { REPO_CONNECTED_JOIN, doneBlockedReason, gateInputFromRow, loadDeployGates } from './deploy-gate';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
 import { WORKFLOWS_SCHEMA_SQL, setupWorkflowRoutes } from './workflows';
+import { DESKTOP_AUTH_SCHEMA_SQL, setupDesktopAuthRoutes } from './desktop-auth';
 import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes } from './ticket-consolidate';
 import { commentStyleBrief } from './comment-style';
 import { setupMcpRoutes } from './mcp';
@@ -257,6 +258,7 @@ export function bootSchemaSql(opts: { isolation: boolean }): string[] {
     ...TICKET_ACTIVITY_SCHEMA_SQL,
     ...LINKS_SCHEMA_SQL,
     ...WORKFLOWS_SCHEMA_SQL,
+    ...DESKTOP_AUTH_SCHEMA_SQL,
     ...MODEL_CONFIG_SCHEMA_SQL,
     ...ESTIMATE_SCHEMA_SQL,
     ...ATTACHMENT_SCHEMA_SQL,
@@ -907,8 +909,11 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     });
 
     // Fail closed: every /api route below needs a signed-in caller, except the
-    // sign-in-exempt paths listed in server/identity.ts (runner machinery).
+    // sign-in-exempt paths listed in server/identity.ts (runner machinery and
+    // the desktop's code exchange).
     app.use('/api', requireSignIn());
+    // The desktop app's browser sign-in: handoff code → desktop session.
+    setupDesktopAuthRoutes(app, adminQ);
 
     app.get('/api/me', async (req, res) => {
       try {

@@ -11,7 +11,8 @@ export type Screen =
   | { name: 'workspace'; engId: string; tab: Tab }
   | { name: 'ticket'; ticketKey: string }
   | { name: 'redirect'; to: string }
-  | { name: 'external'; to: string };
+  | { name: 'external'; to: string }
+  | { name: 'desktop-signin' };
 
 export const paths = {
   portfolio: '/projects',
@@ -52,6 +53,8 @@ export function parsePath(pathname: string): Screen {
   // (DAT-267); keep those links — docs and shared URLs still point there.
   if (head === 'agents') return { name: 'redirect', to: paths.agentMap };
   if (head === 'setup' && segs.length === 1) return { name: 'setup' };
+  // The desktop app's browser sign-in page (port + state ride in the query string).
+  if (head === 'desktop-signin' && segs.length === 1) return { name: 'desktop-signin' };
   if (head === 'settings' && segs.length === 1) return { name: 'settings' };
   // Admin became Settings; old /admin links follow it.
   if (head === 'admin') return { name: 'redirect', to: paths.settings };

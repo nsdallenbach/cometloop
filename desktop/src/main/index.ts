@@ -7,13 +7,23 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ConsoleClient } from '../../../shared/api-client';
 import { AgentPool, type AgentKind, AGENT_KINDS } from './agents';
-import { activeEnvironment, loadConfig, saveEnvironmentChoice, type DesktopConfig } from './config';
+import { CHANNEL, activeEnvironment, loadConfig, saveEnvironmentChoice, type DesktopConfig } from './config';
 import { CredentialManager, SIGN_IN_REQUIRED } from './credentials';
 import { DeployManager, type DeploysEvent } from './deploys';
 import { IdentityBroker, IDENTITY_PROVIDERS, type IdentityProvider, type ProviderStatus } from './identity';
 import type { RunnerEvent } from './runner';
 import { TerminalHost, taskWorkdir, type TerminalEvent } from './terminal';
 import { checkForUpdatesNow, initAutoUpdate, installUpdateNow, updateStatus } from './updater';
+
+// The staging build must not share config.json, the encrypted refresh token
+// or the pid file with the production install on the same machine. Electron
+// derives userData from the package name (electron-builder's productName
+// does not reach app.getName() in the asar), so pin it per channel before
+// anything reads a path.
+if (CHANNEL === 'staging') {
+  app.setName('Cometloop Staging');
+  app.setPath('userData', path.join(app.getPath('appData'), 'cometloop-desktop-staging'));
+}
 
 let cfg: DesktopConfig;
 let creds: CredentialManager;
@@ -111,7 +121,13 @@ function registerIpc(): void {
     if (id !== null && typeof id !== 'string') return { ok: false as const, error: 'bad environment id' };
     if (id !== null && !cfg.environments.some((env) => env.id === id)) return { ok: false as const, error: `unknown environment: ${id}` };
     saveEnvironmentChoice(id);
-    app.relaunch();
+    // The portable exe runs from a temp folder that its launcher deletes on
+    // exit, so a plain relaunch of process.execPath has nothing to start —
+    // the app just closes. electron-builder exposes the original file; start
+    // that again (it re-unpacks, a few seconds). Installed builds relaunch
+    // in place.
+    const portable = process.env.PORTABLE_EXECUTABLE_FILE;
+    app.relaunch(portable ? { execPath: portable, args: [] } : undefined);
     app.exit(0);
     return { ok: true as const };
   });
@@ -152,15 +168,61 @@ function registerIpc(): void {
 
   ipcMain.handle('auth:status', () => creds.status());
 
+  // Databricks workspace sign-in (browser OAuth). Everything that talks to
+  // the console starts only once this succeeds.
   ipcMain.handle('auth:login', async () => {
     try {
-      return { ok: true as const, ...(await creds.login()) };
+      const status = await creds.login();
+      startRuntime();
+      return { ok: true as const, status };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
 
-  ipcMain.handle('auth:sign-out', () => creds.signOut());
+  // Console account sign-in (Neon Auth), for consoles that sign users in
+  // themselves. Same rule: the runtime starts after, never before.
+  ipcMain.handle('auth:login-console', async (_e, email: unknown, password: unknown) => {
+    if (typeof email !== 'string' || typeof password !== 'string') return { ok: false as const, error: 'email and password required' };
+    try {
+      const status = await creds.loginConsole(email.trim(), password);
+      startRuntime();
+      return { ok: true as const, status };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  // Browser sign-in (Google): the console's page in the system browser,
+  // a loopback handoff back here. Same rule: the runtime starts after.
+  ipcMain.handle('auth:login-console-browser', async () => {
+    try {
+      const status = await creds.loginConsoleBrowser((url) => void shell.openExternal(url));
+      startRuntime();
+      return { ok: true as const, status };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle('auth:signup-console', async (_e, name: unknown, email: unknown, password: unknown) => {
+    if (typeof email !== 'string' || typeof password !== 'string') return { ok: false as const, error: 'email and password required' };
+    try {
+      const status = await creds.signUpConsole(typeof name === 'string' && name.trim() ? name.trim() : email.split('@')[0], email.trim(), password);
+      startRuntime();
+      return { ok: true as const, status };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle('auth:retry-discovery', async () => creds.retryDiscovery());
+
+  // Signing out stops the runtime: agents take no new work (a run in flight
+  // finishes — runner.stop() is graceful by design), deploy polling stops,
+  // and the shell goes back behind the sign-in gate.
+  ipcMain.handle('auth:sign-out', async () => {
+    const status = await creds.signOut();
+    stopRuntime();
+    return status;
+  });
 
   // ---- identity broker (DAT-235): gh/az/ADO device flows + MCP secrets ----
   const isProvider = (v: unknown): v is IdentityProvider =>
@@ -446,10 +508,36 @@ function registerIpc(): void {
   });
 }
 
+/**
+ * Everything that talks to the console as the signed-in user — the agent
+ * pool (which claims work) and the deploy queue poller — starts here, and
+ * only once a sign-in exists. Idempotent: called at boot when a stored
+ * session is valid, and after each successful sign-in.
+ */
+let runtimeStarted = false;
+function startRuntime(): void {
+  if (runtimeStarted || !creds.isSignedIn()) return;
+  runtimeStarted = true;
+  // Auto-start (DAT-245): configured instances launch so the work queue
+  // never waits on a Start click — but never before the user is signed in.
+  void pool.init();
+  deploys.start();
+}
+
+function stopRuntime(): void {
+  if (!runtimeStarted) return;
+  runtimeStarted = false;
+  pool.stopAll();
+  deploys.stop();
+}
+
 void app.whenReady().then(async () => {
   replacePreviousInstance();
   cfg = loadConfig();
   creds = new CredentialManager(cfg);
+  // Which sign-in the console uses, and whether a stored session still
+  // stands. Nothing below talks to the console until this has settled.
+  await creds.init();
   client = new ConsoleClient({
     baseUrl: cfg.consoleUrl,
     getToken: (o) => creds.getToken(o),
@@ -477,16 +565,13 @@ void app.whenReady().then(async () => {
       for (const w of BrowserWindow.getAllWindows()) w.webContents.send('terminal:event', ev);
     },
   );
-  // Auto-start (DAT-245): configured instances launch with the app so the
-  // work queue never waits on a Start click.
-  await pool.init();
-
   // Local deploy queue (DAT-236): poll the dev's merged-but-undeployed tickets
   // and report deploy events home; the web app only ever sees the mirror.
   deploys = new DeployManager(cfg, client, () => creds.getToken(), (ev: DeploysEvent) => {
     for (const w of BrowserWindow.getAllWindows()) w.webContents.send('deploys:event', ev);
   });
-  deploys.start();
+  // Agents and deploy polling start only behind a sign-in (see startRuntime).
+  startRuntime();
 
   // Embedded console auth: every request the Tickets webview makes to the
   // console gets the dev's workspace bearer token injected here, so the

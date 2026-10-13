@@ -77,14 +77,34 @@ pool and webview session are all built from the resolved URL at startup).
 | **Staging** | `https://staging.cometloop.ai` — Amazon ECS (Express Mode), `consoleAuth: none` | Neon branch `staging` | testers on the staging build |
 | **Local** | `http://localhost:8000` (`consoleAuth: none`) | whatever the dev server points at | developers |
 
-Staging and Local use the **console's own sign-in**: the embedded console
-shows its Neon Auth sign-in screen (email + password, or Google) and the
-desktop needs no workspace token, so the Identity page reports the mode as
-**console sign-in**. Production still signs in to the Databricks workspace.
-Native surfaces that call the API from the main process (Agents queue,
-Deploys, the bell) have no console session on `consoleAuth: none`
-deployments yet and report *not signed in* — the desktop-side console
-sign-in is the next piece (docs/platform-architecture.md §5 "Desktop app").
+**The desktop owns identity, on every environment.** After the picker comes
+the **sign-in gate**: nothing of the shell — sidebar, agents, deploy
+polling, the embedded console — exists until the desktop holds a sign-in,
+and the main process starts the agent pool and the deploy poller only after
+the same event (`startRuntime()` in `src/main/index.ts`). Which sign-in
+depends on the console (`GET /api/auth/config`):
+
+- **Databricks Apps proxy** (Production today): the browser OAuth flow, as
+  before.
+- **Console account** (Staging, Local, Cometloop Cloud — `consoleAuth: none`):
+  **Continue with Google** opens the console's sign-in page in your system
+  browser (Google refuses embedded browsers); the page hands a one-time code
+  to a loopback listener in the app, which exchanges it for a desktop
+  session token (`server/routes/desktop-auth.ts`). Email + password is also
+  offered natively, with create-account, against Neon Auth over HTTP
+  (`src/main/console-auth.ts`). Either way the main process keeps the
+  session encrypted with `safeStorage`, sends the console a bearer on every
+  request — the embedded console's included — so the console never shows
+  its own sign-in inside the desktop and you are one person everywhere. The Identity page shows the account as **Cometloop account**;
+  **Sign out** there drops the whole app behind the gate and stops the
+  runtime (a run in flight finishes; no new work is claimed).
+- **A dev server with no provider** (`DEV_IDENTITY_EMAIL`): the server
+  identifies you itself; the Identity page says so (**Dev server identifies
+  you · no token**).
+
+On the server side, `/api/agent/*` is no longer open to anonymous callers
+on a deployment with console sign-in (`server/identity.ts`
+`runnerRoutesRequireSignIn`): a runner is a signed-in user like any other.
 Add your own entries to `environments` in
 config.json (`id`, `label`, `consoleUrl`, optional `databricksHost`,
 `consoleAuth`, `note`). `APP_URL` in the environment pins the console for a
@@ -101,7 +121,7 @@ it. Hand the installer or portable exe to testers directly; it is not
 published to GitHub Releases.
 
 Config lives at `%APPDATA%/cometloop-desktop/config.json` (written on
-first run; `%APPDATA%/Cometloop Staging/` for the staging build) and can be
+first run; `%APPDATA%/cometloop-desktop-staging/` for the staging build) and can be
 overridden per-run with env vars: `APP_URL`,
 `DATABRICKS_HOST`, `DATABRICKS_PROFILE`, `DATABRICKS_CLI`, `AGENT_NAME`,
 `HARNESS`, `WORK_ROOT`, `MAX_RUN_MINUTES`, `MCP_SERVER`, `DEPLOY_COMMAND`,

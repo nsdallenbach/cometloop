@@ -78,6 +78,8 @@ export async function roleOf(identity: Identity): Promise<Role> {
       return identity.accessToken ? databricksRole(identity.accessToken) : 'developer';
     case 'dev':
       return 'admin';
+    // A desktop session is the same person as the browser sign-in that created it.
+    case 'desktop':
     case 'better-auth': {
       if (!memberRoleDirectory || !identity.tenantId) return 'developer';
       const key = `member:${identity.tenantId}:${identity.email.toLowerCase()}`;

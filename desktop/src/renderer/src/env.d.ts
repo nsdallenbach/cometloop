@@ -8,7 +8,15 @@ interface EngagementRow {
   health: string;
 }
 
-type AuthMode = 'dev-token' | 'oauth' | 'cli' | 'signed-out' | 'local';
+type AuthMode = 'dev-token' | 'oauth' | 'cli' | 'console' | 'signed-out' | 'local';
+type AuthProvider = 'databricks' | 'neon-auth' | 'none';
+interface AuthStatus {
+  mode: AuthMode;
+  provider: AuthProvider;
+  host: string;
+  account: string | null;
+  error?: string;
+}
 
 type IdentityProvider = 'github' | 'azure' | 'ado';
 
@@ -117,9 +125,13 @@ interface DesktopBridge {
     | { ok: true; work: { queued: AgentTaskRow[]; active: AgentTaskRow[] } }
     | { ok: false; error: string; signInRequired?: boolean }
   >;
-  authStatus: () => Promise<{ mode: AuthMode; host: string }>;
-  authLogin: () => Promise<{ ok: true; mode: AuthMode } | { ok: false; error: string }>;
-  authSignOut: () => Promise<{ mode: AuthMode }>;
+  authStatus: () => Promise<AuthStatus>;
+  authLogin: () => Promise<{ ok: true; status: AuthStatus } | { ok: false; error: string }>;
+  authLoginConsole: (email: string, password: string) => Promise<{ ok: true; status: AuthStatus } | { ok: false; error: string }>;
+  authSignUpConsole: (name: string, email: string, password: string) => Promise<{ ok: true; status: AuthStatus } | { ok: false; error: string }>;
+  authLoginConsoleBrowser: () => Promise<{ ok: true; status: AuthStatus } | { ok: false; error: string }>;
+  authRetryDiscovery: () => Promise<AuthStatus>;
+  authSignOut: () => Promise<AuthStatus>;
   identityStatus: () => Promise<IdentityStatusRow[]>;
   identityLogin: (
     provider: IdentityProvider,

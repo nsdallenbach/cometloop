@@ -50,6 +50,14 @@ attributes claims. Anything the runner fetches outside `/api/agent/*`
 (context files, standards files, attachments) needs that forwarded identity
 like any other caller.
 
+**On a deployment where the console signs users in itself** (Neon Auth —
+staging, Cometloop Cloud), that exemption does not apply
+(`runnerRoutesRequireSignIn`): every `/api/agent/*` call needs a console
+JWT in `Authorization: Bearer`. The desktop runner has one (it signs in with
+a console account); this headless runner and `mcp/server.mjs` still mint
+Databricks tokens and therefore cannot run against such a deployment until
+per-tenant runner API keys land (platform-architecture §5).
+
 On a devbox VM with the Databricks CLI authenticated (user or service
 principal), mint a token per request batch:
 

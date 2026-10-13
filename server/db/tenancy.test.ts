@@ -14,6 +14,7 @@ import {
   tenancyTestSql,
 } from './tenancy';
 import { BOOT_SCHEMA_SQL } from '../routes/api';
+import { DESKTOP_AUTH_SCHEMA_SQL } from '../routes/desktop-auth';
 import { DEFAULT_TENANT_ID } from './tenant-context';
 
 /**
@@ -34,9 +35,10 @@ describe('tenant table lists', () => {
     expect(stale, 'tenancy.ts lists tables no array creates').toEqual([]);
   });
 
-  it('keeps the global allowlist to the tenant directory', () => {
-    expect([...GLOBAL_TABLES]).toEqual(['tenants', 'tenant_members']);
-    expect(tablesCreatedBy(TENANT_DIRECTORY_SQL).sort()).toEqual([...GLOBAL_TABLES].sort());
+  it('keeps the global allowlist to the tenant directory and the desktop sign-in tables', () => {
+    expect([...GLOBAL_TABLES]).toEqual(['tenants', 'tenant_members', 'desktop_handoffs', 'desktop_sessions']);
+    expect(tablesCreatedBy(TENANT_DIRECTORY_SQL).sort()).toEqual(['tenant_members', 'tenants']);
+    expect(tablesCreatedBy(DESKTOP_AUTH_SCHEMA_SQL).sort()).toEqual(['desktop_handoffs', 'desktop_sessions']);
   });
 
   it('is 46 tenant tables, as the architecture doc counts them', () => {

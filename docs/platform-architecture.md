@@ -448,12 +448,21 @@ to the roster on first sign-in.
 
 ### Desktop app
 
-- `desktop/src/main/oauth.ts` swaps the workspace PKCE flow for a
-  Cometloop sign-in: open `https://app.cometloop.ai/desktop/sign-in` in the
-  system browser, receive the session token on the existing loopback
-  `:8020` redirect (or the Better Auth device-authorization plugin; either is
-  a contained change in `oauth.ts` + `credentials.ts`). The token is stored
-  with `safeStorage` exactly as the refresh token is now.
+- **Built (2026-10):** the desktop signs in with a console account natively
+  rather than through a browser handoff — `desktop/src/main/console-auth.ts`
+  speaks Better Auth's HTTP routes directly (sign-in / sign-up → the signed
+  session cookie, `GET /token` → the JWT), the session is stored with
+  `safeStorage` exactly as the refresh token is, and `credentials.ts` mints
+  from it. Which provider to use comes from the console's
+  `GET /api/auth/config`, so one build follows any Neon branch. A browser
+  handoff (`/desktop/sign-in` + loopback) is still the route for Google
+  sign-in on the desktop when that is wanted; the managed host accepts the
+  session only as the cookie, not as a bearer, so it would hand back the
+  cookie value.
+- Nothing in the desktop runs before that sign-in: the shell is behind a
+  gate and the agent pool / deploy poller start only once a sign-in exists
+  (`startRuntime()`). Server side, `/api/agent/*` loses its anonymous
+  exemption wherever Neon Auth is configured (`runnerRoutesRequireSignIn`).
 - `index.ts:444` (webview header injection) and `ConsoleClient.getToken()`
   do not change. `forceRefresh` on a 401 becomes "prompt to sign in again"
   since Better Auth sessions renew server-side while in use.

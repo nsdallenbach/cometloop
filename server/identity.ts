@@ -31,7 +31,7 @@ import { DEFAULT_TENANT_ID, isValidTenantId, runWithTenantRequest } from './db/t
  * is scoped (and shares one pinned connection until the response ends).
  */
 
-export type IdentitySource = 'databricks' | 'better-auth' | 'dev';
+export type IdentitySource = 'databricks' | 'better-auth' | 'desktop' | 'dev';
 
 export interface Identity {
   /** Stable id from the verifier (Databricks user id, JWT `sub`, or the dev email). */
@@ -78,6 +78,33 @@ function tenantFromClaims(payload: JWTPayload): string | null {
 }
 
 export type Verifier = (req: express.Request) => Identity | null | Promise<Identity | null>;
+
+/**
+ * Desktop session tokens (`cldt_…`, routes/desktop-auth.ts): the long-lived
+ * bearer the desktop app holds after signing in through the system browser.
+ * Wired by `setupDesktopAuthRoutes` to a lookup on the owner connection;
+ * unset in tests, in which case no such token verifies.
+ */
+export type DesktopSessionStore = (token: string) => Promise<Omit<Identity, 'tenantId'> | null>;
+let desktopSessions: DesktopSessionStore | null = null;
+export function setDesktopSessionStore(lookup: DesktopSessionStore | null): void {
+  desktopSessions = lookup;
+}
+const DESKTOP_TOKEN_RE = /^cldt_[A-Za-z0-9_-]{40,}$/;
+
+export const desktopSessionVerifier: Verifier = async (req) => {
+  if (!desktopSessions) return null;
+  const m = /^Bearer\s+(.+)$/i.exec(headerValue(req, 'authorization'));
+  const token = m ? m[1].trim() : '';
+  if (!DESKTOP_TOKEN_RE.test(token)) return null;
+  const who = await desktopSessions(token);
+  if (!who) {
+    rejections.set(req, 'the desktop session has expired or was signed out');
+    return null;
+  }
+  const tenantId = tenantDirectory ? await tenantDirectory(who.email) : null;
+  return { ...who, tenantId };
+};
 
 function headerValue(req: express.Request, name: string): string {
   const h = req.headers[name];
@@ -180,15 +207,31 @@ export const betterAuthVerifier: Verifier = async (req) => {
     });
     const subject = claimString(payload, 'sub');
     const email = claimString(payload, 'email');
-    if (!subject || !email) return null;
+    if (!subject || !email) {
+      rejections.set(req, 'token carries no subject or email');
+      return null;
+    }
     const fromDirectory = tenantDirectory ? await tenantDirectory(email) : null;
     const tenantId = tenantFromClaims(payload) ?? (fromDirectory && isValidTenantId(fromDirectory) ? fromDirectory : null);
     return { subject, email, name: claimString(payload, 'name') || email, source: 'better-auth', tenantId };
   } catch (err) {
-    console.warn('[identity] better-auth token rejected:', (err as Error).message);
+    const reason = (err as Error).message;
+    console.warn('[identity] better-auth token rejected:', reason);
+    rejections.set(req, reason);
     return null;
   }
 };
+
+// A token was presented and refused: the 401 says why, so a signed-in
+// browser that still gets 401 (expired token, wrong branch's key, clock
+// skew) shows the cause instead of a bare "sign in required". The reason
+// is jose's message — key ids and claim names, never the token itself.
+const rejections = new WeakMap<express.Request, string>();
+
+/** Why the bearer on this request was refused, if one was and it was. */
+export function tokenRejection(req: express.Request): string | null {
+  return rejections.get(req) ?? null;
+}
 
 /**
  * LOCAL DEVELOPMENT ONLY. `DEV_IDENTITY_EMAIL=you@example.com` stands in for
@@ -201,7 +244,7 @@ export const devVerifier = (_req: express.Request): Identity | null => {
   return { subject: email, email, name: process.env.DEV_IDENTITY_NAME?.trim() || email, source: 'dev', tenantId: DEFAULT_TENANT_ID };
 };
 
-export const VERIFIERS: readonly Verifier[] = [databricksVerifier, betterAuthVerifier, devVerifier];
+export const VERIFIERS: readonly Verifier[] = [databricksVerifier, betterAuthVerifier, desktopSessionVerifier, devVerifier];
 
 // Per-request memo so the middleware, the role lookup and the author helper
 // all share one verification (and one JWKS round trip at most).
@@ -247,10 +290,25 @@ export function requestAuthor(req: express.Request, fallback = 'You'): string {
  * attribution and assignee scoping inside. AppKit's `/health` is not under
  * `/api` and is listed for completeness.
  */
-export const SIGN_IN_EXEMPT_PREFIXES: readonly string[] = ['/health', '/api/health', '/api/agent/'];
+export const SIGN_IN_EXEMPT_PREFIXES: readonly string[] = ['/health', '/api/health', '/api/agent/', '/api/auth/desktop/exchange'];
+
+/**
+ * On a deployment where the console signs users in itself (Neon Auth
+ * configured), runners are users too: the desktop signs in with a console
+ * account and sends its JWT, so `/api/agent/*` is not exempt there — an
+ * anonymous caller must never be able to claim work. The exemption stays
+ * for the Databricks deployment (the proxy in front is the runner's auth)
+ * and for a dev server with no provider.
+ */
+export function runnerRoutesRequireSignIn(): boolean {
+  return Boolean(process.env.NEON_AUTH_JWKS_URL?.trim());
+}
 
 export function isSignInExempt(path: string): boolean {
-  return SIGN_IN_EXEMPT_PREFIXES.some((p) => (p.endsWith('/') ? path.startsWith(p) : path === p));
+  return SIGN_IN_EXEMPT_PREFIXES.some((p) => {
+    if (p === '/api/agent/' && runnerRoutesRequireSignIn()) return false;
+    return p.endsWith('/') ? path.startsWith(p) : path === p;
+  });
 }
 
 /**
@@ -290,7 +348,8 @@ export function requireSignIn(): express.RequestHandler {
           runWithTenantRequest(ANONYMOUS_RUNNER_TENANT_ID, res, next);
           return;
         }
-        res.status(401).json({ error: 'Sign in required' });
+        const why = tokenRejection(req);
+        res.status(401).json(why ? { error: `Sign in required — your token was rejected: ${why}`, reason: why } : { error: 'Sign in required' });
       },
       (err: unknown) => {
         console.error('[identity] resolution failed:', err);
