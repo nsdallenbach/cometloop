@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { addNode, autoLayout, connect, NODE_H, NODE_W, parseWorkflow, removeNode, sampleWorkflow, wouldCycle, type Workflow } from '../client/src/lib/workflow-graph';
+import { DEFAULT_TYPE, withDefaults } from '../shared/workflows/catalog';
 
-const node = (id: string, kind: Workflow['nodes'][number]['kind'] = 'action') => ({ id, kind, title: id, detail: '', x: 0, y: 0 });
+const node = (id: string, kind: Workflow['nodes'][number]['kind'] = 'action') => ({ id, kind, type: DEFAULT_TYPE[kind], config: withDefaults(kind, DEFAULT_TYPE[kind], {}), title: id, detail: '', x: 0, y: 0 });
 const wf: Workflow = { nodes: [node('t', 'trigger'), node('a'), node('b')], edges: [{ from: 't', to: 'a' }] };
 
 describe('sampleWorkflow', () => {

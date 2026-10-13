@@ -14,6 +14,7 @@ import { Metrics } from './components/Metrics';
 import { Portfolio } from './components/Portfolio';
 import { Setup } from './components/Setup';
 import { Workflows } from './components/Workflows';
+import { WorkflowBuilder } from './components/WorkflowBuilder';
 import { Workspace } from './components/Workspace';
 import { TicketDrawer } from './components/TicketDrawer';
 import { prefetchMermaid } from './components/Markdown';
@@ -308,9 +309,9 @@ export default function App() {
         key: 'workflows',
         label: 'Workflows',
         icon: <Workflow size={13} strokeWidth={1.75} />,
-        title: 'Workflows — a placeholder builder for automation DAGs',
+        title: 'Workflows — triggers, decisions and actions as a graph, with every run recorded',
         path: paths.workflows,
-        active: screen.name === 'workflows',
+        active: screen.name === 'workflows' || screen.name === 'workflow',
       },
       {
         key: 'metrics',
@@ -799,7 +800,8 @@ export default function App() {
 
       {screen.name === 'agent-map' && <AgentsPage canLead={canLead} canPublishShared={isAdmin} toast={showToast} />}
 
-      {screen.name === 'workflows' && <Workflows toast={showToast} />}
+      {screen.name === 'workflows' && <Workflows toast={showToast} navigate={(p) => void navigate(p)} canLead={canCreate} />}
+      {screen.name === 'workflow' && <WorkflowBuilder key={screen.id} id={screen.id} tab={screen.tab} toast={showToast} navigate={(p) => void navigate(p)} engagements={engagements} canLead={canCreate} />}
 
       {screen.name === 'settings' && isAdmin && <Admin goPortfolio={goPortfolio} toast={showToast} onChanged={() => void refreshEngagements()} />}
       {screen.name === 'settings' && !isAdmin && (

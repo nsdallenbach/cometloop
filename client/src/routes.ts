@@ -1,3 +1,6 @@
+export const WORKFLOW_TABS = ['build', 'runs'] as const;
+export type WorkflowTab = (typeof WORKFLOW_TABS)[number];
+
 export const TABS = ['board', 'tickets', 'roadmap', 'analytics', 'sources', 'deploys', 'config', 'standards', 'team', 'feed'] as const;
 export type Tab = (typeof TABS)[number];
 
@@ -8,6 +11,7 @@ export type Screen =
   | { name: 'metrics' }
   | { name: 'agent-map' }
   | { name: 'workflows' }
+  | { name: 'workflow'; id: number; tab: WorkflowTab }
   | { name: 'workspace'; engId: string; tab: Tab }
   | { name: 'ticket'; ticketKey: string }
   | { name: 'redirect'; to: string }
@@ -17,6 +21,7 @@ export const paths = {
   portfolio: '/projects',
   agentMap: '/agent-map',
   workflows: '/workflows',
+  workflow: (id: number, tab: WorkflowTab = 'build') => (tab === 'build' ? `/workflows/${String(id)}` : `/workflows/${String(id)}/${tab}`),
   metrics: '/metrics',
   setup: '/setup',
   settings: '/settings',
@@ -46,7 +51,14 @@ export function parsePath(pathname: string): Screen {
     return { name: 'redirect', to: paths.ticket(id) };
   }
   if (head === 'agent-map' && segs.length === 1) return { name: 'agent-map' };
-  if (head === 'workflows' && segs.length === 1) return { name: 'workflows' };
+  if (head === 'workflows') {
+    if (segs.length === 1) return { name: 'workflows' };
+    const wid = Number(id);
+    if (!Number.isInteger(wid) || wid <= 0) return { name: 'redirect', to: paths.workflows };
+    if (segs.length === 2) return { name: 'workflow', id: wid, tab: 'build' };
+    if (segs.length === 3 && (WORKFLOW_TABS as readonly string[]).includes(tab)) return { name: 'workflow', id: wid, tab: tab as WorkflowTab };
+    return { name: 'redirect', to: paths.workflow(wid) };
+  }
   if (head === 'metrics' && segs.length === 1) return { name: 'metrics' };
   // The map answered to /agents before it became a first-class nav tab
   // (DAT-267); keep those links — docs and shared URLs still point there.

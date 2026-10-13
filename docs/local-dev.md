@@ -76,6 +76,8 @@ has a `HEALTHCHECK` on `/healthz`. Default command `node dist/main.js` (api);
 | `ANTHROPIC_API_KEY` | optional | A workspace with no provider gets an Anthropic provider registered on first use, every role mapped (planning/review → `claude-sonnet-5`, estimate/draft → `claude-haiku-4-5-20251001`). One variable = a working install. |
 | `AZURE_KEY_VAULT_URL` | optional | Provider credential names not found in the environment are read from this vault (`DefaultAzureCredential`). |
 | `AI_GATEWAY_URL` | optional | Route provider calls through Cloudflare AI Gateway (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>`). |
+| `TYPESAFE_API_KEY` | optional | Lets a workflow's Decide node ask Jev (TypeSafe); `TYPESAFE_API_URL` / `TYPESAFE_MODEL` override the endpoint and model. |
+| `DATABRICKS_WAREHOUSE_ID` | optional | With the workspace SP set, lets the Decide node run Databricks `ai_decide()` on that SQL warehouse. |
 | `DATABRICKS_VOLUME_*`, `LAKEBASE_ENDPOINT`, `PG*` | ignored | Databricks-path only. |
 
 Identity: the API fails closed (`server/identity.ts`). Without the Apps OAuth

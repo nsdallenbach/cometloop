@@ -11,6 +11,7 @@ import { completeAgentBranches, postCoordinationMessage } from './coordination';
 import { recordActualHours } from './estimates';
 import { archiveToolCalls } from './tool-calls';
 import { setTicketStatus } from './ticket-events';
+import { emitWorkflowEvent } from './workflow-engine';
 import { runnerConfigForWorkPackage } from './project-config';
 import { agentConfigForWorkPackage } from './agents';
 import { humanDuration, recordRunnerPoll } from './fleet';
@@ -962,6 +963,7 @@ export function setupAgentRoutes(
         'AGENT',
         outcome === 'done' ? `${agent} finished ${key} — moved to Review.${url ? ` ${url}` : ''}` : `${agent} could not complete ${key} — returned to Backlog.`,
       );
+      emitWorkflowEvent(q, 'agent.completed', { ticketKey: key, run: { agent, outcome, summary: summary.trim(), url: url ?? '' } });
       res.json({ ok: true, ticketStatus: outcome === 'done' ? 'review' : 'backlog' });
     } catch (err) {
       console.error('complete failed:', err);

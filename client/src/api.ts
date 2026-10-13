@@ -74,7 +74,7 @@ import type {
   MetricsReport,
 } from './types';
 
-import { parseWorkflow, type SavedWorkflow, type Workflow, type WorkflowSummary } from './lib/workflow-graph';
+import { parseWorkflow, type SavedWorkflow, type Workflow, type WorkflowRun, type WorkflowRunSummary, type WorkflowSummary } from './lib/workflow-graph';
 
 type Row = Record<string, unknown>;
 
@@ -325,10 +325,25 @@ const json = (body: unknown): RequestInit => ({
 const savedWorkflow = (r: Row): SavedWorkflow => ({
   id: n(r.id),
   name: s(r.name),
+  description: s(r.description),
+  enabled: r.enabled === true,
   // The server validates graphs on the way in; this only guards the shape.
   graph: parseWorkflow(JSON.stringify(r.graph ?? null)) ?? { nodes: [], edges: [] },
   updatedBy: s(r.updatedBy),
   updatedAt: s(r.updatedAt),
+});
+
+const workflowRunSummary = (r: Row): WorkflowRunSummary => ({
+  id: n(r.id),
+  workflowId: n(r.workflowId),
+  workflowName: s(r.workflowName),
+  trigger: s(r.trigger),
+  subject: s(r.subject),
+  state: s(r.state),
+  error: s(r.error),
+  startedAt: s(r.startedAt),
+  finishedAt: typeof r.finishedAt === 'string' ? r.finishedAt : null,
+  stepCount: n(r.stepCount),
 });
 
 const idList = (v: unknown): number[] => (Array.isArray(v) ? v.map((x) => n(x)).filter((x) => x > 0) : []);
@@ -811,7 +826,45 @@ export const api = {
 
   async workflows(): Promise<WorkflowSummary[]> {
     const rows = await http<Row[]>('/api/workflows');
-    return rows.map((r) => ({ id: n(r.id), name: s(r.name), nodes: n(r.nodes), updatedBy: s(r.updatedBy), updatedAt: s(r.updatedAt) }));
+    return rows.map((r) => {
+      const lr = r.lastRun && typeof r.lastRun === 'object' ? (r.lastRun as Row) : null;
+      const c = r.runs7d && typeof r.runs7d === 'object' ? (r.runs7d as Row) : {};
+      return {
+        id: n(r.id),
+        name: s(r.name),
+        enabled: r.enabled === true,
+        nodes: n(r.nodes),
+        trigger: s(r.trigger),
+        updatedBy: s(r.updatedBy),
+        updatedAt: s(r.updatedAt),
+        lastRun: lr ? { id: n(lr.id), state: s(lr.state), startedAt: s(lr.startedAt), finishedAt: typeof lr.finishedAt === 'string' ? lr.finishedAt : null, error: s(lr.error) } : null,
+        runs7d: { ok: n(c.ok), failed: n(c.failed) },
+      };
+    });
+  },
+
+  /** Which decision providers the deployment can reach (the Decide node says so). */
+  workflowProviders(): Promise<{ jev: boolean; databricks: boolean }> {
+    return http('/api/workflows/providers');
+  },
+
+  async workflowRuns(opts: { workflow?: number; limit?: number } = {}): Promise<WorkflowRunSummary[]> {
+    const params = new URLSearchParams();
+    if (opts.workflow) params.set('workflow', String(opts.workflow));
+    if (opts.limit) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    const rows = await http<Row[]>(`/api/workflow-runs${qs ? `?${qs}` : ''}`);
+    return rows.map(workflowRunSummary);
+  },
+
+  async workflowRun(id: number): Promise<WorkflowRun> {
+    const r = await http<Row>(`/api/workflow-runs/${id}`);
+    return { ...workflowRunSummary(r), steps: Array.isArray(r.steps) ? (r.steps as WorkflowRun['steps']) : [], payload: r.payload && typeof r.payload === 'object' ? (r.payload as Record<string, unknown>) : {} };
+  },
+
+  /** Run now; the reply is the finished run (steps included). */
+  runWorkflow(id: number, ticketKey?: string): Promise<{ id: number; state: string; steps: WorkflowRun['steps']; error: string }> {
+    return http(`/api/workflows/${id}/run`, { method: 'POST', ...json(ticketKey ? { ticketKey } : {}) });
   },
 
   async workflow(id: number): Promise<SavedWorkflow> {
@@ -823,7 +876,7 @@ export const api = {
   },
 
   /** Refused with a 409 `ApiError` when someone else saved since `baseUpdatedAt`. */
-  async saveWorkflow(id: number, patch: { name?: string; graph?: Workflow; baseUpdatedAt?: string }): Promise<SavedWorkflow> {
+  async saveWorkflow(id: number, patch: { name?: string; graph?: Workflow; enabled?: boolean; description?: string; baseUpdatedAt?: string }): Promise<SavedWorkflow> {
     return savedWorkflow(await http<Row>(`/api/workflows/${id}`, { method: 'PUT', ...json(patch) }));
   },
 

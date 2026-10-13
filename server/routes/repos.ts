@@ -3,6 +3,7 @@ import express from 'express';
 import type { Caller } from './roles';
 import { githubAppConfigured, installationToken, verifyWebhookSignature, WEBHOOK_SECRET } from './github-app';
 import { setTicketStatus } from './ticket-events';
+import { emitWorkflowEvent } from './workflow-engine';
 import { createNotification } from './notifications';
 import { localDeployPending } from './deploys';
 
@@ -590,6 +591,9 @@ export async function syncConnection(q: Query, rawConn: Connection): Promise<{ c
     // Automation: linked PR opened → ticket to Review; linked PR merged →
     // deploy watch (Done comes once the pipeline succeeds, see checkDeployments).
     if (!ticketKey) continue;
+    if (p.state === 'open' || p.state === 'merged') {
+      emitWorkflowEvent(q, p.state === 'open' ? 'pr.opened' : 'pr.merged', { ticketKey, pr: { number: p.number, title: p.title, author: p.author, url: p.url, branch: p.branch } });
+    }
     const status = ticketStatus.get(ticketKey);
     if (p.state === 'open' && (status === 'backlog' || status === 'progress')) {
       await setTicketStatus(q, ticketKey, 'review');

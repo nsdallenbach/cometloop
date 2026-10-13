@@ -27,6 +27,7 @@ and no feed item (configuration, not an outage).
 | SOW plan extraction (`sow-parse`) | `planning` | `POST /api/sow/parse` | No plan is seeded; user sees 502 with the failure reason and can retry or create the engagement without a seeded plan | 502 to user + log (no engagement exists yet, so no feed) |
 | Standards refine (`standards-refine`) | `planning` | `POST /api/engagements/:id/standards/refine` | Draft left untouched; user sees 502 "AI refine failed" | 502 to user + ⚠ feed item + log |
 | PR review (`pr-review`) | `review` | A linked PR opens, or the manual re-run | `app.pr_reviews` row recorded as `failed`; the PR is left unreviewed for a human; nothing is approved, merged or moved | ⚠ feed item + log; 502 on the manual route |
+| Workflow decision (`workflow-decide`) | `review` | A Decide node runs with provider `model`, or under `auto` after Jev and Databricks `ai_decide` were unavailable | The node's first choice wins with confidence 0; the run's step says `FALLBACK` and lists what was tried; the walk continues down that branch | run step detail + `[llm]` log |
 
 A call is also **refused before it is made** when the mapped model cannot
 meet the role's contract (no JSON output, no tool use when the request
