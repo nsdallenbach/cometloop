@@ -191,7 +191,7 @@ describe('checkStaleNudges', () => {
 
 describe('resolveNudgeRecipients', () => {
   it('an email assignee is the recipient; anything else falls to the leads', async () => {
-    await expect(resolveNudgeRecipients(q, 'exec', ' Dev@the first tenant.com ')).resolves.toEqual({
+    await expect(resolveNudgeRecipients(q, 'exec', ' Dev@example.com ')).resolves.toEqual({
       recipients: ['dev@example.com'],
       assigneeNudged: true,
     });

@@ -14,7 +14,7 @@ describe('notification events', () => {
     const q = vi.fn().mockResolvedValue({ rows: [row] });
     await expect(
       createNotification(q, {
-        recipient: ' Dev@the first tenant.com ',
+        recipient: ' Dev@example.com ',
         type: 'assignment',
         title: 'DAT-105 assigned',
         message: 'Build it',
