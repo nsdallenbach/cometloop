@@ -242,7 +242,7 @@ export function Admin({
                           onKeyDown={(ev) => {
                             if (ev.key === 'Enter') (ev.target as HTMLInputElement).blur();
                           }}
-                          placeholder="lead@datavail.com"
+                          placeholder="lead@example.com"
                           style={{
                             width: 220,
                             background: 'var(--bg)',

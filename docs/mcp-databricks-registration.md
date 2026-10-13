@@ -46,7 +46,7 @@ serving endpoint):
 from databricks.sdk import WorkspaceClient
 from databricks_mcp import DatabricksMCPClient
 
-MCP_URL = "https://delivery-console-7474645607548631.aws.databricksapps.com/api/mcp"
+MCP_URL = "https://<your-app>.databricksapps.com/api/mcp"
 client = DatabricksMCPClient(server_url=MCP_URL, workspace_client=WorkspaceClient())
 tools = client.list_tools()
 ```
@@ -62,7 +62,7 @@ Grant checklist for a serving endpoint (or any principal) that should use it:
 Quick reachability check from any workspace-authenticated shell:
 
 ```bash
-TOKEN=$(databricks auth token --host https://dbc-96494b8f-6b86.cloud.databricks.com | jq -r .access_token)
+TOKEN=$(databricks auth token --host https://<your-workspace>.cloud.databricks.com | jq -r .access_token)
 curl -s -X POST "$MCP_URL" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
@@ -76,7 +76,7 @@ any other workspace principal does — over this MCP endpoint.
 1. **In Agent Bricks**, add a custom MCP server to the agent:
 
    ```
-   https://delivery-console-7474645607548631.aws.databricksapps.com/api/mcp
+   https://<your-app>.databricksapps.com/api/mcp
    ```
 
    The same URL is on the Agent Map tab (/agent-map) — the New agent form and every

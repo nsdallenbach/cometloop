@@ -93,7 +93,7 @@ dev run and skips the picker entirely.
 **Staging build.** `npm run dist:win:staging` bakes `COMETLOOP_CHANNEL=staging`
 into the bundle (`electron.vite.config.ts` → `__COMETLOOP_CHANNEL__`) and
 packages with `electron-builder.staging.yml`: product name **Cometloop
-Staging**, appId `com.datavail.delivery-console.staging`, output in
+Staging**, appId `ai.cometloop.desktop.staging`, output in
 `release-staging/`. It installs beside the production app with its own
 config and keychain entries, preselects **Staging** on the picker, and has
 `autoUpdate` off by default so the production release feed can never replace

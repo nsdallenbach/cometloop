@@ -15,9 +15,13 @@
 // arrays instead (see docs/development-standards.md).
 const { Client } = require('pg');
 
-const SP = process.env.SP_CLIENT_ID || '2e02c1a1-68bc-4110-b40f-96dd67ca85f8';
-const HOST = process.env.PGHOST || 'ep-quiet-leaf-d13g0clu.database.us-west-2.cloud.databricks.com';
-const USER = process.env.PGUSER || 'nigel.silva@datavail.com';
+const SP = process.env.SP_CLIENT_ID || '';
+const HOST = process.env.PGHOST || '';
+const USER = process.env.PGUSER || '';
+if (!HOST || !USER || !SP) {
+  console.error('Set PGHOST and PGUSER (and SP_CLIENT_ID, the app service principal) to the Lakebase endpoint and developer role.');
+  process.exit(1);
+}
 
 /** { sql, bestEffort? } — best-effort failures warn instead of aborting. */
 const MIGRATIONS = [

@@ -47,8 +47,8 @@ const conn = {
   id: 1,
   engagement_id: 'exec',
   provider: 'github',
-  repo_url: 'https://github.com/datavail-solutions/engagement-console',
-  repo_name: 'datavail-solutions/engagement-console',
+  repo_url: 'https://github.com/your-org/your-repo',
+  repo_name: 'your-org/your-repo',
   default_branch: 'main',
   token: 'x',
   auth_type: 'pat',
@@ -87,9 +87,9 @@ beforeEach(async () => {
   q = (text: string, params?: unknown[]) => pool.query(text, params);
   for (const sql of [...SUPPORT_SQL, ...PR_ESCALATION_SCHEMA_SQL]) await q(sql);
   posted = [];
-  await q(`INSERT INTO app.repo_connections (engagement_id, repo_name) VALUES ('exec', 'datavail-solutions/engagement-console')`);
+  await q(`INSERT INTO app.repo_connections (engagement_id, repo_name) VALUES ('exec', 'your-org/your-repo')`);
   await q(`INSERT INTO app.tickets (key, engagement_id, title, status) VALUES ('DAT-201', 'exec', 'Escalate unreviewed PRs', 'review')`);
-  await q(`INSERT INTO app.engagement_leads (engagement_id, email) VALUES ('exec', 'lead@datavail.com')`);
+  await q(`INSERT INTO app.engagement_leads (engagement_id, email) VALUES ('exec', 'lead@example.com')`);
   await q(
     `INSERT INTO app.repo_prs (connection_id, number, state, url, ticket_key, opened_at)
      VALUES (1, 7, 'open', 'https://github.com/o/r/pull/7', 'DAT-201', $1)`,
@@ -149,7 +149,7 @@ describe('review SLA watch', () => {
     expect(run.pinged).toBe(1);
     expect(await stageOf()).toBe('pinged');
     const [comment] = await comments();
-    expect(comment).toContain('@lead@datavail.com');
+    expect(comment).toContain('@lead@example.com');
     expect(comment).toContain('PR #7');
     expect(comment).toContain('25h');
     expect((await feed())[0]).toContain('unreviewed for 25h');
@@ -253,7 +253,7 @@ describe('review SLA watch', () => {
     await checkReviewEscalations(q, conn, deps(OPENED + 49 * H));
     expect(await stageOf()).toBe('flagged');
 
-    const row = await dismissEscalation(q, 'DAT-201', 'lead@datavail.com');
+    const row = await dismissEscalation(q, 'DAT-201', 'lead@example.com');
     expect(row).not.toBeNull();
     expect(row?.stage).toBe('waiting');
     expect(row?.pinged_at).toBeNull();
@@ -268,23 +268,23 @@ describe('review SLA watch', () => {
     const again = await checkReviewEscalations(q, conn, deps(dismissedAtMs + 25 * H));
     expect(again.pinged).toBe(1);
     expect(await stageOf()).toBe('pinged');
-    expect((await comments()).filter((c) => c.includes('@lead@datavail.com'))).toHaveLength(2);
+    expect((await comments()).filter((c) => c.includes('@lead@example.com'))).toHaveLength(2);
   });
 
   it('dismissing a ticket with no active escalation reports nothing to dismiss', async () => {
-    expect(await dismissEscalation(q, 'DAT-999', 'lead@datavail.com')).toBeNull();
+    expect(await dismissEscalation(q, 'DAT-999', 'lead@example.com')).toBeNull();
   });
 });
 
 describe('lead resolution', () => {
   it('uses the engagement leads', async () => {
-    expect(await resolveLeads(q, 'exec', 'DAT-201')).toEqual(['lead@datavail.com']);
+    expect(await resolveLeads(q, 'exec', 'DAT-201')).toEqual(['lead@example.com']);
   });
 
   it('falls back to the ticket assignee when the engagement has no lead', async () => {
     await q(`DELETE FROM app.engagement_leads`);
-    await q(`UPDATE app.tickets SET assignee = 'nigel.silva@datavail.com' WHERE key = 'DAT-201'`);
-    expect(await resolveLeads(q, 'exec', 'DAT-201')).toEqual(['nigel.silva@datavail.com']);
+    await q(`UPDATE app.tickets SET assignee = 'dev@example.com' WHERE key = 'DAT-201'`);
+    expect(await resolveLeads(q, 'exec', 'DAT-201')).toEqual(['dev@example.com']);
   });
 
   it('returns nobody rather than the placeholder assignee', async () => {
@@ -312,11 +312,11 @@ describe('presentation helpers', () => {
       ticketTitle: 'Escalate unreviewed PRs',
       prNumber: 7,
       hoursUnreviewed: 48,
-      leads: ['lead@datavail.com'],
+      leads: ['lead@example.com'],
       pingedAtIso: '2026-08-02T09:00:00.000Z',
     });
     expect(body).toContain('48h');
-    expect(body).toContain('lead@datavail.com');
+    expect(body).toContain('lead@example.com');
     expect(body).toContain('flagged on the board');
     expect(body).toContain('dismiss');
   });

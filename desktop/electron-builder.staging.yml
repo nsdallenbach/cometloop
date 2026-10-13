@@ -6,7 +6,7 @@
 # block: staging builds are handed to testers directly and never feed the
 # production electron-updater channel.
 extends: ./electron-builder.yml
-appId: com.datavail.delivery-console.staging
+appId: ai.cometloop.desktop.staging
 productName: Cometloop Staging
 directories:
   output: release-staging

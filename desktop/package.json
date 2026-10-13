@@ -2,6 +2,7 @@
   "name": "cometloop-desktop",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "description": "Cometloop desktop client — local runner host with the console's look and feel",
   "main": "out/main/index.js",
   "scripts": {

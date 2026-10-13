@@ -6,7 +6,7 @@ back to. The console never runs agents itself; a runner is any process that can
 reach the app URL with a Databricks OAuth token.
 
 ```
-App URL: https://delivery-console-7474645607548631.aws.databricksapps.com
+App URL: https://<your-app>.databricksapps.com
 ```
 
 ## How work flows
@@ -54,8 +54,8 @@ On a devbox VM with the Databricks CLI authenticated (user or service
 principal), mint a token per request batch:
 
 ```bash
-HOST="https://dbc-96494b8f-6b86.cloud.databricks.com"
-APP="https://delivery-console-7474645607548631.aws.databricksapps.com"
+HOST="https://<your-workspace>.cloud.databricks.com"
+APP="https://<your-app>.databricksapps.com"
 TOKEN=$(databricks auth token --host "$HOST" | jq -r .access_token)
 AUTH="Authorization: Bearer $TOKEN"
 ```
@@ -154,7 +154,7 @@ resolved:
 ```json
 {
   "baseImage": "python-3.12",
-  "image": "ghcr.io/datavail-solutions/runner-base:python-3.12",
+  "image": "ghcr.io/your-org/runner-base:python-3.12",
   "label": "Python 3.12 (default)",
   "libraries": [{ "manager": "pip", "name": "pandas", "spec": "pandas==2.2.1" }],
   "installCommands": [
@@ -191,7 +191,7 @@ resolved for the claiming runner by its agent name (DAT-279):
     {
       "slug": "jira", "name": "Jira", "transport": "stdio",
       "command": "npx", "args": ["-y", "jira-mcp"], "url": null,
-      "env": { "JIRA_SITE": "datavail.atlassian.net" },
+      "env": { "JIRA_SITE": "your-org.atlassian.net" },
       "requiresAuth": true, "authEnv": "MCP_AUTH_JIRA"
     }
   ],
@@ -298,8 +298,8 @@ All three endpoints are also exposed as MCP tools (`check_pr_conflicts`,
 #!/usr/bin/env bash
 # Poll the Delivery Console and hand claimed tickets to Claude Code.
 set -euo pipefail
-HOST="https://dbc-96494b8f-6b86.cloud.databricks.com"
-APP="https://delivery-console-7474645607548631.aws.databricksapps.com"
+HOST="https://<your-workspace>.cloud.databricks.com"
+APP="https://<your-app>.databricksapps.com"
 AGENT="devbox-$(hostname)"
 
 while true; do

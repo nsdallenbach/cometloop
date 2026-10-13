@@ -30,8 +30,12 @@
     "setup": "appkit setup --write"
   },
   "keywords": [],
-  "author": "",
-  "license": "Unlicensed",
+  "author": "Nigel Silva",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nsdallenbach/cometloop.git"
+  },
   "description": "Cometloop - delivery execution console: portfolio, board, roadmap, sources, team, status feed",
   "dependencies": {
     "@azure/identity": "^4.13.3",

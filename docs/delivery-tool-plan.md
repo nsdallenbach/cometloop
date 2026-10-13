@@ -1,6 +1,6 @@
 # Delivery Tool — Server/Client Architecture Plan
 
-Working plan for the local delivery tool (Nigel's notes, 2026-08-24, plus
+Working plan for the local delivery tool (working notes, 2026-08-24, plus
 follow-up direction). **Core principle: runners sit locally on each dev's
 computer**, wrapped in a local UI app, using the dev's own auth identities —
 no shared VM runners to manage. The current Databricks app stays as the

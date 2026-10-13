@@ -16,23 +16,23 @@ describe('findTicketKey', () => {
 });
 
 describe('extractPullRequestNumbers', () => {
-  const github = { provider: 'github' as const, repo_url: 'https://github.com/datavail-solutions/engagement-console' };
+  const github = { provider: 'github' as const, repo_url: 'https://github.com/your-org/your-repo' };
 
   it('reproduces the DAT-105 completion-comment format', () => {
     const comment =
-      'Completed: notification center shipped.\n\nhttps://github.com/datavail-solutions/engagement-console/pull/106\nhttps://github.com/datavail-solutions/engagement-console/pull/106';
+      'Completed: notification center shipped.\n\nhttps://github.com/your-org/your-repo/pull/106\nhttps://github.com/your-org/your-repo/pull/106';
     expect(extractPullRequestNumbers(comment, github)).toEqual([106]);
   });
 
   it('reproduces the DAT-200 completion-comment format with surrounding prose', () => {
-    const comment = 'Completed DAT-200 via https://github.com/datavail-solutions/engagement-console/pull/103.';
+    const comment = 'Completed DAT-200 via https://github.com/your-org/your-repo/pull/103.';
     expect(extractPullRequestNumbers(comment, github)).toEqual([103]);
   });
 
   it('spot-checks markdown, punctuation, and unrelated repository references', () => {
     const comment = [
-      '[PR](https://github.com/datavail-solutions/engagement-console/pull/91),',
-      '`https://github.com/datavail-solutions/engagement-console/pull/92`',
+      '[PR](https://github.com/your-org/your-repo/pull/91),',
+      '`https://github.com/your-org/your-repo/pull/92`',
       'https://github.com/another/repository/pull/93',
     ].join(' ');
     expect(extractPullRequestNumbers(comment, github)).toEqual([91, 92]);

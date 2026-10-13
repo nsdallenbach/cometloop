@@ -51,11 +51,18 @@ export interface BaseImage {
   description: string;
 }
 
+/**
+ * Registry path the runner base images are published under; the tag names
+ * below are appended. Point RUNNER_IMAGE_PREFIX at the registry that holds
+ * your builds of them.
+ */
+const RUNNER_IMAGE_PREFIX = (process.env.RUNNER_IMAGE_PREFIX ?? 'ghcr.io/your-org/runner-base').replace(/\/+$/, '');
+
 export const RUNNER_BASE_IMAGES: BaseImage[] = [
   {
     id: 'python-3.12',
     label: 'Python 3.12 (default)',
-    image: 'ghcr.io/datavail-solutions/runner-base:python-3.12',
+    image: `${RUNNER_IMAGE_PREFIX}:python-3.12`,
     defaultManager: 'pip',
     managers: ['pip', 'npm', 'apt'],
     description: 'Ubuntu 24.04, Python 3.12, Node 22, git and the Databricks CLI. The console default.',
@@ -63,7 +70,7 @@ export const RUNNER_BASE_IMAGES: BaseImage[] = [
   {
     id: 'python-3.11',
     label: 'Python 3.11',
-    image: 'ghcr.io/datavail-solutions/runner-base:python-3.11',
+    image: `${RUNNER_IMAGE_PREFIX}:python-3.11`,
     defaultManager: 'pip',
     managers: ['pip', 'npm', 'apt'],
     description: 'Same toolchain on Python 3.11, for projects pinned below 3.12.',
@@ -71,7 +78,7 @@ export const RUNNER_BASE_IMAGES: BaseImage[] = [
   {
     id: 'python-3.12-data',
     label: 'Python 3.12 + data stack',
-    image: 'ghcr.io/datavail-solutions/runner-base:python-3.12-data',
+    image: `${RUNNER_IMAGE_PREFIX}:python-3.12-data`,
     defaultManager: 'pip',
     managers: ['pip', 'npm', 'apt'],
     description: 'Python 3.12 with pandas, pyarrow, dbt-core and the Databricks SQL connector preinstalled.',
@@ -79,7 +86,7 @@ export const RUNNER_BASE_IMAGES: BaseImage[] = [
   {
     id: 'node-22',
     label: 'Node 22',
-    image: 'ghcr.io/datavail-solutions/runner-base:node-22',
+    image: `${RUNNER_IMAGE_PREFIX}:node-22`,
     defaultManager: 'npm',
     managers: ['npm', 'pip', 'apt'],
     description: 'Ubuntu 24.04 with Node 22 as the primary toolchain, for TypeScript and web delivery work.',
@@ -87,7 +94,7 @@ export const RUNNER_BASE_IMAGES: BaseImage[] = [
   {
     id: 'ubuntu-24.04',
     label: 'Ubuntu 24.04 (minimal)',
-    image: 'ghcr.io/datavail-solutions/runner-base:ubuntu-24.04',
+    image: `${RUNNER_IMAGE_PREFIX}:ubuntu-24.04`,
     defaultManager: 'apt',
     managers: ['apt'],
     description: 'Bare Ubuntu with git and build essentials. Bring your own toolchain via apt entries.',

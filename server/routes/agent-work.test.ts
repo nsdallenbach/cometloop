@@ -4,7 +4,7 @@ import { COMMENT_STYLE_RULES } from './comment-style';
 
 const task = { id: 7, ticket_key: 'DAT-146', agent: 'devbox-1', instructions: '' };
 const ticket = { title: 'Validate comment steering', description: 'Do the thing.', ac: '[]' };
-const engagement = { client: 'DATAVAIL', name: 'Execution Console' };
+const engagement = { client: 'ACME', name: 'Execution Console' };
 
 describe('renderPrompt ticket comments', () => {
   it('omits the comments section when there are none', () => {
@@ -15,11 +15,11 @@ describe('renderPrompt ticket comments', () => {
 
   it('renders author, timestamp and body, and marks comments as steering', () => {
     const comments = [
-      { author: 'nigel.silva@datavail.com', body: 'Please target the staging config only.', created_at: '2026-08-11T05:00:00Z' },
+      { author: 'dev@example.com', body: 'Please target the staging config only.', created_at: '2026-08-11T05:00:00Z' },
     ];
     const prompt = renderPrompt(task, ticket, engagement, null, [], comments);
     expect(prompt).toContain('## Ticket comments');
-    expect(prompt).toContain('- nigel.silva@datavail.com (2026-08-11T05:00:00Z): Please target the staging config only.');
+    expect(prompt).toContain('- dev@example.com (2026-08-11T05:00:00Z): Please target the staging config only.');
     expect(prompt).toContain('treat them as instructions');
   });
 
@@ -77,7 +77,7 @@ describe('renderPrompt review rejections', () => {
   const rejection = (n: number, reason: string) => ({
     id: n,
     reason,
-    rejectedBy: 'lead@datavail.com',
+    rejectedBy: 'lead@example.com',
     rejectedAt: `2026-08-1${n}T09:00:00.000Z`,
   });
 

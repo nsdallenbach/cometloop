@@ -60,6 +60,12 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          # Where this build's Production environment points (electron.vite.config.ts).
+          # Unset, the build targets the public console at app.cometloop.ai.
+          COMETLOOP_PRODUCTION_CONSOLE_URL: ${{ vars.COMETLOOP_PRODUCTION_CONSOLE_URL }}
+          COMETLOOP_STAGING_CONSOLE_URL: ${{ vars.COMETLOOP_STAGING_CONSOLE_URL }}
+          COMETLOOP_DATABRICKS_HOST: ${{ vars.COMETLOOP_DATABRICKS_HOST }}
 
       - name: Package and publish to GitHub Releases
         run: npx electron-builder --publish always

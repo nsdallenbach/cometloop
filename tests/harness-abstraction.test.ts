@@ -365,7 +365,7 @@ const RUN_CONFIG = {
       command: 'npx',
       args: ['-y', 'jira-mcp'],
       url: null,
-      env: { JIRA_SITE: 'datavail.atlassian.net' },
+      env: { JIRA_SITE: 'your-org.atlassian.net' },
       requiresAuth: true,
       authEnv: 'MCP_AUTH_JIRA',
     },
@@ -403,7 +403,7 @@ describe('agent config delivery (DAT-279)', () => {
       expect(servers.jira).toEqual({
         command: 'npx',
         args: ['-y', 'jira-mcp'],
-        env: { JIRA_SITE: 'datavail.atlassian.net', MCP_AUTH_JIRA: '${MCP_AUTH_JIRA}' },
+        env: { JIRA_SITE: 'your-org.atlassian.net', MCP_AUTH_JIRA: '${MCP_AUTH_JIRA}' },
       });
       expect(servers.docs).toEqual({ type: 'http', url: 'https://mcp.example.com/docs' });
       // The reference is the only thing that mentions the secret's name.

@@ -14,7 +14,7 @@ the context handed to agent runners.
   for files (`context/`, `standards/` per engagement), and the workspace's
   configured model providers (Admin → Model providers; `server/llm/`) for
   all LLM calls — the Databricks serving endpoint is one provider kind.
-- **Git**: GitHub (`datavail-solutions/engagement-console`), GitHub App for
+- **Git**: GitHub (`your-org/your-repo`), GitHub App for
   repo auth (installation tokens, no PATs at rest), CI deploy on merge.
 - **Agents**: work queue in Postgres; runners long-poll, claim atomically,
   drive a coding agent through a harness adapter (`shared/harnesses/`), and

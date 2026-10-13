@@ -37,6 +37,11 @@ services:
       PORT: '8000'
       FILES_DIR: /data/files
       EEC_SEED_DEMO: ${EEC_SEED_DEMO:-0}
+      # Sign-in: the API fails closed. Export DEV_IDENTITY_EMAIL (local only) to be
+      # that user with the admin role; without it every /api call answers 401.
+      DEV_IDENTITY_EMAIL: ${DEV_IDENTITY_EMAIL:-}
+      # Optional: a model key. Without one, model calls take their fallbacks.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Optional: GitHub App for repo sync / PR linking.
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}

@@ -6,8 +6,12 @@
 //   PGPASSWORD=$TOKEN node scripts/validate-times.cjs
 const { Client } = require('pg');
 
-const HOST = process.env.PGHOST || 'ep-quiet-leaf-d13g0clu.database.us-west-2.cloud.databricks.com';
-const USER = process.env.PGUSER || 'nigel.silva@datavail.com';
+const HOST = process.env.PGHOST || '';
+const USER = process.env.PGUSER || '';
+if (!HOST || !USER) {
+  console.error('Set PGHOST and PGUSER to the Lakebase endpoint and developer role.');
+  process.exit(1);
+}
 
 const CHECKS = [
   {

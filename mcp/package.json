@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "MCP server exposing Cometloop (tickets, board, agent queue, context files) to AI tooling",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "bin": {
     "delivery-console-mcp": "server.mjs"
