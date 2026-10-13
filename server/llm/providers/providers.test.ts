@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { anthropicProvider, toAnthropicMessages } from './anthropic';
 import { openAiCompatibleProvider, openAiEndpoint, parseChoice } from './openai-compatible';
 import { databricksProvider, extractServingText, resetDatabricksCaches } from './databricks';
-import { bedrockProvider } from './bedrock';
 import { vertexProvider } from './vertex';
 import { gatewayHeaders, gatewayUrl } from '../gateway';
 import { ProviderError, ProviderNotAvailableError, type ChatRequest, type ProviderConfig, type ResolvedModel } from '../provider';
@@ -285,8 +284,8 @@ describe('databricks adapter', () => {
 });
 
 describe('stub adapters', () => {
-  it('bedrock and vertex declare their shape and refuse with a clear error', async () => {
-    for (const p of [bedrockProvider, vertexProvider]) {
+  it('vertex declares its shape and refuses with a clear error', async () => {
+    for (const p of [vertexProvider]) {
       expect(p.capabilities.json).toBe(true);
       const err = await p.chat(REQ, resolved({ config: { kind: p.kind } })).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ProviderNotAvailableError);

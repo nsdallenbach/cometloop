@@ -29,8 +29,9 @@ const PRESET_DEFAULTS: Record<string, { name: string; baseUrl: string; credentia
   openai: { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', credentialRef: 'OPENAI_API_KEY', models: ['gpt-5.5', 'gpt-5.3-codex', 'gpt-4.1'], extra: {}, fields: ['baseUrl'] },
   'azure-openai': { name: 'Azure OpenAI', baseUrl: 'https://<resource>.openai.azure.com', credentialRef: 'AZURE_OPENAI_API_KEY', models: [], extra: { apiVersion: '2025-04-01-preview' }, fields: ['baseUrl', 'apiVersion'] },
   databricks: { name: 'Databricks Model Serving', baseUrl: 'https://<workspace>.cloud.databricks.com', credentialRef: 'DATABRICKS_CLIENT_SECRET', models: ['databricks-claude-sonnet-5', 'databricks-claude-opus-5', 'databricks-gpt-5-5'], extra: {}, fields: ['baseUrl', 'clientId'] },
-  neon: { name: 'Neon AI Gateway', baseUrl: 'https://<gateway>.neon.tech/v1', credentialRef: 'NEON_AI_GATEWAY_KEY', models: [], extra: {}, fields: ['baseUrl'] },
-  bedrock: { name: 'AWS Bedrock', baseUrl: '', credentialRef: 'AWS_SECRET_ACCESS_KEY', models: ['anthropic.claude-sonnet-5'], extra: { region: 'us-east-1' }, fields: ['region'] },
+  neon: { name: 'Neon AI Gateway', baseUrl: 'https://<branch-host>.ai.<region>.aws.neon.tech/v1', credentialRef: 'NEON_AI_GATEWAY_TOKEN', models: ['claude-sonnet-5', 'claude-haiku-4-5', 'gpt-5-5', 'gemini-3-5-flash'], extra: {}, fields: ['baseUrl'] },
+  // No credential by default: the adapter uses the AWS credential chain (the task role on ECS, a profile locally). Name the secret key's variable and set extra.accessKeyId to pin a key pair instead.
+  bedrock: { name: 'AWS Bedrock', baseUrl: '', credentialRef: '', models: ['us.anthropic.claude-sonnet-5', 'us.anthropic.claude-haiku-4-5-20251001-v1:0', 'global.anthropic.claude-sonnet-5', 'us.anthropic.claude-opus-5'], extra: { region: 'us-east-2' }, fields: ['region'] },
   vertex: { name: 'Vertex AI', baseUrl: '', credentialRef: 'GOOGLE_APPLICATION_CREDENTIALS', models: ['gemini-2.5-pro', 'claude-sonnet-5'], extra: { location: 'us-central1' }, fields: ['project'] },
   custom: { name: 'OpenAI-compatible', baseUrl: 'http://localhost:11434/v1', credentialRef: 'LLM_API_KEY', models: [], extra: {}, fields: ['baseUrl'] },
 };
@@ -310,7 +311,7 @@ function ProviderWizard({ existing, onClose, onSaved }: { existing: ModelProvide
       {step === 'kind' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8 }}>
           {Object.entries(MODEL_PROVIDER_PRESETS).map(([key, p]) => {
-            const stub = p.kind === 'bedrock' || p.kind === 'vertex';
+            const stub = p.kind === 'vertex';
             return (
               <button
                 key={key}
@@ -388,7 +389,7 @@ function ProviderWizard({ existing, onClose, onSaved }: { existing: ModelProvide
               ← Provider
             </button>
           )}
-          <button onClick={test} disabled={!valid || busy !== null || brand.kind === 'bedrock' || brand.kind === 'vertex'} style={{ ...ghostBtn, opacity: valid ? 1 : 0.45 }}>
+          <button onClick={test} disabled={!valid || busy !== null || brand.kind === 'vertex'} style={{ ...ghostBtn, opacity: valid ? 1 : 0.45 }}>
             {busy === 'test' ? 'Testing…' : 'Test'}
           </button>
           {probe && 'ok' in probe && probe.ok && (

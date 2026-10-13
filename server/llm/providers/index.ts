@@ -36,6 +36,6 @@ export function setProviderForTests(kind: ProviderKind, provider: ModelProvider 
 }
 
 /** Kinds whose adapter actually makes calls in this build. */
-export const LIVE_PROVIDER_KINDS: readonly ProviderKind[] = ['anthropic', 'openai-compatible', 'databricks'];
+export const LIVE_PROVIDER_KINDS: readonly ProviderKind[] = ['anthropic', 'openai-compatible', 'databricks', 'bedrock'];
 
 export { anthropicProvider, bedrockProvider, databricksProvider, openAiCompatibleProvider, vertexProvider };
