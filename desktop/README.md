@@ -136,17 +136,35 @@ publishes to GitHub Releases: Windows NSIS installer + portable exe
 release:
 
 ```bash
-# 1. bump "version" in desktop/package.json (CI fails the build if the tag disagrees)
-git tag v0.2.0 && git push origin v0.2.0
+cd desktop && npm run release -- 0.3.1
 ```
 
+`scripts/release.mjs` bumps `package.json` + the lockfile, commits, tags
+`v0.3.1` and pushes both; it refuses to run off `main`, with a dirty tree,
+behind `origin/main`, or with a version that is not newer. Watch the build
+with `gh run watch` and the release appears at
+<https://github.com/nsdallenbach/cometloop/releases>. (By hand: bump the
+version, `git tag v<version>`, push the tag — CI fails the build if the two
+disagree.)
+
 Installed builds update themselves silently via `electron-updater`
-(`src/main/updater.ts`): hourly check against the release feed, background
-download, install on the next app quit. No prompts. Opt out with
-`"autoUpdate": false` in config.json (or `AUTO_UPDATE=0`) to pin a build.
-Not self-updating by design: dev runs, the portable exe (nothing installed
-to replace), and macOS until builds are signed (Squirrel.Mac refuses
-unsigned updates).
+(`src/main/updater.ts`): a check against the release feed at launch and
+hourly, background download, install on the next app quit. The sidebar
+footer shows the running version and the updater's state — `checking…`,
+`up to date`, `v0.3.1 42%`, `v0.3.1 ready · restart` — and a click checks
+now, or restarts into a staged build. Every transition is appended to
+`<userData>/updater.log`. Opt out with `"autoUpdate": false` in
+config.json (or `AUTO_UPDATE=0`) to pin a build. Not self-updating by
+design, and the footer says which: dev runs, the portable exe (nothing
+installed to replace), and macOS until builds are signed (Squirrel.Mac
+refuses unsigned updates).
+
+The consoles a build offers on first launch are baked in by the release
+workflow from the repository variables `COMETLOOP_PRODUCTION_CONSOLE_URL`,
+`COMETLOOP_STAGING_CONSOLE_URL` and `COMETLOOP_DATABRICKS_HOST` (empty →
+the console signs users in itself). A build whose staging URL equals its
+production URL offers Production and Local only. The list is not written to
+config.json, so a newer build's consoles reach every install.
 
 **Code signing** is the long-lead item (procurement, tracked on DAT-237):
 unsigned builds install fine but Windows shows the SmartScreen warning, and
