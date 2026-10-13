@@ -66,6 +66,9 @@ function log(line: string): void {
   }
 }
 
+/** electron-updater's messages carry the whole HTTP exchange; the first line says what happened. */
+const firstLine = (e: unknown): string => (e instanceof Error ? e.message : String(e)).split(/\r?\n/)[0].trim();
+
 function set(next: UpdateState): void {
   state = next;
   log(JSON.stringify(next));
@@ -92,7 +95,8 @@ export async function checkForUpdatesNow(): Promise<UpdateStatusView> {
     // (read through a call: TS cannot see that set() moved `state` on.)
     if (result == null && current().status === 'checking') set({ status: 'up-to-date', checkedAt: new Date().toISOString() });
   } catch (e) {
-    set({ status: 'error', message: e instanceof Error ? e.message : String(e), checkedAt: new Date().toISOString() });
+    // The 'error' listener below has usually recorded it already.
+    if (current().status === 'checking') set({ status: 'error', message: firstLine(e), checkedAt: new Date().toISOString() });
   }
   return updateStatus();
 }
@@ -127,7 +131,7 @@ export function initAutoUpdate(cfg: DesktopConfig, onChange: (view: UpdateStatus
     if (state.status === 'downloading') set({ status: 'downloading', version: state.version, percent: Math.floor(p.percent) });
   });
   autoUpdater.on('update-downloaded', (info) => set({ status: 'downloaded', version: info.version }));
-  autoUpdater.on('error', (e) => set({ status: 'error', message: e instanceof Error ? e.message : String(e), checkedAt: new Date().toISOString() }));
+  autoUpdater.on('error', (e) => set({ status: 'error', message: firstLine(e), checkedAt: new Date().toISOString() }));
 
   log(`v${app.getVersion()} (${CHANNEL}) checking GitHub Releases hourly`);
   void checkForUpdatesNow();
