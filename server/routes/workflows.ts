@@ -417,7 +417,8 @@ export function setupWorkflowRoutes(app: express.Application, q: Query, requireA
         return;
       }
       const result = await runWorkflowByHand(q, wf, caller?.email || requestAuthor(req), parsed.data.ticketKey?.trim() || null);
-      if ('error' in result) {
+      // A finished run carries `state` (and an `error` that is '' when it succeeded); a refusal carries only `error`.
+      if (!('state' in result)) {
         res.status(400).json({ error: result.error });
         return;
       }
