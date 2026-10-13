@@ -150,9 +150,10 @@ disagree.)
 Installed builds update themselves silently via `electron-updater`
 (`src/main/updater.ts`): a check against the release feed at launch and
 hourly, background download, install on the next app quit. The sidebar
-footer shows the running version and the updater's state — `checking…`,
-`up to date`, `v0.3.1 42%`, `v0.3.1 ready · restart` — and a click checks
-now, or restarts into a staged build. Every transition is appended to
+footer shows the running version (its tooltip has the updater's state; a
+click checks now) and, once a newer build is downloaded, an **Update to
+vX.Y.Z** button that restarts into it. The button is refused while an agent
+is mid-run; the build still installs on the next quit. Every transition is appended to
 `<userData>/updater.log`. Opt out with `"autoUpdate": false` in
 config.json (or `AUTO_UPDATE=0`) to pin a build. Not self-updating by
 design, and the footer says which: dev runs, the portable exe (nothing
