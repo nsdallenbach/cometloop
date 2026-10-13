@@ -4,6 +4,7 @@ import { Navigate, useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from './api';
 import { authConfig, lastAccessTokenError, signOut as authSignOut, type AuthConfig } from './auth';
 import { SignIn, type SignInProblem } from './components/SignIn';
+import { DesktopSignIn } from './components/DesktopSignIn';
 import type { Engagement, EngagementDetail, Me, TicketStatus } from './types';
 import { parsePath, paths, type Tab } from './routes';
 import { mono, STATUS_LABEL } from './util';
@@ -575,6 +576,14 @@ export default function App() {
 
   if (screen.name === 'redirect') return <Navigate to={screen.to} replace />;
   if (screen.name === 'external') return <ExternalRedirect to={screen.to} />;
+  if (screen.name === 'desktop-signin') {
+    const params = new URLSearchParams(window.location.search);
+    return (
+      <div className="eec" data-theme={theme}>
+        <DesktopSignIn port={Number(params.get('port'))} state={params.get('state') ?? ''} />
+      </div>
+    );
+  }
 
   // Until we know who you are, show nothing but the mark: on a deployment
   // with its own sign-in, rendering the shell first means a flash of empty

@@ -118,7 +118,7 @@ export const TENANT_TABLES = [
 ] as const;
 
 /** Tables that are not tenant-scoped: the tenant directory itself. */
-export const GLOBAL_TABLES = ['tenants', 'tenant_members'] as const;
+export const GLOBAL_TABLES = ['tenants', 'tenant_members', 'desktop_handoffs', 'desktop_sessions'] as const;
 
 /** Role every tenant-scoped query runs as (see the header). */
 export const APP_ROLE = 'cometloop_app';

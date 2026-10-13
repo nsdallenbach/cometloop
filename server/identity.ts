@@ -31,7 +31,7 @@ import { DEFAULT_TENANT_ID, isValidTenantId, runWithTenantRequest } from './db/t
  * is scoped (and shares one pinned connection until the response ends).
  */
 
-export type IdentitySource = 'databricks' | 'better-auth' | 'dev';
+export type IdentitySource = 'databricks' | 'better-auth' | 'desktop' | 'dev';
 
 export interface Identity {
   /** Stable id from the verifier (Databricks user id, JWT `sub`, or the dev email). */
@@ -78,6 +78,33 @@ function tenantFromClaims(payload: JWTPayload): string | null {
 }
 
 export type Verifier = (req: express.Request) => Identity | null | Promise<Identity | null>;
+
+/**
+ * Desktop session tokens (`cldt_…`, routes/desktop-auth.ts): the long-lived
+ * bearer the desktop app holds after signing in through the system browser.
+ * Wired by `setupDesktopAuthRoutes` to a lookup on the owner connection;
+ * unset in tests, in which case no such token verifies.
+ */
+export type DesktopSessionStore = (token: string) => Promise<Omit<Identity, 'tenantId'> | null>;
+let desktopSessions: DesktopSessionStore | null = null;
+export function setDesktopSessionStore(lookup: DesktopSessionStore | null): void {
+  desktopSessions = lookup;
+}
+const DESKTOP_TOKEN_RE = /^cldt_[A-Za-z0-9_-]{40,}$/;
+
+export const desktopSessionVerifier: Verifier = async (req) => {
+  if (!desktopSessions) return null;
+  const m = /^Bearer\s+(.+)$/i.exec(headerValue(req, 'authorization'));
+  const token = m ? m[1].trim() : '';
+  if (!DESKTOP_TOKEN_RE.test(token)) return null;
+  const who = await desktopSessions(token);
+  if (!who) {
+    rejections.set(req, 'the desktop session has expired or was signed out');
+    return null;
+  }
+  const tenantId = tenantDirectory ? await tenantDirectory(who.email) : null;
+  return { ...who, tenantId };
+};
 
 function headerValue(req: express.Request, name: string): string {
   const h = req.headers[name];
@@ -217,7 +244,7 @@ export const devVerifier = (_req: express.Request): Identity | null => {
   return { subject: email, email, name: process.env.DEV_IDENTITY_NAME?.trim() || email, source: 'dev', tenantId: DEFAULT_TENANT_ID };
 };
 
-export const VERIFIERS: readonly Verifier[] = [databricksVerifier, betterAuthVerifier, devVerifier];
+export const VERIFIERS: readonly Verifier[] = [databricksVerifier, betterAuthVerifier, desktopSessionVerifier, devVerifier];
 
 // Per-request memo so the middleware, the role lookup and the author helper
 // all share one verification (and one JWKS round trip at most).
@@ -263,7 +290,7 @@ export function requestAuthor(req: express.Request, fallback = 'You'): string {
  * attribution and assignee scoping inside. AppKit's `/health` is not under
  * `/api` and is listed for completeness.
  */
-export const SIGN_IN_EXEMPT_PREFIXES: readonly string[] = ['/health', '/api/health', '/api/agent/'];
+export const SIGN_IN_EXEMPT_PREFIXES: readonly string[] = ['/health', '/api/health', '/api/agent/', '/api/auth/desktop/exchange'];
 
 /**
  * On a deployment where the console signs users in itself (Neon Auth

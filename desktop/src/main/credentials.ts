@@ -160,6 +160,15 @@ export class CredentialManager {
     return this.status();
   }
 
+  /** Console account sign-in through the system browser (Google works there); the app receives a desktop session. */
+  async loginConsoleBrowser(open: (url: string) => void): Promise<AuthStatus> {
+    if (!this.consoleAuth || this.provider !== 'neon-auth') throw new Error('This console does not use a Cometloop account sign-in.');
+    await this.consoleAuth.signInViaBrowser(open);
+    this.cached = null;
+    this.mode = 'console';
+    return this.status();
+  }
+
   async signUpConsole(name: string, email: string, password: string): Promise<AuthStatus> {
     if (!this.consoleAuth || this.provider !== 'neon-auth') throw new Error('This console does not use a Cometloop account sign-in.');
     await this.consoleAuth.signUp(name, email, password);
@@ -207,7 +216,7 @@ export class CredentialManager {
     if (this.consoleAuth) {
       try {
         const token = await this.consoleAuth.mintToken();
-        return this.cache({ accessToken: token, refreshToken: '', expiresAt: jwtExpiry(token) });
+        return this.cache({ accessToken: token, refreshToken: '', expiresAt: token.startsWith('cldt_') ? Date.now() + 3_600_000 : jwtExpiry(token) });
       } catch (e) {
         if (e instanceof ConsoleAuthError && (e.code === 'SESSION_EXPIRED' || e.code === 'NOT_SIGNED_IN')) {
           this.mode = 'signed-out';

@@ -192,6 +192,17 @@ function registerIpc(): void {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });
+  // Browser sign-in (Google): the console's page in the system browser,
+  // a loopback handoff back here. Same rule: the runtime starts after.
+  ipcMain.handle('auth:login-console-browser', async () => {
+    try {
+      const status = await creds.loginConsoleBrowser((url) => void shell.openExternal(url));
+      startRuntime();
+      return { ok: true as const, status };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
   ipcMain.handle('auth:signup-console', async (_e, name: unknown, email: unknown, password: unknown) => {
     if (typeof email !== 'string' || typeof password !== 'string') return { ok: false as const, error: 'email and password required' };
     try {

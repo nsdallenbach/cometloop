@@ -64,7 +64,7 @@ const secondary: CSSProperties = {
   fontWeight: 500,
 };
 
-export function SignIn({ onSignedIn, problem = null }: { onSignedIn: () => void; problem?: SignInProblem }) {
+export function SignIn({ onSignedIn, problem = null, callbackURL }: { onSignedIn: () => void; problem?: SignInProblem; /** Where Google sends the browser back; defaults to this page without its query string. */ callbackURL?: string }) {
   const [mode, setMode] = useState<'in' | 'up'>('in');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -134,7 +134,7 @@ export function SignIn({ onSignedIn, problem = null }: { onSignedIn: () => void;
       const client = await authClient();
       if (!client) throw new Error('This deployment has no sign-in provider configured.');
       // Redirects away; the trusted-origin list on the Neon branch must include this origin.
-      const res = await client.signIn.social({ provider: 'google', callbackURL: window.location.origin + window.location.pathname });
+      const res = await client.signIn.social({ provider: 'google', callbackURL: callbackURL ?? window.location.origin + window.location.pathname });
       if (res.error) {
         setError(res.error.message ?? 'Google sign-in failed.');
         setBusy('idle');

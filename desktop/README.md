@@ -87,13 +87,15 @@ depends on the console (`GET /api/auth/config`):
 - **Databricks Apps proxy** (Production today): the browser OAuth flow, as
   before.
 - **Console account** (Staging, Local, Cometloop Cloud — `consoleAuth: none`):
-  a native email + password form with create-account, the same accounts the
-  web console uses. The main process signs in against Neon Auth over HTTP
-  (`src/main/console-auth.ts`), keeps the session encrypted with
-  `safeStorage`, mints the console's short-lived JWT from it and injects it
-  into every request — the embedded console's included, so the console never
-  shows its own sign-in inside the desktop and you are one person
-  everywhere. The Identity page shows the account as **Cometloop account**;
+  **Continue with Google** opens the console's sign-in page in your system
+  browser (Google refuses embedded browsers); the page hands a one-time code
+  to a loopback listener in the app, which exchanges it for a desktop
+  session token (`server/routes/desktop-auth.ts`). Email + password is also
+  offered natively, with create-account, against Neon Auth over HTTP
+  (`src/main/console-auth.ts`). Either way the main process keeps the
+  session encrypted with `safeStorage`, sends the console a bearer on every
+  request — the embedded console's included — so the console never shows
+  its own sign-in inside the desktop and you are one person everywhere. The Identity page shows the account as **Cometloop account**;
   **Sign out** there drops the whole app behind the gate and stops the
   runtime (a run in flight finishes; no new work is claimed).
 - **A dev server with no provider** (`DEV_IDENTITY_EMAIL`): the server

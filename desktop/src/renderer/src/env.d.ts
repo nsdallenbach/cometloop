@@ -129,6 +129,7 @@ interface DesktopBridge {
   authLogin: () => Promise<{ ok: true; status: AuthStatus } | { ok: false; error: string }>;
   authLoginConsole: (email: string, password: string) => Promise<{ ok: true; status: AuthStatus } | { ok: false; error: string }>;
   authSignUpConsole: (name: string, email: string, password: string) => Promise<{ ok: true; status: AuthStatus } | { ok: false; error: string }>;
+  authLoginConsoleBrowser: () => Promise<{ ok: true; status: AuthStatus } | { ok: false; error: string }>;
   authRetryDiscovery: () => Promise<AuthStatus>;
   authSignOut: () => Promise<AuthStatus>;
   identityStatus: () => Promise<IdentityStatusRow[]>;

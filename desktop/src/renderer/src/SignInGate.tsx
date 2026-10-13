@@ -7,16 +7,14 @@ import { Wordmark } from '../../../../shared/design/Brand';
  * sign-in depends on the environment's console:
  *
  *  - Databricks Apps proxy in front: the browser OAuth flow (one button).
- *  - The console signs users in itself (Neon Auth): a native email +
- *    password form with create-account, mirroring the console's own screen.
- *    The session lives in the main process, which mints the console's JWT
- *    and injects it into every request, the embedded console's included.
+ *  - The console signs users in itself (Neon Auth): "Continue in your
+ *    browser" opens the console's sign-in page — Google works only in a real
+ *    browser — and the app receives a session through a loopback handoff;
+ *    email + password is also offered natively for people without Google.
  *  - No provider and the config request failed: the error, and a retry.
  *
  * Every failure shows its message; no path silently re-renders the form.
- * Styles follow the console client (inline, theme tokens, DM Mono labels).
  */
-const mono = (weight: number, size: number): CSSProperties => ({ fontFamily: "'DM Mono', monospace", fontWeight: weight, fontSize: size });
 
 const PASSWORD_MIN = 8;
 
@@ -25,27 +23,28 @@ const input: CSSProperties = {
   boxSizing: 'border-box',
   background: 'var(--bg2)',
   border: '1px solid var(--line2)',
-  borderRadius: 3,
+  borderRadius: 4,
   color: 'var(--tx)',
-  padding: '10px 12px',
+  padding: '11px 12px',
   fontSize: 14,
   fontFamily: 'inherit',
   outline: 'none',
 };
-const label: CSSProperties = { ...mono(500, 10.5), color: 'var(--tx3)', letterSpacing: '.08em', display: 'block', marginBottom: 6 };
 const primary: CSSProperties = {
   width: '100%',
   background: 'var(--acc)',
   color: '#fff',
   border: 'none',
   borderRadius: 4,
-  padding: '11px 14px',
+  padding: '12px 14px',
   fontSize: 14,
   fontWeight: 600,
   fontFamily: 'inherit',
   cursor: 'pointer',
 };
-const alert: CSSProperties = { fontSize: 13, color: 'var(--bad)', lineHeight: 1.45, padding: '8px 10px', border: '1px solid var(--bad)', borderRadius: 3 };
+const secondary: CSSProperties = { ...primary, background: 'var(--bg2)', color: 'var(--tx)', border: '1px solid var(--line2)' };
+const link: CSSProperties = { background: 'none', border: 'none', color: 'var(--tx2)', fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', padding: 0, textDecoration: 'underline', textUnderlineOffset: 3 };
+const alert: CSSProperties = { fontSize: 13, color: 'var(--bad)', lineHeight: 1.45, padding: '8px 10px', border: '1px solid var(--bad)', borderRadius: 4, width: '100%', boxSizing: 'border-box' };
 
 export function SignInGate({
   status,
@@ -58,7 +57,7 @@ export function SignInGate({
   onSignedIn: (status: AuthStatus) => void;
   onStatus: (status: AuthStatus) => void;
 }) {
-  const [mode, setMode] = useState<'in' | 'up'>('in');
+  const [view, setView] = useState<'browser' | 'email' | 'create'>('browser');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -70,10 +69,10 @@ export function SignInGate({
 
   const shell = (children: ReactNode) => (
     <div style={{ flex: 1, minHeight: 0, display: 'grid', placeItems: 'center', background: 'var(--bg)', overflowY: 'auto' }}>
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 22, width: 380, maxWidth: '92%', padding: '32px 0' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20, width: 360, maxWidth: '92%', padding: '32px 0' }}>
         <Wordmark size={22} />
-        <div style={{ ...mono(400, 10.5), color: 'var(--tx3)', letterSpacing: '.08em', marginTop: -10 }}>
-          {environmentLabel.toUpperCase()} · {host}
+        <div style={{ fontSize: 13, color: 'var(--tx3)', marginTop: -8 }}>
+          {environmentLabel} · {host}
         </div>
         {children}
       </div>
@@ -119,9 +118,7 @@ export function SignInGate({
     return shell(
       <div style={{ width: '100%', display: 'grid', gap: 14, textAlign: 'center' }}>
         <div style={{ fontSize: 20, fontWeight: 600 }}>Sign in to Databricks</div>
-        <p style={{ margin: 0, fontSize: 14, color: 'var(--tx2)', lineHeight: 1.55 }}>
-          Your browser opens the workspace sign-in; the app picks up the result and keeps you signed in across restarts.
-        </p>
+        <p style={{ margin: 0, fontSize: 14, color: 'var(--tx2)', lineHeight: 1.55 }}>Your browser opens the workspace sign-in; the app picks up the result and keeps you signed in across restarts.</p>
         {error && (
           <div role="alert" style={{ ...alert, textAlign: 'left' }}>
             {error}
@@ -135,10 +132,19 @@ export function SignInGate({
   }
 
   // Console account (Neon Auth).
+  const viaBrowser = async () => {
+    setBusy(true);
+    setError('');
+    const res = await window.desktopBridge.authLoginConsoleBrowser();
+    setBusy(false);
+    if (res.ok) onSignedIn(res.status);
+    else setError(res.error);
+  };
+
   const submit = async (ev: FormEvent) => {
     ev.preventDefault();
     setError('');
-    if (mode === 'up') {
+    if (view === 'create') {
       if (password.length < PASSWORD_MIN) {
         setError(`Use at least ${PASSWORD_MIN} characters for the password.`);
         return;
@@ -149,130 +155,68 @@ export function SignInGate({
       }
     }
     setBusy(true);
-    const res =
-      mode === 'in'
-        ? await window.desktopBridge.authLoginConsole(email.trim(), password)
-        : await window.desktopBridge.authSignUpConsole(name.trim(), email.trim(), password);
+    const res = view === 'email' ? await window.desktopBridge.authLoginConsole(email.trim(), password) : await window.desktopBridge.authSignUpConsole(name.trim(), email.trim(), password);
     setBusy(false);
     if (res.ok) onSignedIn(res.status);
     else setError(res.error);
   };
-  const pick = (m: 'in' | 'up') => {
-    setMode(m);
+  const go = (v: typeof view) => {
+    setView(v);
     setError('');
     setConfirm('');
   };
 
-  return shell(
-    <>
-      <div
-        role="tablist"
-        aria-label="Sign in or create an account"
-        style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', width: '100%', border: '1px solid var(--line2)', borderRadius: 4, overflow: 'hidden' }}
-      >
-        {(
-          [
-            ['in', 'Sign in'],
-            ['up', 'Create an account'],
-          ] as const
-        ).map(([m, text]) => (
-          <button
-            key={m}
-            role="tab"
-            type="button"
-            aria-selected={mode === m}
-            onClick={() => pick(m)}
-            disabled={busy}
-            className="no-drag"
-            style={{
-              padding: '10px 12px',
-              fontSize: 14,
-              fontWeight: mode === m ? 600 : 500,
-              fontFamily: 'inherit',
-              background: mode === m ? 'var(--bg3)' : 'transparent',
-              color: mode === m ? 'var(--tx)' : 'var(--tx2)',
-              border: 'none',
-              cursor: busy ? 'default' : 'pointer',
-            }}
-          >
-            {text}
-          </button>
-        ))}
-      </div>
-
-      <form onSubmit={(e) => void submit(e)} style={{ display: 'grid', gap: 14, width: '100%' }} noValidate>
-        {mode === 'up' && (
-          <div>
-            <label style={label} htmlFor="gate-name">
-              NAME
-            </label>
-            <input id="gate-name" className="no-drag" style={input} value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" disabled={busy} />
-          </div>
-        )}
-        <div>
-          <label style={label} htmlFor="gate-email">
-            EMAIL
-          </label>
-          <input
-            id="gate-email"
-            className="no-drag"
-            style={input}
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
-            autoFocus
-            disabled={busy}
-          />
-        </div>
-        <div>
-          <label style={label} htmlFor="gate-password">
-            PASSWORD
-          </label>
-          <input
-            id="gate-password"
-            className="no-drag"
-            style={input}
-            type="password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete={mode === 'in' ? 'current-password' : 'new-password'}
-            disabled={busy}
-          />
-          {mode === 'up' && <div style={{ ...mono(400, 10.5), color: 'var(--tx3)', marginTop: 5 }}>At least {PASSWORD_MIN} characters.</div>}
-        </div>
-        {mode === 'up' && (
-          <div>
-            <label style={label} htmlFor="gate-confirm">
-              CONFIRM PASSWORD
-            </label>
-            <input
-              id="gate-confirm"
-              className="no-drag"
-              style={{ ...input, borderColor: confirm && confirm !== password ? 'var(--bad)' : 'var(--line2)' }}
-              type="password"
-              required
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-              autoComplete="new-password"
-              disabled={busy}
-            />
-          </div>
-        )}
+  if (view === 'browser') {
+    return shell(
+      <div style={{ width: '100%', display: 'grid', gap: 12, textAlign: 'center' }}>
+        <div style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>Sign in</div>
         {error && (
-          <div role="alert" style={alert}>
+          <div role="alert" style={{ ...alert, textAlign: 'left' }}>
             {error}
           </div>
         )}
-        <button type="submit" className="no-drag" disabled={busy} style={{ ...primary, cursor: busy ? 'wait' : 'pointer' }}>
-          {busy ? 'One moment…' : mode === 'in' ? 'Sign in' : 'Create account'}
+        <button type="button" className="no-drag" onClick={() => void viaBrowser()} disabled={busy} style={{ ...primary, cursor: busy ? 'wait' : 'pointer' }}>
+          {busy ? 'Waiting for your browser…' : 'Continue with Google'}
         </button>
-      </form>
-      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--tx3)', lineHeight: 1.5, textAlign: 'center' }}>
-        Signing in here signs you in everywhere in the app, the embedded console included. Nothing runs on this machine until you do.
-      </p>
-    </>,
+        <button type="button" className="no-drag" onClick={() => go('email')} disabled={busy} style={secondary}>
+          Use email and password
+        </button>
+        <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--tx3)', lineHeight: 1.5 }}>Google opens in your browser and sends you back here.</p>
+      </div>,
+    );
+  }
+
+  return shell(
+    <form onSubmit={(e) => void submit(e)} style={{ display: 'grid', gap: 12, width: '100%' }} noValidate>
+      <div style={{ fontSize: 20, fontWeight: 600, textAlign: 'center', marginBottom: 4 }}>{view === 'email' ? 'Sign in with email' : 'Create an account'}</div>
+      {view === 'create' && <input className="no-drag" style={input} placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" disabled={busy} />}
+      <input className="no-drag" style={input} type="email" placeholder="Email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" autoFocus disabled={busy} />
+      <input className="no-drag" style={input} type="password" placeholder={view === 'create' ? `Password (at least ${PASSWORD_MIN} characters)` : 'Password'} required value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={view === 'email' ? 'current-password' : 'new-password'} disabled={busy} />
+      {view === 'create' && (
+        <input className="no-drag" style={{ ...input, borderColor: confirm && confirm !== password ? 'var(--bad)' : 'var(--line2)' }} type="password" placeholder="Confirm password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" disabled={busy} />
+      )}
+      {error && (
+        <div role="alert" style={alert}>
+          {error}
+        </div>
+      )}
+      <button type="submit" className="no-drag" disabled={busy} style={{ ...primary, cursor: busy ? 'wait' : 'pointer' }}>
+        {busy ? 'One moment…' : view === 'email' ? 'Sign in' : 'Create account'}
+      </button>
+      <div style={{ display: 'flex', justifyContent: 'center', gap: 18, marginTop: 4 }}>
+        <button type="button" className="no-drag" style={link} onClick={() => go('browser')} disabled={busy}>
+          Back
+        </button>
+        {view === 'email' ? (
+          <button type="button" className="no-drag" style={link} onClick={() => go('create')} disabled={busy}>
+            Create an account
+          </button>
+        ) : (
+          <button type="button" className="no-drag" style={link} onClick={() => go('email')} disabled={busy}>
+            I have an account
+          </button>
+        )}
+      </div>
+    </form>,
   );
 }

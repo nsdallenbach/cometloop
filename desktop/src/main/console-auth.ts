@@ -12,6 +12,8 @@
 // a JWT comes from GET /token with that cookie. Which host to talk to is
 // discovered from the console's own `GET /api/auth/config`, so one build
 // follows whichever Neon branch an environment runs on.
+import http from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { app, safeStorage } from 'electron';
@@ -28,10 +30,18 @@ export interface ConsoleUser {
 }
 
 interface StoredSession {
-  cookie: string; // "name=value" of the session cookie, replayed verbatim
+  /** "name=value" of the Better Auth session cookie (email sign-in), replayed verbatim. */
+  cookie: string;
+  /** A console-issued desktop session token (browser sign-in), sent as the bearer itself. */
+  desktopToken?: string;
   user: ConsoleUser;
   authUrl: string;
 }
+
+const BROWSER_SIGN_IN_TIMEOUT_MS = 5 * 60_000;
+const RETURN_PAGE = `<!doctype html><meta charset="utf-8"><title>Cometloop</title>
+<body style="margin:0;background:#0a0d10;color:#e7ebef;font-family:'DM Sans',system-ui,sans-serif;display:grid;place-items:center;height:100vh">
+<div style="text-align:center"><div style="font-size:20px;font-weight:600">You're signed in</div><div style="margin-top:8px;color:#95a3af;font-size:14px">You can close this tab and go back to Cometloop.</div></div>`;
 
 export class ConsoleAuthError extends Error {
   constructor(
@@ -124,6 +134,62 @@ export class ConsoleAuth {
     return user;
   }
 
+  /**
+   * Sign in through the system browser: open the console's /desktop-signin
+   * page with a loopback port and a nonce, wait for it to come back with a
+   * one-time code, exchange the code for a desktop session token. Google
+   * only works in a real browser, and no cookie of the auth host is ever
+   * held here.
+   */
+  async signInViaBrowser(open: (url: string) => void): Promise<ConsoleUser> {
+    const state = randomBytes(16).toString('base64url');
+    const code = await new Promise<string>((resolve, reject) => {
+      const server = http.createServer((req, res) => {
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+        if (url.pathname !== '/callback') {
+          res.writeHead(404).end();
+          return;
+        }
+        const got = url.searchParams.get('code') ?? '';
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(RETURN_PAGE);
+        clearTimeout(timer);
+        server.close();
+        if (url.searchParams.get('state') !== state) reject(new ConsoleAuthError('The sign-in that came back was not the one this app started.', 'STATE_MISMATCH'));
+        else if (!got) reject(new ConsoleAuthError('The browser came back without a sign-in code.', 'NO_CODE'));
+        else resolve(got);
+      });
+      const timer = setTimeout(() => {
+        server.close();
+        reject(new ConsoleAuthError('No sign-in arrived from the browser within five minutes.', 'TIMEOUT'));
+      }, BROWSER_SIGN_IN_TIMEOUT_MS);
+      server.on('error', (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        const port = typeof addr === 'object' && addr ? addr.port : 0;
+        const target = new URL('/desktop-signin', this.consoleUrl);
+        target.searchParams.set('port', String(port));
+        target.searchParams.set('state', state);
+        open(target.toString());
+      });
+    });
+    const res = await fetch(`${this.consoleUrl}/api/auth/desktop/exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw await ConsoleAuth.errorOf(res, 'The console did not accept the sign-in.');
+    const body = (await res.json()) as { token?: string; user?: { email?: string; name?: string } };
+    if (!body.token) throw new ConsoleAuthError('The console returned no session.', 'NO_TOKEN');
+    const user: ConsoleUser = { email: body.user?.email ?? '', name: body.user?.name ?? body.user?.email ?? '' };
+    this.session = { cookie: '', desktopToken: body.token, user, authUrl: this.config?.provider === 'neon-auth' && this.config.url ? this.config.url : '' };
+    this.writeSession(this.session);
+    return user;
+  }
+
   async signIn(email: string, password: string): Promise<ConsoleUser> {
     const res = await this.authRequest('/sign-in/email', { method: 'POST', body: JSON.stringify({ email, password }) });
     if (!res.ok) throw await ConsoleAuth.errorOf(res, 'That email and password were not recognised.');
@@ -142,6 +208,8 @@ export class ConsoleAuth {
    */
   async mintToken(): Promise<string> {
     if (!this.session) throw new ConsoleAuthError('Not signed in.', 'NOT_SIGNED_IN');
+    // A desktop session token is the bearer itself; the console validates it.
+    if (this.session.desktopToken) return this.session.desktopToken;
     const res = await this.authRequest('/token', { cookie: this.session.cookie });
     if (res.status === 401) {
       this.forget();
@@ -158,6 +226,10 @@ export class ConsoleAuth {
     this.forget();
     if (!s) return;
     try {
+      if (s.desktopToken) {
+        await fetch(`${this.consoleUrl}/api/auth/desktop/session`, { method: 'DELETE', headers: { Authorization: `Bearer ${s.desktopToken}` }, signal: AbortSignal.timeout(10_000) });
+        return;
+      }
       await this.authRequest('/sign-out', { method: 'POST', body: '{}', cookie: s.cookie });
     } catch {
       // Best effort — the local session is gone either way; the server-side
@@ -195,8 +267,8 @@ export class ConsoleAuth {
       const p = this.sessionPath();
       if (!existsSync(p) || !safeStorage.isEncryptionAvailable()) return null;
       const parsed = JSON.parse(safeStorage.decryptString(readFileSync(p))) as Partial<StoredSession>;
-      if (!parsed.cookie || !parsed.authUrl || !parsed.user?.email) return null;
-      return { cookie: parsed.cookie, authUrl: parsed.authUrl, user: { email: parsed.user.email, name: parsed.user.name ?? parsed.user.email } };
+      if ((!parsed.cookie && !parsed.desktopToken) || !parsed.user?.email) return null;
+      return { cookie: parsed.cookie ?? '', desktopToken: parsed.desktopToken, authUrl: parsed.authUrl ?? '', user: { email: parsed.user.email, name: parsed.user.name ?? parsed.user.email } };
     } catch {
       return null; // unreadable/corrupt blob = signed out
     }
