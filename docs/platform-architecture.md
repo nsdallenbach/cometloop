@@ -512,7 +512,8 @@ export interface ModelProvider {
 | `anthropic` | Messages API, `x-api-key` | `json` → a system-level "reply with a single JSON object" instruction (no prefill, so the callers' first-brace regex keeps working); tools ↔ `tool_use` / `tool_result` blocks, consecutive tool results folded into one user turn. Context: 1M for the 5-family, 200k otherwise. |
 | `openai-compatible` | Chat Completions, bearer key | Covers OpenAI, Neon AI Gateway, Groq, Together, vLLM, Ollama; `json` → `response_format: json_object` with one retry without it when the server rejects it. Azure OpenAI when `extra.apiVersion` is set: `base_url` is the resource, the model is the deployment, `api-key` header. |
 | `databricks` | `/serving-endpoints/<name>/invocations`, SP M2M token | The model id IS the endpoint name. A 400/422 retries the responses-style `input` body (Agent Bricks). This adapter also owns `workspaceToken()`, `fetchEndpointState()` (Agents page) and `listServingEndpoints()` (the model picker), so there is one Databricks code path. |
-| `bedrock`, `vertex` | — | Declared with their row shape (`extra.region` / `extra.project`), throw `ProviderNotAvailableError` ("not configured in this build"); `invokeModel` treats that like an unmapped role — no retry, no feed item, the fallback applies. |
+| `bedrock` | `@aws-sdk/client-bedrock-runtime` Converse API | Model ids are Bedrock's (`us.anthropic.claude-sonnet-5`, `anthropic.claude-haiku-4-5-20251001-v1:0`); Region from `extra.region`, else `AWS_REGION`. Credentials from the AWS default chain — the ECS task role, a local profile — so a row needs no secret; `extra.accessKeyId` + `credential_ref` pin a key pair instead. JSON asked for at system level (Converse has no response format); tools map onto `toolConfig`. SDK errors map onto `ProviderError` with the HTTP status (`ThrottlingException` → 429). |
+| `vertex` | — | Declared with its row shape (`extra.project`), throws `ProviderNotAvailableError` ("not configured in this build"); `invokeModel` treats that like an unmapped role — no retry, no feed item, the fallback applies. |
 
 Adapters throw `ProviderError { status }`; `categorizeFailure` and
 `isTransientStatus` in llm-health.ts key on that status exactly as they
@@ -659,7 +660,7 @@ Anthropic or OpenAI reviews on its own model with no agent registered.
   The write path (a form field that goes straight to Key Vault and stores
   only the name) is a Cloud-only concern for the phase that gives the api a
   Key Vault write identity.
-- **Bedrock and Vertex** adapters are stubs (above).
+- **Vertex** is a stub (above); Bedrock is live through the Converse API.
 - **Platform default** (Cometloop's own Anthropic account, metered) is
   today the process's `ANTHROPIC_API_KEY` auto-registered per workspace —
   metering per workspace is the usage ledger; a separate platform key per

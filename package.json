@@ -38,6 +38,7 @@
   },
   "description": "Cometloop - delivery execution console: portfolio, board, roadmap, sources, team, status feed",
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1150.0",
     "@azure/identity": "^4.13.3",
     "@azure/keyvault-secrets": "^4.11.2",
     "@databricks/appkit": "0.38.1",
