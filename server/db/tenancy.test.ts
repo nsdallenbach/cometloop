@@ -40,8 +40,8 @@ describe('tenant table lists', () => {
   });
 
   it('is 46 tenant tables, as the architecture doc counts them', () => {
-    expect(TENANT_TABLES.length).toBe(46);
-    expect(new Set(TENANT_TABLES).size).toBe(46);
+    expect(TENANT_TABLES.length).toBe(48);
+    expect(new Set(TENANT_TABLES).size).toBe(48);
   });
 });
 

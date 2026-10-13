@@ -43,6 +43,7 @@ export type LlmFlow =
   | 'sow-parse'
   | 'standards-refine'
   | 'pr-review'
+  | 'workflow-decide'
   | 'health-probe';
 
 const FLOW_LABELS: Record<LlmFlow, string> = {
@@ -53,6 +54,7 @@ const FLOW_LABELS: Record<LlmFlow, string> = {
   'sow-parse': 'SOW plan extraction',
   'standards-refine': 'standards refine',
   'pr-review': 'PR review',
+  'workflow-decide': 'workflow decision',
   'health-probe': 'health probe',
 };
 
@@ -65,6 +67,7 @@ export const FLOW_ROLES: Record<LlmFlow, ModelRole> = {
   estimate: 'estimate',
   'status-draft': 'draft',
   'pr-review': 'review',
+  'workflow-decide': 'review',
   'health-probe': 'planning',
 };
 

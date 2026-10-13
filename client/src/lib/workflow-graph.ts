@@ -1,17 +1,22 @@
 import { layerByDependency } from './canvas-layout';
+import { CATALOG, DEFAULT_TYPE, summarizeNode, withDefaults, type NodeConfig, type NodeKind } from '../../../shared/workflows/catalog';
 
 /**
  * The Workflows builder's graph model (DAT-284), kept pure so the editing
  * rules can be unit-tested: what a node and an edge are, the sample the page
  * opens with, layered auto-layout, and the checks that keep the graph a DAG.
- * Nothing here executes a workflow — the builder is a placeholder surface.
+ * A node's `type` names its catalog entry and `config` holds that entry's
+ * field values (shared/workflows/catalog.ts); the server runs them.
  */
 
-export type NodeKind = 'trigger' | 'agent' | 'condition' | 'action';
+export type { NodeKind };
 
 export interface WfNode {
   id: string;
   kind: NodeKind;
+  /** Catalog entry id (a trigger / condition / action / agent type). */
+  type: string;
+  config: NodeConfig;
   title: string;
   detail: string;
   x: number;
@@ -29,19 +34,57 @@ export interface Workflow {
   edges: WfEdge[];
 }
 
-/** A stored workflow as the picker lists it (DAT-288). */
+/** A run of a workflow as the list shows it (DAT-288). */
+export interface WorkflowRunSummary {
+  id: number;
+  workflowId: number;
+  workflowName: string;
+  trigger: string;
+  subject: string;
+  /** running / succeeded / failed. */
+  state: string;
+  error: string;
+  startedAt: string;
+  finishedAt: string | null;
+  stepCount: number;
+}
+
+export interface WorkflowRunStep {
+  nodeId: string;
+  kind: NodeKind;
+  type: string;
+  title: string;
+  state: 'ok' | 'failed';
+  outcome?: string;
+  detail: string;
+  startedAt: string;
+  ms: number;
+}
+
+export interface WorkflowRun extends WorkflowRunSummary {
+  steps: WorkflowRunStep[];
+  payload: Record<string, unknown>;
+}
+
+/** A stored workflow as the list shows it (DAT-288). */
 export interface WorkflowSummary {
   id: number;
   name: string;
+  enabled: boolean;
   nodes: number;
+  trigger: string;
   updatedBy: string;
   updatedAt: string;
+  lastRun: { id: number; state: string; startedAt: string; finishedAt: string | null; error: string } | null;
+  runs7d: { ok: number; failed: number };
 }
 
 /** A stored workflow with its graph; `updatedAt` is what the next save is based on. */
 export interface SavedWorkflow {
   id: number;
   name: string;
+  description: string;
+  enabled: boolean;
   graph: Workflow;
   updatedBy: string;
   updatedAt: string;
@@ -54,38 +97,56 @@ const ROW_GAP = 34;
 const ORIGIN = 60;
 
 export const KIND_META: Record<NodeKind, { label: string; glyph: string; color: string; blurb: string }> = {
-  trigger: { label: 'TRIGGER', glyph: '◉', color: 'var(--acc)', blurb: 'Starts the workflow: an event or a schedule' },
-  agent: { label: 'AGENT', glyph: '◆', color: 'var(--agent)', blurb: 'Hands a step to an agent' },
-  condition: { label: 'CONDITION', glyph: '◇', color: 'var(--warn)', blurb: 'Branches on a result' },
-  action: { label: 'ACTION', glyph: '▸', color: 'var(--ok)', blurb: 'Does something in the console or outside it' },
+  trigger: { label: 'TRIGGER', glyph: '◉', color: 'var(--acc)', blurb: 'Starts the workflow: an event, a schedule, or Run now' },
+  agent: { label: 'AGENT', glyph: '◆', color: 'var(--agent)', blurb: 'Queues the ticket for a coding agent' },
+  condition: { label: 'CONDITION', glyph: '◇', color: 'var(--warn)', blurb: 'A rule, or a decision model picking one of your choices' },
+  action: { label: 'ACTION', glyph: '▸', color: 'var(--ok)', blurb: 'Moves, comments, assigns, tags, notifies, posts, calls a webhook' },
 };
 
-const NEW_NODE_COPY: Record<NodeKind, { title: string; detail: string }> = {
-  trigger: { title: 'New trigger', detail: 'when…' },
-  agent: { title: 'New agent step', detail: 'agent: unassigned' },
-  condition: { title: 'New condition', detail: 'if…' },
-  action: { title: 'New action', detail: 'do…' },
-};
+/** A node's card copy from its config: the catalog label and a one-line summary. */
+export function describeNode(kind: NodeKind, type: string, config: NodeConfig): { title: string; detail: string } {
+  const entry = CATALOG[kind].find((e) => e.id === type);
+  return { title: entry?.label ?? type, detail: summarizeNode(kind, type, config) };
+}
+
+/** A node whose title and detail follow its config (unless the title was customised). */
+export function retitle(n: WfNode, type: string, config: NodeConfig): WfNode {
+  const before = describeNode(n.kind, n.type, n.config);
+  const after = describeNode(n.kind, type, config);
+  const customTitle = n.title !== before.title;
+  return { ...n, type, config, title: customTitle ? n.title : after.title, detail: after.detail };
+}
+
+function node(id: string, kind: NodeKind, type: string, config: NodeConfig = {}, title?: string): Omit<WfNode, 'x' | 'y'> {
+  const full = withDefaults(kind, type, config);
+  const d = describeNode(kind, type, full);
+  return { id, kind, type, config: full, title: title ?? d.title, detail: d.detail };
+}
 
 /** The draft the page opens with: a review gate and an idle-ticket nudge. */
 export function sampleWorkflow(): Workflow {
   const nodes: Omit<WfNode, 'x' | 'y'>[] = [
-    { id: 'pr-opened', kind: 'trigger', title: 'PR opened', detail: 'github · branch carries a ticket key' },
-    { id: 'review', kind: 'agent', title: 'Run the PR review agent', detail: 'agent: pr-reviewer' },
-    { id: 'verdict', kind: 'condition', title: 'Verdict?', detail: 'approve / request changes' },
-    { id: 'to-deploying', kind: 'action', title: 'Move ticket to Deploying', detail: 'console · ticket status' },
-    { id: 'requeue', kind: 'action', title: 'Requeue the ticket for its agent', detail: 'console · agent queue, top priority' },
-    { id: 'summary', kind: 'action', title: 'Post the summary on the ticket', detail: 'console · ticket comment' },
-    { id: 'idle', kind: 'trigger', title: 'Ticket idle 3 business days', detail: 'schedule · weekdays 09:00' },
-    { id: 'nudge', kind: 'action', title: 'Nudge the assignee', detail: 'console · notification' },
+    node('pr-opened', 'trigger', 'pr.opened'),
+    node(
+      'kind',
+      'condition',
+      'decide',
+      {
+        question: 'Is this pull request a quick fix or a substantial change?',
+        choices: 'quick: a few lines, a typo, a config value\nsubstantial: new behaviour, a migration, or touches many files',
+        state: '{{pr.title}}\n\n{{ticket.title}}\n{{ticket.description}}',
+      },
+      'Quick fix or substantial?',
+    ),
+    node('tag-review', 'action', 'ticket.tag', { tag: 'needs-second-reviewer' }),
+    node('notify-lead', 'action', 'notify', { to: '{{ticket.assignee}}', title: '{{ticket.key}}: PR #{{pr.number}} is up', message: '{{pr.url}}' }),
+    node('idle', 'trigger', 'ticket.idle', { days: 3 }),
+    node('nudge', 'action', 'ticket.comment', { body: 'Nothing has happened on {{ticket.key}} for {{idle.days}} business days. Still on it?' }),
   ];
   const edges: WfEdge[] = [
-    { from: 'pr-opened', to: 'review' },
-    { from: 'review', to: 'verdict' },
-    { from: 'verdict', to: 'to-deploying', label: 'approve' },
-    { from: 'verdict', to: 'requeue', label: 'changes' },
-    { from: 'to-deploying', to: 'summary' },
-    { from: 'requeue', to: 'summary' },
+    { from: 'pr-opened', to: 'kind' },
+    { from: 'kind', to: 'tag-review', label: 'substantial' },
+    { from: 'kind', to: 'notify-lead' },
     { from: 'idle', to: 'nudge' },
   ];
   return autoLayout({ nodes: nodes.map((n) => ({ ...n, x: 0, y: 0 })), edges });
@@ -137,15 +198,42 @@ export function connect(wf: Workflow, from: string, to: string): { wf: Workflow;
   return { wf: { ...wf, edges: [...wf.edges, { from, to }] }, error: null };
 }
 
+/** Set (or clear) the label on a connection — the outcome it waits for out of a condition. */
+export function relabel(wf: Workflow, from: string, to: string, label: string): Workflow {
+  const l = label.trim();
+  return { ...wf, edges: wf.edges.map((e) => (e.from === from && e.to === to ? (l ? { ...e, label: l } : { from: e.from, to: e.to }) : e)) };
+}
+
 export function removeNode(wf: Workflow, id: string): Workflow {
   return { nodes: wf.nodes.filter((n) => n.id !== id), edges: wf.edges.filter((e) => e.from !== id && e.to !== id) };
 }
 
-/** A new node of `kind`, dropped under everything so it never lands on top of a node. */
-export function addNode(wf: Workflow, kind: NodeKind, id: string): Workflow {
-  const bottom = wf.nodes.reduce((m, n) => Math.max(m, n.y + NODE_H), ORIGIN - ROW_GAP);
-  return { ...wf, nodes: [...wf.nodes, { id, kind, ...NEW_NODE_COPY[kind], x: ORIGIN, y: bottom + ROW_GAP }] };
+export function removeEdge(wf: Workflow, from: string, to: string): Workflow {
+  return { ...wf, edges: wf.edges.filter((e) => !(e.from === from && e.to === to)) };
 }
+
+/** A new node of `kind` (its default type), dropped under everything so it never lands on top of a node. */
+export function addNode(wf: Workflow, kind: NodeKind, id: string, type: string = DEFAULT_TYPE[kind]): Workflow {
+  const bottom = wf.nodes.reduce((m, n) => Math.max(m, n.y + NODE_H), ORIGIN - ROW_GAP);
+  return { ...wf, nodes: [...wf.nodes, { ...node(id, kind, type), x: ORIGIN, y: bottom + ROW_GAP }] };
+}
+
+/** Change what a node does (its config, or its type) and keep the card copy in step. */
+export function configure(wf: Workflow, id: string, patch: { type?: string; config?: NodeConfig; title?: string }): Workflow {
+  return {
+    ...wf,
+    nodes: wf.nodes.map((n) => {
+      if (n.id !== id) return n;
+      const type = patch.type ?? n.type;
+      const config = patch.type && patch.type !== n.type ? withDefaults(n.kind, type, patch.config ?? {}) : (patch.config ?? n.config);
+      const next = retitle(n, type, config);
+      return patch.title !== undefined ? { ...next, title: patch.title } : next;
+    }),
+  };
+}
+
+const isConfig = (v: unknown): v is NodeConfig =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) && Object.values(v as Record<string, unknown>).every((x) => typeof x === 'string' || typeof x === 'number');
 
 /** Accept only a well-formed draft from storage; anything else means "start from the sample". */
 export function parseWorkflow(raw: string | null): Workflow | null {
@@ -154,12 +242,17 @@ export function parseWorkflow(raw: string | null): Workflow | null {
     const v = JSON.parse(raw) as { nodes?: unknown; edges?: unknown };
     if (!Array.isArray(v.nodes) || !Array.isArray(v.edges)) return null;
     const kinds = Object.keys(KIND_META);
-    const nodes = (v.nodes as Partial<WfNode>[]).filter(
-      (n): n is WfNode =>
-        typeof n.id === 'string' && typeof n.title === 'string' && typeof n.detail === 'string' && typeof n.x === 'number' && typeof n.y === 'number' && kinds.includes(n.kind ?? ''),
-    );
+    const nodes = (v.nodes as Partial<WfNode>[]).flatMap((n): WfNode[] => {
+      if (typeof n.id !== 'string' || typeof n.title !== 'string' || typeof n.detail !== 'string' || typeof n.x !== 'number' || typeof n.y !== 'number' || !kinds.includes(n.kind ?? '')) return [];
+      const kind = n.kind as NodeKind;
+      // Pre-catalog drafts carry no type: they get the kind's default and keep their copy.
+      const type = typeof n.type === 'string' && CATALOG[kind].some((e) => e.id === n.type) ? n.type : DEFAULT_TYPE[kind];
+      return [{ id: n.id, kind, type, config: withDefaults(kind, type, isConfig(n.config) ? n.config : {}), title: n.title, detail: n.detail, x: n.x, y: n.y }];
+    });
     const ids = new Set(nodes.map((n) => n.id));
-    const edges = (v.edges as Partial<WfEdge>[]).filter((e): e is WfEdge => typeof e.from === 'string' && typeof e.to === 'string' && ids.has(e.from) && ids.has(e.to));
+    const edges = (v.edges as Partial<WfEdge>[]).flatMap((e): WfEdge[] =>
+      typeof e.from === 'string' && typeof e.to === 'string' && ids.has(e.from) && ids.has(e.to) ? [typeof e.label === 'string' && e.label ? { from: e.from, to: e.to, label: e.label } : { from: e.from, to: e.to }] : [],
+    );
     return nodes.length === (v.nodes as unknown[]).length ? { nodes, edges } : null;
   } catch {
     return null;

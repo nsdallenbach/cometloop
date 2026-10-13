@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { graphProblem, type WorkflowGraph } from './workflows';
 
-const node = (id: string, kind: WorkflowGraph['nodes'][number]['kind'] = 'action') => ({ id, kind, title: id, detail: '', x: 0, y: 0 });
+const node = (id: string, kind: WorkflowGraph['nodes'][number]['kind'] = 'action') => ({ id, kind, type: '', config: {}, title: id, detail: '', x: 0, y: 0 });
 const graph = (edges: WorkflowGraph['edges'], nodes = [node('t', 'trigger'), node('a'), node('b'), node('c')]): WorkflowGraph => ({ nodes, edges });
 
 describe('graphProblem', () => {

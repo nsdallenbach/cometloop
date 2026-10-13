@@ -46,6 +46,7 @@ import { normalizeTags } from './ticket-tags';
 import { REPO_CONNECTED_JOIN, doneBlockedReason, gateInputFromRow, loadDeployGates } from './deploy-gate';
 import { LINKS_SCHEMA_SQL, setupTicketLinkRoutes } from './ticket-links';
 import { WORKFLOWS_SCHEMA_SQL, setupWorkflowRoutes } from './workflows';
+import { emitWorkflowEvent, startWorkflowScheduler } from './workflow-engine';
 import { consolidatedTail, mergeAcceptanceCriteria, setupTicketConsolidateRoutes } from './ticket-consolidate';
 import { commentStyleBrief } from './comment-style';
 import { setupMcpRoutes } from './mcp';
@@ -2352,7 +2353,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     setupRepoRoutes(app, q, requireLead);
     setupNotificationRoutes(app, q);
     setupTicketLinkRoutes(app, q);
-    setupWorkflowRoutes(app, q);
+    setupWorkflowRoutes(app, q, requireAnyLead);
     setupTicketConsolidateRoutes(app, q, requireLead);
     setupMcpRoutes(app, q);
     setupTicketOrderRoutes(app, q);
@@ -2432,6 +2433,7 @@ export async function setupApiRoutes(appkit: AppKitServices) {
           });
         }
         res.status(201).json(result.rows[0]);
+        emitWorkflowEvent(q, 'comment.added', { ticketKey: req.params.key, comment: { author, body } });
         // Before a runner ever picks the ticket up, comments double as plan
         // feedback — the planning agent updates the ticket and replies here.
         void applyCommentFeedback(appkit, req.params.key, author, parsed.data.body.trim()).catch((err) =>
@@ -2478,6 +2480,8 @@ export async function setupApiRoutes(appkit: AppKitServices) {
     // clearing them. Reads already ignore expired rows, so this is housekeeping
     // (and the log line that tells us a pass went missing).
     startPlanningReviewSweep(q);
+    // Workflows (DAT-288): schedules and idle-ticket triggers, once a minute.
+    startWorkflowScheduler(q, 60_000);
     if (process.env.DEMO_MOCK_RUNNER === '1') startMockRunner(q);
   });
 }

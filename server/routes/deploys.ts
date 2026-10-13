@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type express from 'express';
 import { callerOf, resolveCaller } from './roles';
 import { setTicketStatus } from './ticket-events';
+import { emitWorkflowEvent } from './workflow-engine';
 import { createNotification } from './notifications';
 
 /**
@@ -225,6 +226,9 @@ export async function recordDeployEvent(q: Query, input: DeployEventInput): Prom
       engagementId: ticket.engagementId,
     });
     await feed(text);
+  }
+  if (input.event === 'succeeded' || input.event === 'failed') {
+    emitWorkflowEvent(q, 'deploy.finished', { ticketKey: ticket.key, deploy: { result: input.event, detail: input.detail, agent: input.agent, actor: input.actor, prNumber: input.prNumber } });
   }
   // 'queued' and 'removed' are queue bookkeeping — mirrored, never fed.
   return true;

@@ -7,6 +7,8 @@
  * open/done series.
  */
 
+import { emitWorkflowEvent } from './workflow-engine';
+
 type Query = (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
 
 /**
@@ -44,6 +46,8 @@ export async function recordTicketEvent(
   toStatus: string,
 ): Promise<void> {
   if (fromStatus === toStatus) return;
+  // Workflows listen here: this is the one place every status change passes.
+  emitWorkflowEvent(q, fromStatus === null ? 'ticket.created' : 'ticket.moved', { ticketKey, move: { from: fromStatus ?? '', to: toStatus } });
   try {
     await q(`INSERT INTO app.ticket_events (ticket_key, engagement_id, from_status, to_status) VALUES ($1,$2,$3,$4)`, [
       ticketKey,

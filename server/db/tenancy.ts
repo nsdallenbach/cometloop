@@ -111,6 +111,8 @@ export const TENANT_TABLES = [
   'ticket_nudges',
   // WORKFLOWS_SCHEMA_SQL
   'workflows',
+  'workflow_runs',
+  'workflow_trigger_state',
   // MODEL_CONFIG_SCHEMA_SQL (server/llm/config.ts, incl. MODEL_PRICES_SCHEMA_SQL from pricing.ts)
   'model_providers',
   'model_roles',
