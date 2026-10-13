@@ -1261,69 +1261,69 @@ const VIEWS_STATIC: Partial<Record<NavId, ReactNode>> = {
 };
 
 /**
- * Sidebar footer: the running version and what the auto-updater is doing
- * (DAT-237). Click checks the feed now; once a build is staged the click
- * restarts into it instead of waiting for the next quit. Why an install is
- * not self-updating (portable, dev, unsigned mac, opted out) is spelled out
- * rather than hidden.
+ * Sidebar footer (DAT-237): a quiet version label, and a real button the
+ * moment a newer build is downloaded. The label's tooltip carries the
+ * updater's state; clicking it checks the feed. The button restarts into
+ * the new build — unless an agent is mid-run, in which case the main process
+ * refuses and the reason shows in place of the button for a moment.
  */
 function VersionBadge() {
   const [st, setSt] = useState<UpdateStatusView | null>(null);
+  const [refused, setRefused] = useState<string | null>(null);
   useEffect(() => {
     void window.desktopBridge.updatesStatus().then(setSt);
     return window.desktopBridge.onUpdatesEvent(setSt);
   }, []);
+  useEffect(() => {
+    if (!refused) return;
+    const t = setTimeout(() => setRefused(null), 6000);
+    return () => clearTimeout(t);
+  }, [refused]);
   if (!st) return null;
   const s = st.state;
-  const detail =
-    s.status === 'checking'
-      ? 'checking…'
-      : s.status === 'downloading'
-        ? `v${s.version} ${s.percent}%`
-        : s.status === 'downloaded'
-          ? `v${s.version} ready · restart`
-          : s.status === 'error'
-            ? 'update check failed'
-            : s.status === 'disabled'
-              ? `no updates: ${s.reason}`
-              : '';
   const title =
     s.status === 'up-to-date'
       ? `Up to date (checked ${new Date(s.checkedAt).toLocaleTimeString()}). Click to check again.`
       : s.status === 'error'
-        ? `${s.message}\nClick to try again.`
-        : s.status === 'downloaded'
-          ? `v${s.version} is downloaded. Click to restart into it now; otherwise it installs when the app quits.`
-          : s.status === 'disabled'
-            ? `This install does not self-update: ${s.reason}.`
-            : 'Checking GitHub Releases for a newer build.';
-  const act = () => {
-    if (s.status === 'downloaded') void window.desktopBridge.updatesInstall();
-    else if (s.status !== 'disabled') void window.desktopBridge.updatesCheck().then(setSt);
+        ? `Update check failed: ${s.message}\nClick to try again.`
+        : s.status === 'disabled'
+          ? `This install does not self-update: ${s.reason}.`
+          : s.status === 'downloading'
+            ? `Downloading v${s.version} (${s.percent}%).`
+            : s.status === 'downloaded'
+              ? `v${s.version} is ready; it installs when you quit, or now with the button.`
+              : 'Checking GitHub Releases for a newer build.';
+  const install = () => {
+    void window.desktopBridge.updatesInstall().then((r) => {
+      if (!r.ok) setRefused(r.error);
+    });
   };
   return (
-    <button
-      className="no-drag"
-      title={title}
-      onClick={act}
-      style={{
-        ...mono(400, 9.5),
-        border: 'none',
-        background: 'none',
-        padding: 0,
-        cursor: s.status === 'disabled' ? 'default' : 'pointer',
-        color: s.status === 'downloaded' ? 'var(--acc)' : s.status === 'error' ? 'var(--bad)' : 'var(--tx3)',
-        textAlign: 'left',
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        maxWidth: 130,
-      }}
-    >
-      v{st.version}
-      {st.channel === 'staging' ? ' staging' : ''}
-      {detail ? ` · ${detail}` : ''}
-    </button>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+      <button
+        className="no-drag"
+        title={title}
+        onClick={() => {
+          if (s.status !== 'disabled' && s.status !== 'downloading' && s.status !== 'downloaded') void window.desktopBridge.updatesCheck().then(setSt);
+        }}
+        style={{ ...mono(400, 9.5), border: 'none', background: 'none', padding: 0, cursor: 'pointer', color: s.status === 'error' ? 'var(--bad)' : 'var(--tx3)', whiteSpace: 'nowrap' }}
+      >
+        v{st.version}
+        {st.channel === 'staging' ? ' staging' : ''}
+        {s.status === 'checking' ? ' ·' : s.status === 'downloading' ? ` · ${s.percent}%` : ''}
+      </button>
+      {s.status === 'downloaded' && !refused && (
+        <button
+          className="no-drag hv-lift"
+          onClick={install}
+          title={`Restart into v${s.version} now`}
+          style={{ ...mono(600, 9.5), letterSpacing: '.04em', border: 'none', borderRadius: 3, background: 'var(--acc)', color: '#fff', padding: '3px 8px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+        >
+          Update to v{s.version}
+        </button>
+      )}
+      {refused && <span style={{ ...mono(400, 9.5), color: 'var(--warn)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 110 }} title={refused}>{refused}</span>}
+    </span>
   );
 }
 

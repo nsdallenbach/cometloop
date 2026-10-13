@@ -101,12 +101,24 @@ export async function checkForUpdatesNow(): Promise<UpdateStatusView> {
   return updateStatus();
 }
 
-/** Apply a staged update now instead of on the next quit. */
-export function installUpdateNow(): { ok: true } | { ok: false; error: string } {
+/**
+ * Apply a staged update now instead of on the next quit. `blocked` says why
+ * now is a bad moment (an agent mid-run) and the caller shows that instead;
+ * the staged build still installs on the next quit.
+ */
+export function installUpdateNow(blocked?: () => string | null): { ok: true } | { ok: false; error: string } {
   if (state.status !== 'downloaded') return { ok: false, error: 'no update is staged' };
+  const reason = blocked?.();
+  if (reason) {
+    log(`install of v${state.version} deferred: ${reason}`);
+    return { ok: false, error: reason };
+  }
   log(`installing v${state.version} now`);
   // isSilent, isForceRunAfter: a silent NSIS install that relaunches the app.
-  autoUpdater.quitAndInstall(true, true);
+  // Installing on quit is already armed; quitAndInstall runs the same
+  // installer right away, so the flag is cleared first to avoid a second run.
+  autoUpdater.autoInstallOnAppQuit = false;
+  setImmediate(() => autoUpdater.quitAndInstall(true, true));
   return { ok: true };
 }
 

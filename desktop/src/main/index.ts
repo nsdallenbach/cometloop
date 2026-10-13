@@ -119,7 +119,14 @@ function registerIpc(): void {
   // Sidebar footer: the running build and the auto-updater's state.
   ipcMain.handle('updates:status', () => updateStatus());
   ipcMain.handle('updates:check', () => checkForUpdatesNow());
-  ipcMain.handle('updates:install', () => installUpdateNow());
+  // Never restart under a running agent (Nigel's rule: don't interrupt a
+  // runner mid-ticket); the staged build installs on the next quit instead.
+  ipcMain.handle('updates:install', () =>
+    installUpdateNow(() => {
+      const busy = pool.state().instances.find((i) => i.current != null);
+      return busy?.current ? `${busy.current.ticketKey} is being worked; update after it finishes` : null;
+    }),
+  );
 
   ipcMain.handle('console:list-engagements', async () => {
     try {
