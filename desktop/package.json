@@ -1,6 +1,6 @@
 {
   "name": "cometloop-desktop",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "description": "Cometloop desktop client — local runner host with the console's look and feel",
@@ -14,7 +14,8 @@
     "dist:win": "electron-vite build && electron-builder --win",
     "build:staging": "cross-env COMETLOOP_CHANNEL=staging electron-vite build",
     "dist:staging": "npm run build:staging && electron-builder --config electron-builder.staging.yml",
-    "dist:win:staging": "npm run build:staging && electron-builder --win --config electron-builder.staging.yml"
+    "dist:win:staging": "npm run build:staging && electron-builder --win --config electron-builder.staging.yml",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.3.9",

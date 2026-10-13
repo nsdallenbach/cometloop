@@ -1261,6 +1261,73 @@ const VIEWS_STATIC: Partial<Record<NavId, ReactNode>> = {
 };
 
 /**
+ * Sidebar footer: the running version and what the auto-updater is doing
+ * (DAT-237). Click checks the feed now; once a build is staged the click
+ * restarts into it instead of waiting for the next quit. Why an install is
+ * not self-updating (portable, dev, unsigned mac, opted out) is spelled out
+ * rather than hidden.
+ */
+function VersionBadge() {
+  const [st, setSt] = useState<UpdateStatusView | null>(null);
+  useEffect(() => {
+    void window.desktopBridge.updatesStatus().then(setSt);
+    return window.desktopBridge.onUpdatesEvent(setSt);
+  }, []);
+  if (!st) return null;
+  const s = st.state;
+  const detail =
+    s.status === 'checking'
+      ? 'checking…'
+      : s.status === 'downloading'
+        ? `v${s.version} ${s.percent}%`
+        : s.status === 'downloaded'
+          ? `v${s.version} ready · restart`
+          : s.status === 'error'
+            ? 'update check failed'
+            : s.status === 'disabled'
+              ? `no updates: ${s.reason}`
+              : '';
+  const title =
+    s.status === 'up-to-date'
+      ? `Up to date (checked ${new Date(s.checkedAt).toLocaleTimeString()}). Click to check again.`
+      : s.status === 'error'
+        ? `${s.message}\nClick to try again.`
+        : s.status === 'downloaded'
+          ? `v${s.version} is downloaded. Click to restart into it now; otherwise it installs when the app quits.`
+          : s.status === 'disabled'
+            ? `This install does not self-update: ${s.reason}.`
+            : 'Checking GitHub Releases for a newer build.';
+  const act = () => {
+    if (s.status === 'downloaded') void window.desktopBridge.updatesInstall();
+    else if (s.status !== 'disabled') void window.desktopBridge.updatesCheck().then(setSt);
+  };
+  return (
+    <button
+      className="no-drag"
+      title={title}
+      onClick={act}
+      style={{
+        ...mono(400, 9.5),
+        border: 'none',
+        background: 'none',
+        padding: 0,
+        cursor: s.status === 'disabled' ? 'default' : 'pointer',
+        color: s.status === 'downloaded' ? 'var(--acc)' : s.status === 'error' ? 'var(--bad)' : 'var(--tx3)',
+        textAlign: 'left',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        maxWidth: 130,
+      }}
+    >
+      v{st.version}
+      {st.channel === 'staging' ? ' staging' : ''}
+      {detail ? ` · ${detail}` : ''}
+    </button>
+  );
+}
+
+/**
  * First-launch environment picker: which console deployment this
  * desktop signs in to. Shown until a choice is persisted (or `APP_URL` pins
  * the console for a dev run). The staging build preselects Staging so a
@@ -1521,7 +1588,7 @@ export function App() {
           <div style={{ flex: 1 }} />
           {NAV_FOOTER.map(navButton)}
           <div style={{ display: 'flex', alignItems: 'center', padding: '4px 10px 6px' }}>
-            <span style={{ ...mono(400, 9.5), color: 'var(--tx3)' }}>phase A+</span>
+            <VersionBadge />
             <div style={{ flex: 1 }} />
             <button
               className="no-drag"

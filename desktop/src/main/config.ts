@@ -47,13 +47,19 @@ export const BUILT_IN_ENVIRONMENTS: Environment[] = [
     consoleAuth: DATABRICKS_HOST ? 'databricks' : 'none',
     note: 'The live console — real projects, real tickets.',
   },
-  {
-    id: 'staging',
-    label: 'Staging',
-    consoleUrl: STAGING_CONSOLE_URL,
-    consoleAuth: 'none',
-    note: 'The tester environment: its own data, nothing you do here reaches production. Sign in with your Cometloop account.',
-  },
+  // A build whose staging console is the production one (one hosted
+  // environment for now) offers Production and Local only.
+  ...(STAGING_CONSOLE_URL && STAGING_CONSOLE_URL !== PRODUCTION_CONSOLE_URL
+    ? [
+        {
+          id: 'staging',
+          label: 'Staging',
+          consoleUrl: STAGING_CONSOLE_URL,
+          consoleAuth: 'none' as const,
+          note: 'The tester environment: its own data, nothing you do here reaches production. Sign in with your Cometloop account.',
+        },
+      ]
+    : []),
   {
     id: 'local',
     label: 'Local',
@@ -210,11 +216,14 @@ export function loadConfig(): DesktopConfig {
   }
 
   // First run (or corrupt file): persist the resolved non-secret config so
-  // users have a file to edit.
+  // users have a file to edit. The built-in environment list is not written:
+  // it belongs to the build, so a newer build's consoles reach every install.
+  // (A list someone added by hand stays, because only its absence is defaulted.)
   const p = configPath();
   if (!existsSync(p)) {
     mkdirSync(path.dirname(p), { recursive: true });
-    writeFileSync(p, JSON.stringify(parsed, null, 2));
+    const { environments: _environments, ...persisted } = parsed;
+    writeFileSync(p, JSON.stringify(persisted, null, 2));
   }
 
   return { ...parsed, devToken: process.env.DATABRICKS_TOKEN || undefined, envOverride, channel: CHANNEL };
@@ -224,7 +233,7 @@ export function loadConfig(): DesktopConfig {
 export function saveAgentsConfig(cfg: DesktopConfig): void {
   const p = configPath();
   const fileValues = readConfigFile();
-  const { devToken: _devToken, envOverride: _envOverride, channel: _channel, ...persistable } = cfg;
+  const { devToken: _devToken, envOverride: _envOverride, channel: _channel, environments: _environments, ...persistable } = cfg;
   mkdirSync(path.dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify({ ...fileValues, ...persistable }, null, 2));
 }

@@ -87,9 +87,29 @@ interface DesktopConfigView {
   envOverride: boolean;
 }
 
+/** Where the auto-updater is (src/main/updater.ts). */
+type UpdateState =
+  | { status: 'disabled'; reason: string }
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'up-to-date'; checkedAt: string }
+  | { status: 'downloading'; version: string; percent: number }
+  | { status: 'downloaded'; version: string }
+  | { status: 'error'; message: string; checkedAt: string };
+
+interface UpdateStatusView {
+  version: string;
+  channel: 'production' | 'staging';
+  state: UpdateState;
+}
+
 interface DesktopBridge {
   getConfig: () => Promise<DesktopConfigView>;
   selectEnvironment: (id: string | null) => Promise<{ ok: true } | { ok: false; error: string }>;
+  updatesStatus: () => Promise<UpdateStatusView>;
+  updatesCheck: () => Promise<UpdateStatusView>;
+  updatesInstall: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  onUpdatesEvent: (cb: (status: UpdateStatusView) => void) => () => void;
   listEngagements: () => Promise<
     { ok: true; engagements: EngagementRow[] } | { ok: false; error: string; signInRequired?: boolean }
   >;
