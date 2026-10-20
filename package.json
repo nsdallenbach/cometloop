@@ -40,7 +40,7 @@
   "dependencies": {
     "@azure/identity": "^4.13.3",
     "@azure/keyvault-secrets": "^4.11.2",
-    "@databricks/appkit": "0.38.1",
+    "@databricks/appkit": "0.89.0",
     "@databricks/appkit-ui": "0.38.1",
     "@databricks/sdk-experimental": "0.17.0",
     "@neondatabase/auth": "^0.5.0-beta",
