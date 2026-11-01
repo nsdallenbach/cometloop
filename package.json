@@ -43,7 +43,7 @@
     "@databricks/appkit": "0.38.1",
     "@databricks/appkit-ui": "0.38.1",
     "@databricks/sdk-experimental": "0.17.0",
-    "@neondatabase/auth": "^0.5.0-beta",
+    "@neondatabase/auth": "^0.7.0-beta",
     "@number-flow/react": "^0.6.2",
     "@visx/curve": "^4.0.0",
     "@visx/event": "^4.0.0",
