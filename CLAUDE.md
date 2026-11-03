@@ -86,6 +86,11 @@ Rules that follow from that split:
   `databricks postgres get-endpoint …`; see README), `databricks auth login`,
   then `npm run dev` → http://localhost:8000. Without `GITHUB_APP_PRIVATE_KEY`
   the repo-sync features are off; everything else works.
+- Fresh laptop, nothing but Node 22+ and Claude Code: `npm run local -- --seed`
+  runs the whole console on embedded Postgres in `data/local/` and the
+  repo's `delivery-console` MCP server talks to it with no setup
+  (docs/local-dev.md, "The local backend"). If Node is missing, install
+  Node 22 LTS first.
 - Web without Databricks: set `DATABASE_URL` (a `.env.local` with the Neon URL,
   `npm run dev:local`; or `docker compose up`) and the server boots on plain
   Postgres with every Databricks feature off — model calls take their

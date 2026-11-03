@@ -3,6 +3,7 @@ import path from 'node:path';
 import express from 'express';
 import { setupApiRoutes } from './routes/api';
 import { createPortableDb } from './portable/db';
+import { createPgliteDb, pgliteDir } from './portable/pglite-db';
 import { localFiles } from './portable/files';
 import { githubAppConfigured } from './routes/github-app';
 
@@ -21,6 +22,9 @@ import { githubAppConfigured } from './routes/github-app';
  * - `server.extend`  → the Express app, with AppKit's global JSON parser
  *                      mirrored so the UTF-8 recovery middleware splices in.
  * - `files(alias)`   → a directory per alias under `FILES_DIR`.
+ *
+ * `DATABASE_URL=pglite:<dir>` swaps the pool for embedded Postgres on disk
+ * (`portable/pglite-db.ts`) — the local backend `npm run local` starts.
  * Model calls need no service here: the provider registry
  * (server/llm/, phase 3) reads each workspace's provider rows and calls the
  * vendor directly; with no provider configured every model call takes its
@@ -83,9 +87,16 @@ export async function startPortableServer(): Promise<void> {
   if (!databaseUrl) throw new Error('DATABASE_URL is required for the portable runtime');
 
   const unpooledUrl = process.env.DATABASE_URL_UNPOOLED?.trim();
-  const db = createPortableDb(databaseUrl, unpooledUrl ? { unpooledUrl } : {});
-  console.log(`${LOG} Postgres via ${unpooledUrl ? 'DATABASE_URL_UNPOOLED' : 'DATABASE_URL'} (${db.label}); Databricks token flow skipped`);
-  if (db.mode === 'pinned') {
+  const embedded = pgliteDir(databaseUrl) !== null;
+  const db = embedded ? await createPgliteDb(databaseUrl) : createPortableDb(databaseUrl, unpooledUrl ? { unpooledUrl } : {});
+  if (embedded) {
+    console.log(`${LOG} Embedded Postgres (${db.label}); one connection, each statement scoped in its own transaction`);
+  } else {
+    console.log(`${LOG} Postgres via ${unpooledUrl ? 'DATABASE_URL_UNPOOLED' : 'DATABASE_URL'} (${db.label}); Databricks token flow skipped`);
+  }
+  if (embedded) {
+    // Single-user local backend: nothing to tune, nothing to warn about.
+  } else if (db.mode === 'pinned') {
     console.log(`${LOG} Tenant scoping: one direct connection per request, session set once (pool max ${db.pool.options.max})`);
   } else {
     console.warn(

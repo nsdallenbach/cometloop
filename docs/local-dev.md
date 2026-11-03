@@ -11,6 +11,39 @@ decides at boot):
 This is phase 0 of `docs/platform-architecture.md`. The Databricks path is
 untouched; nothing here changes the deployed app.
 
+## The local backend (`npm run local`)
+
+The no-dependencies shape: the console, its database and its files on one
+laptop, for working offline or on a machine that has nothing but Node and
+Claude Code.
+
+```bash
+npm run local              # npm ci if needed, build if sources changed, serve http://localhost:8000
+npm run local -- --seed    # same, seeding the demo portfolio into an empty database
+npm run local -- --reset   # delete data/local first
+```
+
+`scripts/local.mjs` starts the portable runtime with
+`DATABASE_URL=pglite:./data/local/db`. `pglite:` selects **embedded
+Postgres** (`server/portable/pglite-db.ts`): PGlite, Postgres 17 compiled to
+WASM and persisted to a directory, so the boot migrations, `app.*` schema,
+`cometloop_app` role and row-level-security policies are exactly the ones
+the hosted console runs — no SQL dialect to keep in step. It is one
+connection, so every statement takes the per-statement scoping path under a
+lock; plenty for one person. Uploads go to `data/local/files`.
+
+| | |
+|---|---|
+| Identity | No sign-in provider runs locally. The launcher sets `DEV_IDENTITY_EMAIL` from `COMETLOOP_USER_EMAIL`, else `git config user.email`, and binds to `127.0.0.1` only — anyone who can reach the port is admin, so it never listens on the network. |
+| Claude Code | `.mcp.json`'s `delivery-console` server defaults `DELIVERY_CONSOLE_URL` to `http://localhost:8000` and sends no token when `DATABRICKS_HOST` is unset, so the board, tickets and agent tools work against the local backend as soon as it is up. |
+| Desktop | `cd desktop && APP_URL=http://localhost:8000 npm run dev` embeds the local console. |
+| Models | Deterministic fallbacks, unless `ANTHROPIC_API_KEY` is set or a provider is added under Admin → Model providers. |
+| Backup / move | Stop it and copy `data/local/` (set `COMETLOOP_DATA_DIR` to keep it elsewhere). |
+| Off | GitHub App repo sync (no key), Databricks endpoint listing, telemetry archiving — each logged once at boot. |
+
+`pglite:memory` keeps nothing; the tenancy integration suite uses it, so it
+runs anywhere: `npm run test:tenancy`.
+
 ## Run against Neon with `.env.local`
 
 `.env.local` is git-ignored and holds the Neon `DATABASE_URL` (the pooled
@@ -62,7 +95,7 @@ has a `HEALTHCHECK` on `/healthz`. Default command `node dist/main.js` (api);
 
 | Variable | Portable runtime | Notes |
 |---|---|---|
-| `DATABASE_URL` | **required** — selects the runtime | SSL on unless the URL says `sslmode=disable` (compose) or `sslmode=no-verify`. The `sslmode` parameter is stripped before `pg` sees the URL. |
+| `DATABASE_URL` | **required** — selects the runtime; `pglite:<dir>` = embedded Postgres on disk (the local backend) | SSL on unless the URL says `sslmode=disable` (compose) or `sslmode=no-verify`. The `sslmode` parameter is stripped before `pg` sees the URL. |
 | `DATABASE_URL_UNPOOLED` | strongly recommended on Neon | The direct endpoint (`DATABASE_URL` with `-pooler` removed from the host). With it each request pins one connection and sets the tenant session once; without it every statement scopes itself in its own transaction (three round trips each — the server warns). A `DATABASE_URL` that is already direct needs nothing extra. |
 | `PORT` | default `8000` | `DATABRICKS_APP_PORT` is honoured as a fallback. `HOST` defaults to `0.0.0.0`. |
 | `FILES_DIR` | default `data/files` (`/data/files` in the image) | One subdirectory per volume alias (`files/`, `telemetry/`). |

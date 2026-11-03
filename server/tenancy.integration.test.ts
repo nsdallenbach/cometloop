@@ -7,6 +7,7 @@ const OWNER_EMAIL = vi.hoisted(() => {
   return process.env.BOOTSTRAP_OWNER_EMAIL;
 });
 import { createPortableDb, type PortableDb } from './portable/db';
+import { createPgliteDb, pgliteDir } from './portable/pglite-db';
 import { BOOT_SCHEMA_SQL } from './routes/api';
 import { runWithTenant } from './db/tenant-context';
 import { APP_ROLE, TENANT_TABLES } from './db/tenancy';
@@ -20,6 +21,9 @@ import { APP_ROLE, TENANT_TABLES } from './db/tenancy';
  *     neon branches create --name phase2-test --parent production
  *     TEST_DATABASE_URL="$(neon connection-string phase2-test --role-name neondb_owner --database-name neondb)" npx vitest run server/tenancy.integration.test.ts
  *     neon branches delete phase2-test
+ *
+ * Or, with nothing to provision, on embedded Postgres (the local backend's
+ * database): `TEST_DATABASE_URL=pglite:memory npx vitest run server/tenancy.integration.test.ts`.
  *
  * Never the production branch, never the main checkout's `.env.local`. The
  * test boots the full schema (every module array plus the tenancy array) the
@@ -87,7 +91,9 @@ describe.skipIf(!url)('tenancy on Postgres', () => {
     // backend, which is what makes the "nothing carries over" checks real.
     process.env.PG_POOL_MAX = '1';
     const unpooledUrl = process.env.TEST_DATABASE_URL_UNPOOLED?.trim();
-    db = createPortableDb(url as string, unpooledUrl ? { unpooledUrl } : {});
+    db = pgliteDir(url as string)
+      ? await createPgliteDb(url as string)
+      : createPortableDb(url as string, unpooledUrl ? { unpooledUrl } : {});
     console.log(`[integration] scoping mode: ${db.mode}`);
     await cleanup().catch(() => undefined); // first run on a fresh branch: tables may lack tenant_id yet
   }, 60_000);
