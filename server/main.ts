@@ -41,6 +41,8 @@ const LOG = '[main]';
 function clientDist(): string | null {
   // dist/main.js runs from the repo root in both the container and `npm start`;
   // tsx runs server/main.ts from the same cwd.
+  // CLIENT_DIST: the single-file executable unpacks the UI to its data folder.
+  if (process.env.CLIENT_DIST) return fs.existsSync(path.join(process.env.CLIENT_DIST, 'index.html')) ? process.env.CLIENT_DIST : null;
   const candidates = [path.resolve(process.cwd(), 'client/dist'), path.resolve(import.meta.dirname, '../client/dist')];
   for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, 'index.html'))) return dir;

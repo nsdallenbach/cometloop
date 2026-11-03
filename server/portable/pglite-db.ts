@@ -26,6 +26,21 @@ import type { PortableDb, Query } from './db';
  * json/jsonb parsed.
  */
 
+/**
+ * PGlite finds its WASM and filesystem bundle next to its own module file.
+ * Inside the single-file executable (server/local-exe.ts) there is no such
+ * file, so the exe hands them over here before the database opens.
+ */
+export interface PgliteAssets {
+  pgliteWasmModule: WebAssembly.Module;
+  initdbWasmModule: WebAssembly.Module;
+  fsBundle: Blob;
+}
+let injected: PgliteAssets | null = null;
+export function setPgliteAssets(assets: PgliteAssets): void {
+  injected = assets;
+}
+
 const INT8 = 20;
 const NUMERIC = 1700;
 
@@ -43,6 +58,7 @@ export async function createPgliteDb(databaseUrl: string): Promise<PortableDb> {
   const { PGlite } = await import('@electric-sql/pglite');
   const pg: PGliteType = await PGlite.create(dir === 'memory://' ? undefined : dir, {
     parsers: { [INT8]: (v: string) => v, [NUMERIC]: (v: string) => v },
+    ...(injected ?? {}),
   });
 
   // The lock: a promise chain; each holder resolves its link on release.

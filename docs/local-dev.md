@@ -44,6 +44,32 @@ lock; plenty for one person. Uploads go to `data/local/files`.
 `pglite:memory` keeps nothing; the tenancy integration suite uses it, so it
 runs anywhere: `npm run test:tenancy`.
 
+### Single-file executable
+
+The same backend as one download, for a machine with nothing installed.
+`npm run build:exe` (Node 25.5+) writes
+`release-local/cometloop-local-<os>-<arch>[.exe]`: `server/local-exe.ts`
+bundled by esbuild into one CommonJS file and baked into a Node
+[single executable](https://nodejs.org/api/single-executable-applications.html)
+with the web UI and PGlite's `pglite.wasm` / `initdb.wasm` / `pglite.data` as
+embedded assets (handed to PGlite through `setPgliteAssets`, since there is
+no `node_modules` next to the binary). ~130 MB.
+
+- **Release:** push a `local-v<version>` tag; `.github/workflows/local-release.yml`
+  builds Windows x64, macOS arm64 and Linux x64, boots each on an empty data
+  folder as a smoke test, and attaches them to a GitHub Release. (`v*` tags
+  remain the desktop client's.)
+- **Data:** `%LOCALAPPDATA%\Cometloop`, `~/Library/Application Support/Cometloop`,
+  `~/.local/share/cometloop`, or `COMETLOOP_DATA_DIR`. The UI is unpacked to
+  `runtime/<build>/client` on the first run of each build.
+- **Flags:** `--seed`, `--port <n>` (default 8000; the next free port if
+  taken), `--no-open`. A second launch while one runs only opens the browser.
+- **Identity:** `COMETLOOP_USER_EMAIL`, else `<os user>@localhost`; loopback only.
+- **Unsigned:** Windows SmartScreen asks once (*More info → Run anyway*); on
+  macOS clear quarantine with `xattr -d com.apple.quarantine <file>` (the
+  build ad-hoc signs it). Real signing rides on the desktop client's
+  certificate work (DAT-237).
+
 ## Run against Neon with `.env.local`
 
 `.env.local` is git-ignored and holds the Neon `DATABASE_URL` (the pooled

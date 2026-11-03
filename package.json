@@ -29,7 +29,8 @@
     "typegen": "appkit generate-types",
     "setup": "appkit setup --write",
     "local": "node scripts/local.mjs",
-    "test:tenancy": "cross-env TEST_DATABASE_URL=pglite:memory vitest run server/tenancy.integration.test.ts"
+    "test:tenancy": "cross-env TEST_DATABASE_URL=pglite:memory vitest run server/tenancy.integration.test.ts",
+    "build:exe": "node scripts/build-local-exe.mjs"
   },
   "keywords": [],
   "author": "Nigel Silva",
