@@ -31,8 +31,8 @@ Environment (all optional):
 
 | Var | Default | Purpose |
 |---|---|---|
-| `DELIVERY_CONSOLE_URL` | the deployed app URL | Console base URL |
-| `DATABRICKS_HOST` | workspace URL | Host for CLI token minting |
+| `DELIVERY_CONSOLE_URL` | the deployed app URL (default `http://localhost:8000`) | Console base URL |
+| `DATABRICKS_HOST` | workspace URL | Host for CLI token minting. Unset (and no `DATABRICKS_TOKEN`) = local backend: no token is sent, and the URL must be localhost |
 | `DATABRICKS_TOKEN` | — | Pre-minted OAuth token (skips the CLI) |
 | `DATABRICKS_CLI` | `databricks` | CLI binary path override |
 

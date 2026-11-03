@@ -33,7 +33,22 @@ Cometloop is an open source delivery execution console. Tickets go in; a plannin
 
 ## Quickstart
 
-Three ways to get a console running. Each needs Node.js 22+; the first also needs Docker, the second a Databricks workspace.
+Four ways to get a console running. Each needs Node.js 22+; Docker and Databricks are needed only where named.
+
+### Download and run (one file)
+
+[Releases](https://github.com/nsdallenbach/cometloop/releases) carry `cometloop-local-*` executables for Windows, macOS and Linux: the server, the web UI and an embedded Postgres in one file. Open it and your browser lands on http://localhost:8000; data stays in your user folder between runs. No Node, Docker or account needed.
+
+### Run it on your laptop from a clone
+
+The whole console on one machine with an embedded Postgres file database — same schema and row-level security as the hosted console, no Docker, no cloud account. Claude Code in the clone talks to it through the repo's MCP server with no setup.
+
+```bash
+git clone https://github.com/nsdallenbach/cometloop.git && cd cometloop
+npm run local -- --seed     # installs, builds, seeds the demo portfolio, serves http://localhost:8000
+```
+
+Data lives in `data/local/` (git-ignored). `npm run local` on later runs; `-- --reset` starts over. Details: [docs/local-dev.md](docs/local-dev.md#the-local-backend-npm-run-local).
 
 ### Run locally with Docker
 

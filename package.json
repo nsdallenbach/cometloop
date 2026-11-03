@@ -27,7 +27,10 @@
     "predev": "npm run sync && npm run typegen",
     "sync": "appkit plugin sync --write --silent",
     "typegen": "appkit generate-types",
-    "setup": "appkit setup --write"
+    "setup": "appkit setup --write",
+    "local": "node scripts/local.mjs",
+    "test:tenancy": "cross-env TEST_DATABASE_URL=pglite:memory vitest run server/tenancy.integration.test.ts",
+    "build:exe": "node scripts/build-local-exe.mjs"
   },
   "keywords": [],
   "author": "Nigel Silva",
@@ -43,6 +46,7 @@
     "@databricks/appkit": "0.38.1",
     "@databricks/appkit-ui": "0.38.1",
     "@databricks/sdk-experimental": "0.17.0",
+    "@electric-sql/pglite": "0.5.10",
     "@neondatabase/auth": "^0.5.0-beta",
     "@number-flow/react": "^0.6.2",
     "@visx/curve": "^4.0.0",

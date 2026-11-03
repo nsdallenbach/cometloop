@@ -7,17 +7,21 @@
 // Auth resolution order:
 //   1. DATABRICKS_TOKEN env (pre-minted OAuth token)
 //   2. `databricks auth token --host $DATABRICKS_HOST` via the CLI
+//   3. neither → no Authorization header: the local backend (`npm run local`,
+//      http://localhost:8000) has no proxy in front and needs none
 //
-// Env: DELIVERY_CONSOLE_URL, DATABRICKS_HOST, DATABRICKS_CLI (path override).
+// Env: DELIVERY_CONSOLE_URL (default http://localhost:8000), DATABRICKS_HOST,
+// DATABRICKS_CLI (path override).
 import { execFileSync } from 'child_process';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const APP_URL = (process.env.DELIVERY_CONSOLE_URL ?? '').replace(/\/+$/, '');
+const APP_URL = (process.env.DELIVERY_CONSOLE_URL || 'http://localhost:8000').replace(/\/+$/, '');
 const HOST = process.env.DATABRICKS_HOST ?? '';
-if (!APP_URL || !HOST) {
-  console.error('Set DELIVERY_CONSOLE_URL (the console, e.g. https://<app>.databricksapps.com) and DATABRICKS_HOST (the workspace, for `databricks auth token`).');
+const LOCAL = !HOST && !process.env.DATABRICKS_TOKEN;
+if (LOCAL && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(APP_URL)) {
+  console.error(`DELIVERY_CONSOLE_URL is ${APP_URL} but DATABRICKS_HOST is not set — a hosted console needs DATABRICKS_HOST (for \`databricks auth token\`) or DATABRICKS_TOKEN.`);
   process.exit(1);
 }
 const CLI = process.env.DATABRICKS_CLI ?? 'databricks';
@@ -26,6 +30,7 @@ const CLI = process.env.DATABRICKS_CLI ?? 'databricks';
 // a token near death; a 401 busts the cache and retries once regardless.
 let cachedTok = null; // { token, exp }
 function token() {
+  if (LOCAL) return null;
   if (process.env.DATABRICKS_TOKEN) return process.env.DATABRICKS_TOKEN;
   if (cachedTok && Date.now() < cachedTok.exp) return cachedTok.token;
   const out = execFileSync(CLI, ['auth', 'token', '--host', HOST], { encoding: 'utf8' });
@@ -38,10 +43,10 @@ async function authedFetch(url, init = {}) {
   for (let attempt = 0; ; attempt++) {
     const resp = await fetch(url, {
       ...init,
-      headers: { Authorization: `Bearer ${token()}`, ...(init.headers ?? {}) },
+      headers: { ...(LOCAL ? {} : { Authorization: `Bearer ${token()}` }), ...(init.headers ?? {}) },
       signal: AbortSignal.timeout(init.timeoutMs ?? 30_000),
     });
-    if (resp.status === 401 && attempt === 0 && !process.env.DATABRICKS_TOKEN) {
+    if (resp.status === 401 && attempt === 0 && !LOCAL && !process.env.DATABRICKS_TOKEN) {
       cachedTok = null; // token died mid-flight — mint fresh and retry once
       continue;
     }

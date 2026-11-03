@@ -1,0 +1,101 @@
+name: Local backend release
+
+# Single-file executables of the whole console (server + web UI + embedded
+# Postgres) for Windows, macOS and Linux, attached to a GitHub Release.
+# Download one, run it, the browser opens on http://localhost:8000.
+# Built by scripts/build-local-exe.mjs; docs/local-dev.md, "Single-file
+# executable".
+#
+# Cut a release with:
+#   git tag local-v<version> && git push origin local-v<version>
+# (The desktop client's own releases use plain v* tags.)
+
+on:
+  push:
+    tags: ['local-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows x64
+          - os: macos-latest
+            name: macOS arm64
+          - os: ubuntu-latest
+            name: Linux x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The executable embeds the Node that builds it; --build-sea needs 25.5+.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Build executable
+        run: node scripts/build-local-exe.mjs
+        env:
+          COMETLOOP_BUILD_ID: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+
+      # Boot it on an empty data folder and wait for /healthz before shipping.
+      - name: Smoke test
+        shell: bash
+        run: |
+          EXE=$(ls release-local/cometloop-local-* | head -1)
+          COMETLOOP_DATA_DIR="$RUNNER_TEMP/cl-data" "$EXE" --seed --no-open --port 8199 > "$RUNNER_TEMP/cl.log" 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:8199/healthz > /dev/null; then break; fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/cl.log"
+          curl -sf http://127.0.0.1:8199/healthz
+          curl -sf http://127.0.0.1:8199/api/engagements | head -c 200
+          curl -sf http://127.0.0.1:8199/ | grep -q '<div id="root"'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}
+          path: release-local/cometloop-local-*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > notes.md <<'EOF'
+          The whole Cometloop console in one file — server, web UI and an embedded Postgres database. Nothing else to install.
+
+          **Run it:** download the file for your computer and open it. Your browser opens on http://localhost:8000. Close the window to stop it; open it again and everything is where you left it. Add `--seed` the first time for the demo portfolio.
+
+          | Computer | File |
+          |---|---|
+          | Windows | `cometloop-local-windows-x64.exe` — SmartScreen may warn (unsigned): *More info → Run anyway* |
+          | Mac (Apple silicon) | `cometloop-local-macos-arm64` — in Terminal: `xattr -d com.apple.quarantine ./cometloop-local-macos-arm64 && ./cometloop-local-macos-arm64` |
+          | Linux | `cometloop-local-linux-x64` — `chmod +x` it, then run |
+
+          Data lives in `%LOCALAPPDATA%\Cometloop`, `~/Library/Application Support/Cometloop` or `~/.local/share/cometloop`. It only listens on this computer (127.0.0.1).
+
+          **Claude Code:** clone the repo and its `delivery-console` MCP server connects to the running console with no setup.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Cometloop local ${GITHUB_REF_NAME#local-v}" --notes-file notes.md

@@ -21,3 +21,4 @@ shared/appkit-types/serving.d.ts
 
 # Portable runtime: local-disk files volume (FILES_DIR default)
 data/
+release-local/
